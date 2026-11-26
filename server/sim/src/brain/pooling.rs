@@ -531,13 +531,15 @@ fn hungry_young_seen(
 /// reserve for it (the hearth's food, laid back when the young is fed).
 /// A perception of the giver, never a wake of the young: the young eats
 /// what it is given without a thought of its own. `None`: no young seen
-/// hungry, or `pooling.young_seen` off.
+/// hungry, `pooling.young_seen` off, or its own hunger gives way (the
+/// hunger bar, [`gives_way`]): then it eats first.
 pub(super) fn feed_young(
     world: &World,
     rules: &Content,
     reserves: &mut Reserves,
     (id, body, here): (BodyId, &Body, Pos),
     mind: &mut Mind,
+    seed: u64,
 ) -> Option<Decision> {
     let pooling = &rules.needs.pooling;
     if !pooling.young_seen
@@ -545,6 +547,13 @@ pub(super) fn feed_young(
         || body.condition().asleep
         || pooling.fed(world.age_milli(body))
         || world.is_infant(body, rules)
+    {
+        return None;
+    }
+    // The hunger bar holds for the giver too (D58, amended 25 November
+    // 2026): hungry, and its hunger giving way, it eats; it gives nothing.
+    if body.condition().hunger.points() >= HUNGRY
+        && gives_way(world, rules, body, mind, seed).is_some()
     {
         return None;
     }
@@ -1812,6 +1821,45 @@ mod tests {
             // need, nothing seen eaten, now.
             let far = if seen { need } else { room(ids[2]) };
             assert_eq!(ahead, room(ids[1]) + far, "young_seen {seen}");
+        }
+    }
+
+    #[test]
+    fn a_starving_giver_eats_first() {
+        let mut rules = pooled();
+        rules.needs.pooling.young_seen = true;
+        let at = Pos::new(5, 5);
+        for starving in [false, true] {
+            let (mut world, mut brains, ids) = field(&rules, &[(at, 30), (Pos::new(6, 5), 5)]);
+            let (grown, child) = (ids[0], ids[1]);
+            brains.see_hearths(&world, &rules, &[(camp_of(&rules, at), ids.clone())]);
+            let item = world.spawn_item("berries", 400, at);
+            world.queue(Intention::PickUp { body: grown, item });
+            world.step(&rules, &mut Vec::new());
+            hungry(&mut world, &rules, child, 70);
+            hungry(&mut world, &rules, grown, 60);
+            if starving {
+                // A tenth of its fat left: its hunger gives way.
+                let b = world.bodies.iter_mut().find(|b| b.id() == grown).unwrap();
+                b.condition.deficit_j = b.condition.reserve_j(&rules.needs) * 9 / 10;
+            }
+            let body = world.body(grown).unwrap();
+            let mind = brains.minds.get_mut(&grown).unwrap();
+            let gives = feed_young(
+                &world,
+                &rules,
+                &mut brains.reserves,
+                (grown, body, at),
+                mind,
+                7,
+            );
+            assert_eq!(
+                gives
+                    .as_ref()
+                    .is_some_and(|d| matches!(d.intention, Intention::Feed { .. })),
+                !starving,
+                "starving {starving}: {gives:?}"
+            );
         }
     }
 

@@ -8012,7 +8012,9 @@ fn decide(
     }
     // A young one of its hearth seen hungry near it: it feeds it (D58,
     // the audit of wakes, step 5).
-    if let Some(decision) = pooling::feed_young(world, rules, reserves, (id, body, here), mind) {
+    if let Some(decision) =
+        pooling::feed_young(world, rules, reserves, (id, body, here), mind, seed)
+    {
         return Some(decision);
     }
     // A child fed by its hearth does not gather alone (D58).
