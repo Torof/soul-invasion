@@ -1545,6 +1545,12 @@ pub struct World {
     /// `kept` is not.
     #[serde(skip)]
     kept_changes: u64,
+    /// How many items each record of `kept` was laid as (D58, amended
+    /// 26 November 2026: « une fois 125 noisettes », a heap knows its
+    /// count): a bite from a heap is one of them at most, as a bite from
+    /// the item laid was. Derived from `kept`'s changes, never persisted.
+    #[serde(skip)]
+    kept_parts: BTreeMap<ItemId, u32>,
     /// The content's spawn rules the natural items follow, set with the
     /// kinds of tree ([`World::take_content`]). Never persisted.
     #[serde(skip)]
@@ -1674,6 +1680,7 @@ impl<'de> serde::Deserialize<'de> for World {
             kept: BTreeMap::new(),
             kept_in: BTreeMap::new(),
             kept_changes: 0,
+            kept_parts: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
             grow_due: true,
@@ -1791,6 +1798,7 @@ impl World {
             kept: BTreeMap::new(),
             kept_in: BTreeMap::new(),
             kept_changes: 0,
+            kept_parts: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
             grow_due: true,
@@ -2401,6 +2409,7 @@ impl World {
     fn unkeep(&mut self, id: ItemId) -> Option<Item> {
         let record = self.kept.remove(&id)?;
         self.kept_changes += 1;
+        self.kept_parts.remove(&id);
         if let Some(pos) = record.pos()
             && let Some(ids) = self.kept_in.get_mut(&pos.chunk())
         {
@@ -2523,6 +2532,7 @@ impl World {
         );
         self.kept_in.entry(pos.chunk()).or_default().insert(id);
         self.kept_changes += 1;
+        self.kept_parts.insert(id, 1);
         id
     }
 
@@ -3870,7 +3880,8 @@ impl World {
             self.bodies[index].condition.room_j(needs) / u64::from(food.energy_kj_per_kg).max(1);
         let grams = mass_g
             .min(needs.meal_g)
-            .min(u32::try_from(room_g).unwrap_or(u32::MAX));
+            .min(u32::try_from(room_g).unwrap_or(u32::MAX))
+            .min(self.part_g(item));
         if grams == 0 {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Sated);
         }
@@ -3979,9 +3990,14 @@ impl World {
         // same, carried; nothing lay on the ground. Taken in part, the
         // part taken is the item, and the rest stays kept, a record of its
         // own (`Event::Kept` names it).
+        let parts = self.kept_parts.get(&item).copied();
         let from_store = if let Some(mut record) = self.unkeep(item) {
             let rest_id = ItemId(self.next_item);
             if let Some(rest) = record.split(rest_id, mass - take) {
+                // The rest keeps its share of the heap's count.
+                let left = u64::from(parts.unwrap_or(1)) * u64::from(rest.mass_g) / u64::from(mass);
+                self.kept_parts
+                    .insert(rest_id, u32::try_from(left).unwrap_or(u32::MAX).max(1));
                 self.next_item += 1;
                 if let Place::Ground { pos: at } = rest.place {
                     events.push(Event::Kept {
@@ -4067,6 +4083,11 @@ impl World {
     /// it are eaten (D58): lighter, or gone; nothing lay on the ground, no
     /// chunk changes.
     fn eaten_kept(&mut self, item: ItemId, grams: u32, events: &mut Vec<Event>) {
+        if grams >= self.part_g(item)
+            && let Some(parts) = self.kept_parts.get_mut(&item)
+        {
+            *parts = parts.saturating_sub(1).max(1);
+        }
         let Some(left) = self.kept.get_mut(&item) else {
             return;
         };
@@ -4085,6 +4106,16 @@ impl World {
                 mass_g,
                 at: pos,
             });
+        }
+    }
+
+    /// What one of the items a record kept in a store was laid as weighs,
+    /// on average, rounded up (D58, amended 26 November 2026): a bite
+    /// from it is that at most. Anything else: no bound.
+    fn part_g(&self, item: ItemId) -> u32 {
+        match (self.kept.get(&item), self.kept_parts.get(&item)) {
+            (Some(record), Some(&parts)) => record.mass_g.div_ceil(parts.max(1)),
+            _ => u32::MAX,
         }
     }
 
@@ -4154,6 +4185,9 @@ impl World {
         if let Some(record) = left {
             self.kept.insert(item, record);
             self.kept_in.entry(at.chunk()).or_default().insert(item);
+            self.kept_parts.insert(item, 1);
+        } else if let Some(parts) = self.kept_parts.get_mut(&into) {
+            *parts = parts.saturating_add(1);
         }
         self.kept_changes += 1;
         events.push(Event::Kept {
