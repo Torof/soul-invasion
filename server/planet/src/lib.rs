@@ -9,25 +9,25 @@
 //!
 //! What it tells, in order, each step reading only the ones before:
 //!
-//! 1. **Crust.** Continental crust is a set of separate continents
-//!    (version 2, the lead's 26 November): warped caps of drawn sizes,
-//!    kept apart so no two large ones fuse into a supercontinent, large
-//!    and middling ones kept below ~60° of latitude, their coasts frayed
-//!    by noise. About a fifth of the surface carries crust.
-//! 2. **Plates.** A warped, weighted Voronoi on the sphere, each plate
-//!    turning about its own pole; plates carrying much continent move
-//!    slower, as on the Earth.
-//! 3. **Boundaries.** Each boundary cell is classified by the relative
+//! 1. **The plates' history** ([`history`], version 3, the lead's 26
+//!    November): a supercontinent breaks along rifts, its fragments drift,
+//!    collide and weld, terranes accrete. The continents of today are what
+//!    is left, each piece of crust carrying its record (fragment, age,
+//!    margins, last mountain building). A world's character is an input:
+//!    [`Settings`].
+//! 2. **Older seams** inside the supercontinent (old sutures, failed
+//!    rifts), carried with its crust.
+//! 3. **Today's plates**: one on each large group of welded pieces,
+//!    turning as it last turned, oceanic plates between.
+//! 4. **Boundaries.** Each boundary cell is classified by the relative
 //!    motion of the two plates: convergent (collision, continental arc,
 //!    island arc, or the trench of the plate that sinks), divergent
 //!    (ridge in the ocean, rift in a continent), or transform.
-//! 4. **An older layout.** A second, older set of plates, drawn the same
-//!    way, leaves its marks inside the continents: old sutures (worn
-//!    ranges) where its plates met, failed rifts where they parted.
 //! 5. **Hotspots.** Fixed plumes under moving plates leave chains, older
 //!    the farther they run in the plate's direction of motion.
-//! 6. **Height and the sea.** A height from these, and a sea level that
-//!    leaves [`LAND_PER_MILLE`] of the surface dry (17.5 %).
+//! 6. **Height and the sea.** A height from these and from the history's
+//!    ranges and trailing coasts, and a sea level that leaves the settings'
+//!    share of the surface dry.
 //! 7. **Our continent** ([`Site`], [`Zoom`]): a subduction margin at
 //!    40–50° north with the ocean to the west is chosen, and a
 //!    continent of [`LENGTH_KM`] is shaped on its overriding side, read
@@ -53,8 +53,10 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 mod hash;
+pub mod history;
 
 use hash::hash;
+pub use history::{History, Settings};
 
 // ---------------------------------------------------------------- numbers
 
@@ -484,17 +486,12 @@ fn random_unit(seed: u64, purpose: u64, k: u64) -> V3 {
 // ---------------------------------------------------------------- plates
 
 /// Draw purposes.
-const P_CRUST: u64 = 0x0c50_0001;
-const P_CRUST_WARP: u64 = 0x0c50_0002;
-const P_CONTINENTS: u64 = 0x0c50_0003;
 const P_PLATES: u64 = 0x0c50_0010;
 const P_OLD: u64 = 0x0c50_0020;
 const P_HOTSPOTS: u64 = 0x0c50_0030;
 const P_RELIEF: u64 = 0x0c50_0040;
 const P_ZOOM: u64 = 0x0c50_0050;
 
-/// Plates of today: 10 to 15, as the Earth has 7 large and ~8 middling.
-const PLATES: (i64, i64) = (10, 15);
 /// Plates of the older layout: fewer, larger (a supercontinent's time).
 const OLD_PLATES: (i64, i64) = (6, 9);
 /// The largest weight a plate's seed point gets, in [`ONE`] units, drawn
@@ -502,8 +499,6 @@ const OLD_PLATES: (i64, i64) = (6, 9);
 const PLATE_WEIGHT: i64 = 280_000;
 /// Plate speeds at 90° from their pole, mm a year (the Earth's: 10–100).
 const SPEED_MM: (i64, i64) = (25, 95);
-/// A plate all continent moves this share slower, per mille.
-const CONTINENT_DRAG: i64 = 600;
 /// The plates' borders' warp, `(cell, amplitude)` in [`ONE`] units.
 const PLATE_WARP: [(i64, i64); 4] = [
     (600_000, 200_000),
@@ -511,39 +506,6 @@ const PLATE_WARP: [(i64, i64); 4] = [
     (70_000, 22_000),
     (25_000, 7_000),
 ];
-/// A tier of [`CONTINENT_TIERS`].
-type Tier = ((i64, i64), (i64, i64), i64, i64);
-/// The continents, by tier, largest first: `(count, radius km, gap km,
-/// farthest latitude its cap may reach, tenths of a degree)`. Each
-/// continent is a few overlapping lobes inside its cap, so it is long,
-/// bent or lobed rather than round. Large and
-/// middling ones stay below ~62° so the cold north and south are not
-/// millions of km² of ice; small ones and islets may go farther. The gap
-/// keeps two caps apart, so the largest land stays near one cap's size
-/// (the lead's ceiling: ~10–15 M km², 26 November).
-const CONTINENT_TIERS: [Tier; 4] = [
-    ((4, 6), (1_900, 2_350), 600, 620),
-    ((4, 7), (1_300, 1_900), 500, 620),
-    ((8, 12), (550, 1_000), 400, 680),
-    ((10, 16), (150, 350), 250, 780),
-];
-/// Tries to place a cap before it is given up.
-const CONTINENT_TRIES: u64 = 400;
-/// The crust's noise, `(cell, weight)`: frays each cap's coast by about a
-/// quarter of its radius, in or out.
-const CRUST_OCTAVES: [(i64, i64); 4] = [(900_000, 5), (450_000, 4), (200_000, 2), (80_000, 1)];
-const CRUST_WARP: [(i64, i64); 2] = [(500_000, 90_000), (150_000, 30_000)];
-/// Share of the surface carried by continental crust, per mille: the
-/// lobes swell or shrink a little to it, whatever caps were placed.
-const CONTINENTAL_PER_MILLE: i64 = 220;
-/// Satellite lobes per continent, and their radius and the main lobe's,
-/// per mille of the cap's.
-const LOBES: (i64, i64) = (2, 4);
-const LOBE_RADIUS: (i64, i64) = (300, 520);
-const MAIN_RADIUS: (i64, i64) = (550, 720);
-/// Share of the surface left dry by the sea level, per mille (the lead's
-/// 15–20 %, 26 November; the Earth: 29 %).
-pub const LAND_PER_MILLE: i64 = 175;
 
 /// A plate: a seed point with a weight, turning about a pole.
 #[derive(Debug, Clone)]
@@ -744,7 +706,7 @@ pub struct Planet {
     pub plate: Vec<u8>,
     /// Each cell's older plate.
     pub old_plate: Vec<u8>,
-    /// Each cell's crust value (the noise, 0..1000 and a little beyond).
+    /// Each cell's crust value (the supercontinent's, read at its source).
     pub crust: Vec<i64>,
     /// The threshold of continental crust.
     pub crust_cut: i64,
@@ -752,7 +714,7 @@ pub struct Planet {
     pub continental: Vec<bool>,
     /// Boundary cells of today.
     pub edge: Vec<Option<Edge>>,
-    /// Boundary cells of the older layout (all crusts).
+    /// Boundary cells of the older layout, carried with the crust.
     pub old_edge: Vec<Option<OldKind>>,
     /// Each cell's distance to the nearest boundary of its own plate, km,
     /// and that boundary's cell.
@@ -765,117 +727,168 @@ pub struct Planet {
     pub lands: Vec<Landmass>,
     /// Cells reshaped for our continent (none until [`Planet::shape`]).
     pub ours: Vec<bool>,
+    /// The world's settings.
+    pub settings: Settings,
+    /// The plates' history that made the continents.
+    pub history: History,
 }
 
-/// The continents' lobes, `(centre, radius km)`: caps placed tier by
-/// tier, each clear of those before it by both radii and the larger gap,
-/// each filled with a main lobe and a few satellites touching its rim.
-fn continents(seed: u64) -> Vec<(V3, i64)> {
-    let mut caps: Vec<(V3, i64, i64)> = Vec::new();
-    for (t, &((lo, hi), (r_lo, r_hi), gap, reach)) in CONTINENT_TIERS.iter().enumerate() {
-        let t = t as u64;
-        let count = draw(seed, P_CONTINENTS, t, lo, hi) as u64;
-        for k in 0..count {
-            let r = draw(seed, P_CONTINENTS, 100 + t * 100 + k, r_lo, r_hi);
-            let r_tenths = r * 18_000 / (PI * RADIUS_KM / 100_000);
-            for attempt in 0..CONTINENT_TRIES {
-                let c = random_unit(
-                    seed,
-                    P_CONTINENTS + 1,
-                    (t * 100 + k) * CONTINENT_TRIES + attempt,
-                );
-                if latitude(c).abs() + r_tenths > reach {
-                    continue;
-                }
-                if caps
-                    .iter()
-                    .all(|&(o, ro, go)| km_between(c, o) >= r + ro + gap.max(go))
-                {
-                    caps.push((c, r, gap));
-                    break;
-                }
-            }
-        }
+/// A range the history raised at a cell, `(height m, half-width km)`:
+/// a collision's suture, today's leading edge, an accreted terrane, an
+/// older leading edge, each lower the older it is.
+fn range_of(h: &History, c: usize) -> Option<(i64, i64)> {
+    let (flags, ago) = (h.margins[c], h.orogeny_my[c]);
+    if ago == history::NEVER
+        || flags & !(history::OLD_SUTURE | history::RIFT | history::PASSIVE) == 0
+    {
+        return None;
     }
-    let mut lobes = Vec::new();
-    for (k, &(c, r, _)) in caps.iter().enumerate() {
-        let k = 1000 * k as u64;
-        let (east, north) = (east_at(c), north_at(c, east_at(c)));
-        let toward = |j: u64| {
-            let a = draw(seed, P_CONTINENTS + 2, k + j, 0, TAU);
-            normalize(add(scale(east, cos(a)), scale(north, sin(a))))
-        };
-        let main = draw(seed, P_CONTINENTS + 3, k, MAIN_RADIUS.0, MAIN_RADIUS.1);
-        let off = draw(seed, P_CONTINENTS + 4, k, 0, 1000 - main);
-        lobes.push((step(c, toward(0), r * off / 1000), r * main / 1000));
-        for j in 1..=draw(seed, P_CONTINENTS + 5, k, LOBES.0, LOBES.1) as u64 {
-            let lr = r * draw(seed, P_CONTINENTS + 6, k + j, LOBE_RADIUS.0, LOBE_RADIUS.1) / 1000;
-            lobes.push((step(c, toward(j), r - lr), lr));
-        }
-    }
-    lobes
+    let ago = i64::from(ago);
+    let youth = (1000 - ago * 1000 / 400).clamp(250, 1000);
+    let (height, width) = if flags & history::SUTURE != 0 {
+        (2_800, 320)
+    } else if flags & history::ACTIVE != 0 && ago <= 10 {
+        (2_000, 170)
+    } else if flags & history::ACCRETED != 0 {
+        (1_300, 130)
+    } else if flags & history::ACTIVE != 0 {
+        (900, 150)
+    } else {
+        return None;
+    };
+    Some((height * youth / 1000, width))
 }
 
-/// Hotspots: 14 to 20 (the Earth has ~40 listed, ~15 strong).
-const HOTSPOTS: (i64, i64) = (14, 20);
+/// Today's plates: one centred on each group of welded pieces larger than
+/// [`PLATE_GROUP_KM2`], turning as the group last turned, then oceanic
+/// plates up to the settings' count (at least [`OCEAN_PLATES`]).
+fn today_plates(seed: u64, s: &Settings, sphere: &Sphere, h: &History) -> Layout {
+    let mut sum = vec![[0_i64; 3]; 256];
+    let mut area = vec![0_i64; 256];
+    for c in 0..CELLS {
+        let p = h.piece[c];
+        if p == history::NONE {
+            continue;
+        }
+        let g = h.group[p as usize] as usize;
+        sum[g] = add(sum[g], sphere.centre[c]);
+        area[g] += i64::from(sphere.area_km2[c]);
+    }
+    let mut plates = Vec::new();
+    for g in 0..256 {
+        if area[g] < PLATE_GROUP_KM2 {
+            continue;
+        }
+        let m = h.motion[g];
+        let speed = (m.angle * RADIUS_KM / ONE / s.step_my).max(LEAST_SPEED_MM);
+        plates.push(Plate {
+            centre: normalize(sum[g]),
+            weight: (60_000 + area[g] / 200).min(200_000),
+            pole: m.pole,
+            speed,
+            buoyancy: draw(seed, P_PLATES, 300 + g as u64, 0, 1000),
+        });
+    }
+    let want =
+        draw(seed, P_PLATES, 0, s.plates.0, s.plates.1).max(plates.len() as i64 + OCEAN_PLATES);
+    let mut k = 0;
+    while (plates.len() as i64) < want && k < 10_000 {
+        let at = random_unit(seed, P_PLATES + 1, k);
+        k += 1;
+        if h.piece[sphere.cell_of(at)] != history::NONE
+            || plates.iter().any(|p| km_between(p.centre, at) < 2_000)
+        {
+            continue;
+        }
+        let u = draw(seed, P_PLATES, 100 + k, 0, 1000);
+        plates.push(Plate {
+            centre: at,
+            weight: u * u * OCEAN_PLATE_WEIGHT / 1_000_000,
+            pole: random_unit(seed, P_PLATES + 2, k),
+            speed: draw(seed, P_PLATES, 200 + k, SPEED_MM.0, SPEED_MM.1),
+            buoyancy: draw(seed, P_PLATES, 400 + k, 0, 1000),
+        });
+    }
+    Layout {
+        plates,
+        warp_seed: hash(&[seed, P_PLATES, 0xa5]),
+    }
+}
+
+/// A group of welded pieces this large gets its own plate, km².
+const PLATE_GROUP_KM2: i64 = 1_500_000;
+/// Oceanic plates, at least.
+const OCEAN_PLATES: i64 = 4;
+/// The largest weight of an oceanic plate's seed, [`ONE`] units.
+const OCEAN_PLATE_WEIGHT: i64 = 150_000;
+/// A continent's plate moves at least this fast, mm a year.
+const LEAST_SPEED_MM: i64 = 10;
+
 /// How far back a hotspot's chain is followed, millions of years.
 const TRACK_MYR: i64 = 70;
 /// A chain's step, km.
 const TRACK_STEP_KM: i64 = 100;
 
 impl Planet {
-    /// The planet born from `seed`.
+    /// The planet born from `seed`, with the default settings.
     pub fn new(seed: u64) -> Self {
+        Self::with(seed, &Settings::default())
+    }
+
+    /// The planet born from `seed` and `settings`.
+    pub fn with(seed: u64, settings: &Settings) -> Self {
         let sphere = Sphere::new();
-        // 1. Crust.
-        let caps = continents(seed);
-        let crust: Vec<i64> = sphere
+        // 1. Older plates: the seams inside the supercontinent, read where
+        // its crust stood before it broke, and carried with it.
+        let old = Layout::draw(seed, P_OLD, OLD_PLATES);
+        let old_at: Vec<u8> = sphere
             .centre
             .iter()
-            .map(|&p| {
-                let q = warp(hash(&[seed, P_CRUST_WARP]), p, &CRUST_WARP);
-                // How far inside the nearest cap, per mille of its radius.
-                let mut inside = -1000;
-                for &(c, r) in &caps {
-                    if dot(q, c) < cos((r + 200) * ONE / RADIUS_KM) {
-                        continue;
+            .map(|&p| old.plate_at(p) as u8)
+            .collect();
+        let all = vec![true; CELLS];
+        let old_at_edge: Vec<Option<OldKind>> = (0..CELLS)
+            .map(|c| {
+                across(&sphere, &old, &old_at, &all, c).map(|(other, normal, _)| {
+                    let (closing, slide) =
+                        old.motion(old_at[c] as usize, other, sphere.centre[c], normal);
+                    match classify(closing, slide, true, true, false) {
+                        Kind::Collision => OldKind::Suture,
+                        Kind::Rift => OldKind::FailedRift,
+                        _ => OldKind::OldFault,
                     }
-                    inside = inside.max((r - km_between(q, c)) * 1000 / r);
-                }
-                let fray = fbm3(hash(&[seed, P_CRUST]), q, &CRUST_OCTAVES) - 500;
-                500 + (inside.max(-1000) + fray * 3 / 2) / 4
+                })
             })
             .collect();
-        let crust_cut = quantile(&sphere, &crust, 1000 - CONTINENTAL_PER_MILLE);
-        let continental: Vec<bool> = crust.iter().map(|&c| c >= crust_cut).collect();
-        // 2. Plates.
-        let mut plates = Layout::draw(seed, P_PLATES, PLATES);
+        let old_suture: Vec<bool> = old_at_edge
+            .iter()
+            .map(|&k| k == Some(OldKind::Suture))
+            .collect();
+        // 2. The history: the supercontinent, its break-up, the drift.
+        let history = history::run(seed, settings, &sphere, &old_suture);
+        let continental: Vec<bool> = history.piece.iter().map(|&p| p != history::NONE).collect();
+        let crust = history.crust.clone();
+        let crust_cut = history.crust_cut;
+        let mut old_plate = vec![0_u8; CELLS];
+        let mut old_edge = vec![None; CELLS];
+        for c in 0..CELLS {
+            if continental[c] {
+                let src = history.source[c] as usize;
+                old_plate[c] = old_at[src];
+                old_edge[c] = old_at_edge[src];
+            } else {
+                old_plate[c] = old.plate_at(sphere.centre[c]) as u8;
+            }
+        }
+        // 3. Today's plates, from the history's last motions.
+        let plates = today_plates(seed, settings, &sphere, &history);
         let plate: Vec<u8> = sphere
             .centre
             .iter()
             .map(|&p| plates.plate_at(p) as u8)
             .collect();
-        let mut area = vec![0_i64; plates.plates.len()];
-        let mut cont_area = vec![0_i64; plates.plates.len()];
-        for c in 0..CELLS {
-            area[plate[c] as usize] += i64::from(sphere.area_km2[c]);
-            if continental[c] {
-                cont_area[plate[c] as usize] += i64::from(sphere.area_km2[c]);
-            }
-        }
-        for (k, p) in plates.plates.iter_mut().enumerate() {
-            let share = cont_area[k] * 1000 / area[k].max(1);
-            p.speed = p.speed * (1000 - CONTINENT_DRAG * share / 1000) / 1000;
-        }
-        let old = Layout::draw(seed, P_OLD, OLD_PLATES);
-        let old_plate: Vec<u8> = sphere
-            .centre
-            .iter()
-            .map(|&p| old.plate_at(p) as u8)
-            .collect();
-        // 3. Boundaries.
+        // 4. Boundaries.
         let mut edge = vec![None; CELLS];
-        let mut old_edge = vec![None; CELLS];
         for c in 0..CELLS {
             if let Some((other, normal, theirs_cont)) =
                 across(&sphere, &plates, &plate, &continental, c)
@@ -895,15 +908,6 @@ impl Planet {
                     other: other as u8,
                     rate: rate as i32,
                     normal,
-                });
-            }
-            if let Some((other, normal, _)) = across(&sphere, &old, &old_plate, &continental, c) {
-                let (closing, slide) =
-                    old.motion(old_plate[c] as usize, other, sphere.centre[c], normal);
-                old_edge[c] = Some(match classify(closing, slide, true, true, false) {
-                    Kind::Collision => OldKind::Suture,
-                    Kind::Rift => OldKind::FailedRift,
-                    _ => OldKind::OldFault,
                 });
             }
         }
@@ -937,8 +941,30 @@ impl Planet {
             .map(|c| (c, c as u32))
             .collect();
         let (old_d, old_l) = sphere.spread(&sutures, |_, b| continental[b], 400);
+        // The history's marks: which coasts trail (wide low plains), and
+        // the ranges its collisions, leading edges and accretions raised.
+        let coasts: Vec<(usize, u32)> = (0..CELLS)
+            .filter(|&c| continental[c])
+            .filter_map(|c| {
+                let k = history.margin[history.margin.len() - 1][c];
+                (k == history::Margin::Passive as u8 || k == history::Margin::Active as u8)
+                    .then_some((c, u32::from(k)))
+            })
+            .collect();
+        let (_, coast_kind) = sphere.spread(&coasts, |_, b| continental[b], 700);
+        let raised: Vec<(usize, u32)> = (0..CELLS)
+            .filter(|&c| continental[c] && range_of(&history, c).is_some())
+            .map(|c| (c, c as u32))
+            .collect();
+        let (range_d, range_l) = sphere.spread(&raised, |_, b| continental[b], 700);
         // 5. Hotspots.
-        let count = draw(seed, P_HOTSPOTS, 0, HOTSPOTS.0, HOTSPOTS.1) as u64;
+        let count = draw(
+            seed,
+            P_HOTSPOTS,
+            0,
+            settings.hotspots.0,
+            settings.hotspots.1,
+        ) as u64;
         let hotspots: Vec<Hotspot> = (0..count)
             .map(|k| {
                 let at = random_unit(seed, P_HOTSPOTS + 1, k);
@@ -971,7 +997,20 @@ impl Planet {
                 let rough = fbm3(relief_seed, p, &[(120_000, 2), (40_000, 1)]) - 500;
                 let mut e = if continental[c] {
                     let inland = i64::from(inland_d[c].min(600));
-                    -300 + inland * 900 / 600 + (crust[c] - crust_cut) * 6 + rough * 2
+                    let rise = if coast_kind[c] == history::Margin::Passive as u32 {
+                        550
+                    } else {
+                        900
+                    };
+                    let from = sphere.centre[history.source[c] as usize];
+                    let broad = fbm3(relief_seed ^ 0xb0, from, &[(300_000, 2), (120_000, 1)]) - 500;
+                    let mut range = 0;
+                    if range_d[c] != u32::MAX {
+                        let (height, width) =
+                            range_of(&history, range_l[c] as usize).expect("a range's source");
+                        range = height * bump(i64::from(range_d[c]), width) / 1000;
+                    }
+                    -300 + inland * rise / 600 + broad / 2 + rough + range
                 } else {
                     let r = i64::from(ridge_d[c].min(3_500));
                     -2_600 - 3_000 * ((r * 1_000_000 / 3_500).isqrt()) / 1000 + rough
@@ -1026,7 +1065,7 @@ impl Planet {
                 e
             })
             .collect();
-        let sea = quantile(&sphere, &elevation, 1000 - LAND_PER_MILLE);
+        let sea = quantile(&sphere, &elevation, 1000 - settings.land_per_mille);
         for e in &mut elevation {
             *e -= sea;
         }
@@ -1051,6 +1090,8 @@ impl Planet {
             elevation,
             lands: Vec::new(),
             ours: vec![false; CELLS],
+            settings: *settings,
+            history,
         };
         planet.lands = planet.landmasses();
         planet
@@ -2161,32 +2202,70 @@ mod tests {
         let b = Planet::new(3);
         assert_eq!(a.elevation, b.elevation);
         assert_eq!(a.plate, b.plate);
+        assert_eq!(a.history.owner, b.history.owner);
+        assert_eq!(a.history.orogeny_my, b.history.orogeny_my);
         let land: i64 = a.lands.iter().map(|l| l.area_km2).sum();
         assert!(
-            (land * 1000 / 510_000_000 - LAND_PER_MILLE).abs() < 20,
+            (land * 1000 / 510_000_000 - Settings::default().land_per_mille).abs() < 20,
             "{land}"
         );
     }
 
     #[test]
-    fn lands_are_several_continents_and_the_cold_stays_open() {
-        for seed in [5, 13] {
+    fn lands_come_from_the_history_large_but_not_gigantic() {
+        for seed in [11, 17] {
             let world = Planet::new(seed);
-            let biggest = world.lands[0].area_km2;
-            assert!(biggest <= 15_000_000, "seed {seed}: {biggest} km²");
+            let biggest = &world.lands[0];
+            assert!(
+                biggest.area_km2 <= 30_000_000,
+                "seed {seed}: {}",
+                biggest.area_km2
+            );
             let large = world
                 .lands
                 .iter()
                 .filter(|l| l.area_km2 > 1_000_000)
                 .count();
             assert!(large >= 8, "seed {seed}: {large} lands over 1 M km²");
-            let cold: i64 = world
-                .lands
+            let mut pieces: Vec<u8> = biggest
+                .cells
                 .iter()
-                .filter(|l| l.area_km2 > 1_000_000 && latitude(l.centre).abs() > 600)
-                .map(|l| l.area_km2)
+                .map(|&c| world.history.piece[c as usize])
+                .collect();
+            pieces.sort_unstable();
+            pieces.dedup();
+            assert!(
+                pieces.len() >= 3,
+                "seed {seed}: the largest land is one piece"
+            );
+            let cold: i64 = (0..CELLS)
+                .filter(|&c| world.elevation[c] > 0 && latitude(world.sphere.centre[c]).abs() > 600)
+                .map(|c| i64::from(world.sphere.area_km2[c]))
                 .sum();
-            assert_eq!(cold, 0, "seed {seed}");
+            assert!(cold <= 6_000_000, "seed {seed}: {cold} km² beyond 60°");
+            assert!(!world.history.welds.is_empty(), "seed {seed}: no collision");
         }
+    }
+
+    #[test]
+    fn the_history_breaks_the_supercontinent_and_keeps_its_records() {
+        let world = Planet::new(11);
+        let h = &world.history;
+        // At the start, one supercontinent of the settings' crust share.
+        let first = &h.owner[0];
+        let land: usize = first.iter().filter(|&&p| p != history::NONE).count();
+        let share = land as i64 * 1000 / CELLS as i64;
+        assert!((share - 220).abs() < 60, "{share}");
+        // Today, every piece of crust carries a record.
+        for c in 0..CELLS {
+            if world.continental[c] {
+                assert_ne!(h.source[c], u32::MAX);
+                assert!(h.age_my[c] > 0);
+            }
+        }
+        // Leading edges today are young mountains.
+        let last = h.margin.len() - 1;
+        assert!((0..CELLS).any(|c| h.margin[last][c] == history::Margin::Active as u8
+            && h.orogeny_my[c] == 0));
     }
 }

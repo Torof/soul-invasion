@@ -37,3 +37,7 @@ missing_docs = "warn"
 # 90 s more on a cold build (92 s -> 182-189 s).
 [profile.dev.package.sim]
 opt-level = 2
+# The planet's tests run its plate history over the whole grid: optimised
+# like sim's (a planet is born in ~1.5 s in release).
+[profile.dev.package.planet]
+opt-level = 2

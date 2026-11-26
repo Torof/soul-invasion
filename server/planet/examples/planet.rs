@@ -62,13 +62,23 @@ fn main() {
         PathBuf::from,
     );
     std::fs::create_dir_all(&out).expect("the output folder");
+    // The world's settings: `--settings file.ron`, else the defaults.
+    let args: Vec<String> = std::env::args().collect();
+    let settings: planet::Settings = args
+        .iter()
+        .position(|a| a == "--settings")
+        .and_then(|i| args.get(i + 1))
+        .map_or_else(planet::Settings::default, |path| {
+            let text = std::fs::read_to_string(path).expect("the settings file");
+            ron::from_str(&text).expect("settings in RON")
+        });
     let seeds: Vec<u64> = std::env::var("PLANET_SEEDS").ok().map_or_else(
         || (1..=6).collect(),
         |s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect(),
     );
     for &seed in &seeds {
         let start = Instant::now();
-        let mut world = Planet::new(seed);
+        let mut world = Planet::with(seed, &settings);
         let born = start.elapsed();
         let before: Vec<serde_json::Value> = world
             .lands
@@ -101,6 +111,7 @@ fn main() {
             let dir = out.join("couches");
             std::fs::create_dir_all(&dir).expect("the layers' folder");
             layers::planet_layers(&dir, &world, chosen);
+            layers::history_layers(&dir, &world, chosen);
             let continents = std::env::var("PLANET_CONTINENTS").ok();
             if let Some(z) = chosen
                 && continents
@@ -208,6 +219,8 @@ fn main() {
                     && planet::latitude(world.sphere.centre[c]).abs() > 600)
                 .map(|c| i64::from(world.sphere.area_km2[c]))
                 .sum::<i64>(),
+            "settings": settings,
+            "history": history_json(&world),
             "land_count_over_1M": world.lands.iter().filter(|l| l.area_km2 > 1_000_000).count(),
             "ours_on_grid_km2": ours.map(|l| l.area_km2),
             "site": site_json,
@@ -223,6 +236,43 @@ fn main() {
             site.is_some()
         );
     }
+}
+
+/// The history in numbers: pieces, welds, and what the largest lands are
+/// made of.
+fn history_json(world: &Planet) -> serde_json::Value {
+    let h = &world.history;
+    let fragments = h.fragments.iter().filter(|f| !f.terrane).count();
+    let terranes = h.fragments.len() - fragments;
+    let welded: Vec<serde_json::Value> = world
+        .lands
+        .iter()
+        .take(6)
+        .map(|l| {
+            let mut pieces: Vec<u8> = l
+                .cells
+                .iter()
+                .map(|&c| h.piece[c as usize])
+                .filter(|&p| p != planet::history::NONE)
+                .collect();
+            pieces.sort_unstable();
+            pieces.dedup();
+            let (f, t): (Vec<u8>, Vec<u8>) = pieces
+                .iter()
+                .partition(|&&p| !h.fragments[p as usize].terrane);
+            json!({"area_km2": l.area_km2, "span_km": l.span_km, "fragments": f.len(),
+                "terranes": t.len()})
+        })
+        .collect();
+    let mut groups: Vec<u8> = h.group.clone();
+    groups.sort_unstable();
+    groups.dedup();
+    json!({"fragments": fragments, "terranes": terranes, "groups_at_end": groups.len(),
+        "downwellings": h.downwellings.len(),
+        "welds": h.welds.iter().filter(|w| !w.3).map(|w| json!([w.0, w.1, w.2,
+            h.fragments[w.1 as usize].area_km2, h.fragments[w.2 as usize].area_km2])).collect::<Vec<_>>(),
+        "accretions": h.welds.iter().filter(|w| w.3).count(), "my": h.owner.len().saturating_sub(1) as i64
+            * world.settings.step_my, "largest_lands": welded})
 }
 
 fn write(path: &Path, w: usize, h: usize, pixels: &[Rgb]) {

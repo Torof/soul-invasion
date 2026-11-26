@@ -6,6 +6,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use planet::history::{self, History, Margin, NONE};
 use planet::{
     self, Edge, Kind, Line, OldKind, Planet, Setting, ZOOM_SIDE, Zoom, chamfer, open_sea,
 };
@@ -151,9 +152,7 @@ fn map_xy(v: planet::V3, lon0: i64) -> (i64, i64) {
 /// `p{seed}-donnees.js` for the cursor readout.
 pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
     let seed = world.seed;
-    let lon0 = zoom.map_or(0, |z| {
-        (planet::longitude(z.frame.centre) + 5).div_euclid(10) * 10
-    });
+    let lon0 = lon0_of(zoom);
     let map_xy = |v: planet::V3| map_xy(v, lon0);
     let mut cell = vec![0_usize; PW * PH];
     for y in 0..PH {
@@ -372,6 +371,66 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         site = Some((cx, cy));
     }
     l.write(dir, &format!("p{seed}-site.png"));
+    // The history's record, today: where each piece of crust came from,
+    // what its margins are, its last mountain building, its age.
+    let h = &world.history;
+    let mut l = Layer::new(PW, PH);
+    for (i, &c) in cell.iter().enumerate() {
+        let p = h.piece[c];
+        if p == NONE {
+            continue;
+        }
+        let edge = h.piece[right(i)] != p || h.piece[down(i)] != p;
+        l.px[i] = if edge {
+            [30, 30, 30, 255]
+        } else {
+            rgba(piece_colour(h, p), 255)
+        };
+    }
+    l.write(dir, &format!("p{seed}-fragments.png"));
+    let mut l = Layer::new(PW, PH);
+    let last = h.margin.len() - 1;
+    for (i, &c) in cell.iter().enumerate() {
+        if h.piece[c] == NONE {
+            continue;
+        }
+        let flags = h.margins[c];
+        let mut col = if flags & history::ACCRETED != 0 {
+            [255, 150, 40, 170]
+        } else if flags & history::SUTURE != 0 {
+            [180, 70, 230, 170]
+        } else if flags & history::RIFT != 0 {
+            [255, 225, 60, 110]
+        } else {
+            CLEAR
+        };
+        match h.margin[last][c] {
+            k if k == Margin::Active as u8 => col = [235, 35, 35, 255],
+            k if k == Margin::Passive as u8 => col = [90, 220, 120, 255],
+            k if k == Margin::Suture as u8 => col = [180, 70, 230, 255],
+            _ => {}
+        }
+        l.px[i] = col;
+    }
+    l.write(dir, &format!("p{seed}-marges.png"));
+    let mut l = Layer::new(PW, PH);
+    for (i, &c) in cell.iter().enumerate() {
+        let ago = h.orogeny_my[c];
+        if h.piece[c] == NONE || ago == history::NEVER {
+            continue;
+        }
+        l.px[i] = rgba(orogeny_colour(i64::from(ago)), 220);
+    }
+    l.write(dir, &format!("p{seed}-montagnes.png"));
+    let mut l = Layer::new(PW, PH);
+    for (i, &c) in cell.iter().enumerate() {
+        if h.piece[c] == NONE {
+            continue;
+        }
+        let t = (i64::from(h.age_my[c]) * 1000 / 3000).min(1000);
+        l.px[i] = rgba(mix([255, 245, 200], [90, 45, 20], t), 230);
+    }
+    l.write(dir, &format!("p{seed}-age.png"));
     // Data for the readout, on a 512 × 256 grid: a letter per cell for its
     // plate (upper case on land, lower case at sea), and its height in
     // hundreds of metres as one character from U+00A1.
@@ -393,6 +452,84 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         "window.DONNEES=window.DONNEES||{{}};window.DONNEES[\"p{seed}\"]={{lon0:{lon0},w:{gw},h:{gh},site:{site},plaques:\"{cells}\",alt:\"{heights}\"}};\n"
     );
     std::fs::write(dir.join(format!("p{seed}-donnees.js")), js).expect("the data");
+}
+
+/// The map's centre longitude, tenths: our continent's, to a degree.
+fn lon0_of(zoom: Option<&Zoom>) -> i64 {
+    zoom.map_or(0, |z| {
+        (planet::longitude(z.frame.centre) + 5).div_euclid(10) * 10
+    })
+}
+
+/// A piece's colour: fragments from a wheel, terranes brown.
+fn piece_colour(h: &History, p: u8) -> [u8; 3] {
+    if h.fragments[p as usize].terrane {
+        [150, 115, 85]
+    } else {
+        PLATE_COLOURS[p as usize % 16]
+    }
+}
+
+/// A last mountain building's colour: today red, 100 My orange, 200
+/// yellow, older sutures (300–700 My) violet.
+fn orogeny_colour(ago: i64) -> [u8; 3] {
+    match ago {
+        0..=100 => mix([235, 30, 30], [250, 150, 40], ago * 10),
+        101..=250 => mix([250, 150, 40], [245, 230, 90], (ago - 100) * 1000 / 150),
+        _ => mix(
+            [200, 140, 230],
+            [110, 60, 160],
+            ((ago - 250) * 1000 / 450).min(1000),
+        ),
+    }
+}
+
+/// The history view: the planet at each drift step, `h{seed}-{step}.png`
+/// (1,024 × 512, centred as the planet view): each piece in its colour,
+/// its margins (rift yellow, leading red, trailing green, weld violet),
+/// the upwelling (orange ring) and the downwellings (blue rings).
+pub fn history_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
+    let (w, hgt) = (PW / 2, PH / 2);
+    let lon0 = lon0_of(zoom);
+    let h = &world.history;
+    let mut cell = vec![0_usize; w * hgt];
+    for y in 0..hgt {
+        let lat = 900 - (2 * y as i64 + 1) * 1800 / (2 * hgt as i64);
+        for x in 0..w {
+            let lon = lon0 - 1800 + (2 * x as i64 + 1) * 3600 / (2 * w as i64);
+            cell[y * w + x] = world.sphere.cell_of(planet::from_lat_lon(lat, lon));
+        }
+    }
+    let at = |v: planet::V3| {
+        (
+            (planet::longitude(v) - lon0 + 1800).rem_euclid(3600) * w as i64 / 3600,
+            (900 - planet::latitude(v)) * hgt as i64 / 1800,
+        )
+    };
+    for (t, owner) in h.owner.iter().enumerate() {
+        let mut l = Layer::new(w, hgt);
+        for (i, &c) in cell.iter().enumerate() {
+            let p = owner[c];
+            l.px[i] = if p == NONE {
+                [22, 42, 82, 255]
+            } else {
+                match h.margin[t][c] {
+                    k if k == Margin::Rift as u8 => [255, 225, 60, 255],
+                    k if k == Margin::Active as u8 => [235, 35, 35, 255],
+                    k if k == Margin::Passive as u8 => [120, 235, 140, 255],
+                    k if k == Margin::Suture as u8 => [190, 70, 240, 255],
+                    _ => rgba(piece_colour(h, p), 255),
+                }
+            };
+        }
+        let (x, y) = at(h.upwelling);
+        l.ring(x, y, 12, 3, [255, 140, 20, 255]);
+        for &d in &h.downwellings {
+            let (x, y) = at(d);
+            l.ring(x, y, 12, 3, [60, 200, 255, 255]);
+        }
+        l.write(dir, &format!("h{}-{t:02}.png", world.seed));
+    }
 }
 
 /// A grid of the zoom's values read at the continent view's pixels,
