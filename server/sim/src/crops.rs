@@ -75,6 +75,30 @@ pub struct Crop {
     /// written (the tests' small crops).
     #[serde(skip)]
     pub richness_permille: Option<u32>,
+    /// How what a plant bears follows the soil's water under it
+    /// (`crops.ron`'s `soil_yield_permille`, [`soil_share`]), copied onto
+    /// each crop when the file is read: its share of its crop on the
+    /// driest soil and in the wettest, in thousandths. `None`: the same
+    /// on any soil.
+    #[serde(skip)]
+    pub soil_yield: Option<(u32, u32)>,
+}
+
+/// The share of its crop a plant of `crop`'s kind bears on soil whose
+/// water is `soil` ([`crate::soil`], thousandths), in thousandths: from
+/// the crop's driest share to its wettest, in a straight line. 1000 when
+/// the crop has no such share or the map no soil water (`None`): the
+/// worlds of older generators keep their food.
+#[must_use]
+pub fn soil_share(crop: &Crop, soil: Option<u16>) -> u64 {
+    match (crop.soil_yield, soil) {
+        (Some((dry, wet)), Some(soil)) => {
+            let soil = i64::from(soil.min(1000));
+            let (dry, wet) = (i64::from(dry), i64::from(wet));
+            u64::try_from(dry + (wet - dry) * soil / 1000).unwrap_or(0)
+        }
+        _ => 1000,
+    }
 }
 
 /// What a plant of `crop`'s kind bears in a lean, a usual and a rich
@@ -157,6 +181,10 @@ struct CropsFile {
     /// The world's richness, in thousandths ([`cycle_grams`]).
     #[serde(default)]
     richness_permille: Option<u32>,
+    /// What a plant bears on the driest and the wettest soil
+    /// ([`Crop::soil_yield`]).
+    #[serde(default)]
+    soil_yield_permille: Option<(u32, u32)>,
     crops: Vec<Crop>,
 }
 
@@ -165,10 +193,12 @@ struct CropsFile {
 pub fn parse(text: &str) -> Result<Vec<Crop>, ron::error::SpannedError> {
     ron::from_str::<CropsFile>(text).map(|file| {
         let richness = file.richness_permille;
+        let soil_yield = file.soil_yield_permille;
         file.crops
             .into_iter()
             .map(|crop| Crop {
                 richness_permille: richness,
+                soil_yield,
                 ..crop
             })
             .collect()
@@ -321,7 +351,8 @@ pub fn ripening(crop: &Crop, calendar: &Calendar, tick: Tick) -> bool {
 /// What a plant of `crop`'s kind standing at `at` offers at `tick`, before
 /// anything is picked (D45, D48): what it bears that year times how much
 /// of it is on the plant then ([`Ripen`]); the year whose crop it is.
-/// `None` out of its season.
+/// `None` out of its season. `soil`: the soil's water under it, if the
+/// map has it ([`soil_share`]).
 pub(crate) fn there(
     crop: &Crop,
     calendar: &Calendar,
@@ -329,12 +360,14 @@ pub(crate) fn there(
     seed: u64,
     frame: Frame,
     at: FinePos,
+    soil: Option<u16>,
 ) -> Option<(u64, u32)> {
-    there_keyed(crop, key_of(crop), calendar, tick, seed, frame, at)
+    there_keyed(crop, key_of(crop), calendar, tick, seed, frame, at, soil)
 }
 
 /// [`there`], the crop's kind's key ([`key_of`]) given rather than hashed
 /// again: the brains ask it for every plant they know at every choice.
+#[allow(clippy::too_many_arguments, reason = "the rule's inputs, each its own")]
 pub(crate) fn there_keyed(
     crop: &Crop,
     on_key: u64,
@@ -343,10 +376,13 @@ pub(crate) fn there_keyed(
     seed: u64,
     frame: Frame,
     at: FinePos,
+    soil: Option<u16>,
 ) -> Option<(u64, u32)> {
     let (year, share) = on_plant(crop, calendar, tick)?;
-    let grams =
-        u64::from(bears_keyed(crop, on_key, calendar, seed, frame, at, year)) * share / WHOLE;
+    let grams = u64::from(bears_keyed(
+        crop, on_key, calendar, seed, frame, at, year, soil,
+    )) * share
+        / WHOLE;
     Some((year, u32::try_from(grams).expect("at most what it bears")))
 }
 
@@ -409,12 +445,14 @@ pub(crate) fn bears(
     at: FinePos,
     year: u64,
 ) -> u32 {
-    bears_keyed(crop, key_of(crop), calendar, seed, frame, at, year)
+    bears_keyed(crop, key_of(crop), calendar, seed, frame, at, year, None)
 }
 
 /// What a plant of `crop`'s kind standing at `at` bears in `year` (a
 /// cycle of `calendar`), in grams, before anything is picked; the kind's
-/// key ([`key_of`]) given.
+/// key ([`key_of`]) given; on soil whose water is `soil`, if the map has
+/// it ([`soil_share`]).
+#[allow(clippy::too_many_arguments, reason = "the rule's inputs, each its own")]
 pub(crate) fn bears_keyed(
     crop: &Crop,
     on_key: u64,
@@ -423,6 +461,7 @@ pub(crate) fn bears_keyed(
     frame: Frame,
     at: FinePos,
     year: u64,
+    soil: Option<u16>,
 ) -> u32 {
     let tile = at.tile();
     let grams = cycle_grams(crop, calendar);
@@ -431,7 +470,8 @@ pub(crate) fn bears_keyed(
         Year::Usual => grams.1,
         Year::Rich => grams.2,
     };
-    u32::try_from(u64::from(base) * share_keyed(on_key, seed, frame, at) / 1000).unwrap_or(u32::MAX)
+    let share = share_keyed(on_key, seed, frame, at) * soil_share(crop, soil) / 1000;
+    u32::try_from(u64::from(base) * share / 1000).unwrap_or(u32::MAX)
 }
 
 /// The share of its kind's crop a plant of `crop`'s kind standing at
@@ -579,7 +619,9 @@ fn fruit_of(
         .iter()
         .filter(|crop| crop.on == kind)
         .filter_map(|crop| {
-            let (year, grams) = there(crop, calendar, tick, seed, frame, at)?;
+            // Without the soil (the fruit shown is what is left against a
+            // rich year's whole, both on the same soil).
+            let (year, grams) = there(crop, calendar, tick, seed, frame, at, None)?;
             let taken = picked
                 .and_then(|p| p.get(&(source, crop.gives.clone())))
                 .filter(|p| p.year == year)
@@ -736,7 +778,45 @@ pub(crate) mod tests {
             per_hour_g: 2000,
             ripen: Ripen::default(),
             richness_permille: None,
+            soil_yield: None,
         }
+    }
+
+    #[test]
+    fn what_a_plant_bears_follows_the_soil_water() {
+        let crop = Crop {
+            soil_yield: Some((400, 1400)),
+            ..hazel()
+        };
+        // No soil water (an older world) or no share: as before.
+        assert_eq!(soil_share(&crop, None), 1000);
+        assert_eq!(soil_share(&hazel(), Some(200)), 1000);
+        // A straight line from the driest soil to the wettest.
+        assert_eq!(soil_share(&crop, Some(0)), 400);
+        assert_eq!(soil_share(&crop, Some(600)), 1000);
+        assert_eq!(soil_share(&crop, Some(1000)), 1400);
+        let calendar = Calendar::default();
+        let frame = Frame::at((0, 0));
+        let at = FinePos::new(5500, 7300);
+        let key = key_of(&crop);
+        let dry = bears_keyed(&crop, key, &calendar, 3, frame, at, 2, Some(0));
+        let wet = bears_keyed(&crop, key, &calendar, 3, frame, at, 2, Some(1000));
+        let none = bears_keyed(&crop, key, &calendar, 3, frame, at, 2, None);
+        assert_eq!(none, bears(&hazel(), &calendar, 3, frame, at, 2));
+        assert!(dry < none && none < wet, "{dry} {none} {wet}");
+        // Bearing 400 against 1,400, to the gram's rounding.
+        assert!((i64::from(wet) * 400 / 1400 - i64::from(dry)).abs() <= 2);
+    }
+
+    #[test]
+    fn the_file_gives_its_soil_yield_to_every_crop() {
+        let crops = parse(
+            "(soil_yield_permille: Some((300, 1200)), crops: [(on: \"hazel\", gives: \"hazelnuts\", \
+             from: (autumn, 0), until: (winter, 0), grams: (1, 2, 3), years: (lean: 0, rich: 0), \
+             per_hour_g: 10)])",
+        )
+        .expect("parses");
+        assert_eq!(crops[0].soil_yield, Some((300, 1200)));
     }
 
     #[test]

@@ -3703,6 +3703,10 @@ impl Content {
             if let Some(richness) = crop.richness_permille {
                 at_most("crops.ron", "richness_permille", richness, MILLION)?;
             }
+            if let Some((dry, wet)) = crop.soil_yield {
+                at_most("crops.ron", "soil_yield_permille (dry)", dry, MILLION)?;
+                at_most("crops.ron", "soil_yield_permille (wet)", wet, MILLION)?;
+            }
             for (name, grams) in [
                 ("grams (lean)", crop.grams.0),
                 ("grams (usual)", crop.grams.1),

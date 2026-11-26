@@ -267,12 +267,11 @@ pub struct TreeAt<'a> {
 const MAX_RADIUS_M: f32 = 8.0;
 /// Tiles read around a chunk: patches starting there may reach into it.
 const MARGIN: i32 = 9;
-/// How far the soil's moisture looks for water, in tiles.
-const WATER_REACH: i32 = 9;
 /// Width of a kind's stands, and of the ground's breath, in tiles.
 const STAND_CELL: u32 = 14;
 const BREATH_CELL: u32 = 22;
-/// The valley's background wetness (the noise the brooks rise from).
+/// The valley's background wetness (the noise the brooks rise from), on
+/// maps without the soil's water ([`crate::soil`]).
 const WET_CELL: u32 = 32;
 /// Soft edge of a niche's ranges, in points of 0 to 100.
 const NICHE_SOFT: i32 = 12;
@@ -324,7 +323,7 @@ fn habitat_name(h: Habitat) -> Option<&'static str> {
 }
 
 /// The ground at `pos`, `distance` tiles from the nearest water (0 in it,
-/// `WATER_REACH + 1` for none near).
+/// [`crate::soil::REACH`] + 1 for none near).
 fn ground_at(map: &Map, seed: u64, pos: Pos, distance: i32) -> Ground {
     let terrain = map.get(pos);
     let mut places = Vec::new();
@@ -344,71 +343,28 @@ fn ground_at(map: &Map, seed: u64, pos: Pos, distance: i32) -> Ground {
         places.push("bank");
     }
     let trees = i32::from(map.trees(pos));
-    let (wx, wy) = Frame::at(map.origin()).tile(pos.x, pos.y);
-    let background = 20
-        + i32::try_from(noise(seed ^ purpose::WETNESS, WET_CELL, wx, wy)).expect("small") / 20
-        + trees / 6;
-    let near_water = if distance == 0 {
-        100
+    // On a map with the soil's water (generator 5), the soil's: the
+    // atlas's rain and water table, the water beside, the wood's shade.
+    let moisture = if let Some(soil) = crate::soil::of_tile(map, seed, pos, distance) {
+        i32::from(soil) / 10
     } else {
-        96 - distance * 11
+        let (wx, wy) = Frame::at(map.origin()).tile(pos.x, pos.y);
+        let background = 20
+            + i32::try_from(noise(seed ^ purpose::WETNESS, WET_CELL, wx, wy)).expect("small") / 20
+            + trees / 6;
+        let near_water = if distance == 0 {
+            100
+        } else {
+            96 - distance * 11
+        };
+        near_water.max(background).clamp(0, 100)
     };
     Ground {
         places,
-        moisture: near_water.max(background).clamp(0, 100),
+        moisture,
         light: 100 - trees,
         rooted,
     }
-}
-
-/// The distance to the nearest water (a river, a ford, a brook), in tiles
-/// (the larger of the two offsets), of every tile of the `span` × `span`
-/// square from `lo`, up to `WATER_REACH + 1`: two sweeps over the square
-/// and a margin of `WATER_REACH` around it, instead of a search per tile.
-fn water_distances(map: &Map, lo: Pos, span: i32) -> Vec<i32> {
-    let far = WATER_REACH + 1;
-    let wide = span + 2 * WATER_REACH;
-    let at = |x: i32, y: i32| usize::try_from(y * wide + x).expect("inside");
-    let mut d: Vec<i32> = (0..wide * wide)
-        .map(|i| {
-            let p = Pos::new(lo.x - WATER_REACH + i % wide, lo.y - WATER_REACH + i / wide);
-            if matches!(
-                map.get(p),
-                Some(Terrain::Water | Terrain::Ford | Terrain::Brook)
-            ) {
-                0
-            } else {
-                far
-            }
-        })
-        .collect();
-    for y in 0..wide {
-        for x in 0..wide {
-            let mut v = d[at(x, y)];
-            for (dx, dy) in [(-1, 0), (-1, -1), (0, -1), (1, -1)] {
-                let (nx, ny) = (x + dx, y + dy);
-                if (0..wide).contains(&nx) && (0..wide).contains(&ny) {
-                    v = v.min(d[at(nx, ny)] + 1);
-                }
-            }
-            d[at(x, y)] = v;
-        }
-    }
-    for y in (0..wide).rev() {
-        for x in (0..wide).rev() {
-            let mut v = d[at(x, y)];
-            for (dx, dy) in [(1, 0), (1, 1), (0, 1), (-1, 1)] {
-                let (nx, ny) = (x + dx, y + dy);
-                if (0..wide).contains(&nx) && (0..wide).contains(&ny) {
-                    v = v.min(d[at(nx, ny)] + 1);
-                }
-            }
-            d[at(x, y)] = v;
-        }
-    }
-    (0..span * span)
-        .map(|i| d[at(i % span + WATER_REACH, i / span + WATER_REACH)].min(far))
-        .collect()
 }
 
 /// How well `kind` grows on `ground`, in thousandths: its best place's
@@ -461,7 +417,7 @@ pub fn plants_in(
     // The ground of every tile read, worked out once.
     let span = size + 2 * MARGIN + 2 * (MAX_RADIUS_M as i32 + 1);
     let lo = Pos::new(origin.x - (span - size) / 2, origin.y - (span - size) / 2);
-    let distances = water_distances(map, lo, span);
+    let distances = crate::soil::distances(map, lo, span);
     let grounds: Vec<Ground> = (0..span * span)
         .map(|i| {
             let d = distances[usize::try_from(i).expect("inside")];

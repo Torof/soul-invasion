@@ -279,6 +279,13 @@ pub const PLAN_GENERATOR: u32 = 3;
 /// only when asked (`--world vivarium`).
 pub const VIVARIUM_GENERATOR: u32 = 4;
 
+/// The vivarium's generator with the soil's water (lot 5, step 1, 26
+/// November 2026): version 4's world tile for tile, its trees included,
+/// but the soil's moisture read from the atlas's rain and water table
+/// ([`crate::soil`]) instead of a noise, so the plants that grow and what
+/// every tree and plant bears follow the water. Never the default.
+pub const SOIL_GENERATOR: u32 = 5;
+
 /// A world saved before versions were stored was made by the first.
 fn first_generator() -> u32 {
     FIRST_GENERATOR
@@ -302,7 +309,7 @@ pub enum MapSpecError {
         height: u32,
     },
     /// No generator of this build.
-    #[error("generator version {0} is unknown to this build (1 to {VIVARIUM_GENERATOR})")]
+    #[error("generator version {0} is unknown to this build (1 to {SOIL_GENERATOR})")]
     Generator(u32),
     /// A window of the atlas is square, the vivarium's of one size.
     #[error("generator version {generator} makes a map of {side} tiles a side only")]
@@ -328,13 +335,13 @@ impl MapSpec {
             return Err(MapSpecError::Size { width, height });
         }
         if let MapSpec::Valley { generator, .. } = *self {
-            if !(FIRST_GENERATOR..=VIVARIUM_GENERATOR).contains(&generator) {
+            if !(FIRST_GENERATOR..=SOIL_GENERATOR).contains(&generator) {
                 return Err(MapSpecError::Generator(generator));
             }
             let side = match generator {
                 PLAN_GENERATOR => Some(0),
                 // A vivarium's zone, by its side (`plan::ZONES`).
-                VIVARIUM_GENERATOR => Some(
+                VIVARIUM_GENERATOR | SOIL_GENERATOR => Some(
                     crate::plan::Zone::of_side(width)
                         .map_or(crate::plan::ZONE_2.side(), |z| z.side()),
                 ),
@@ -475,11 +482,11 @@ impl Map {
             assert_eq!(width, height, "a window of the atlas is square");
             return Self::on_window(Window::atlas(seed, width), seed);
         }
-        if generator == VIVARIUM_GENERATOR {
+        if generator == VIVARIUM_GENERATOR || generator == SOIL_GENERATOR {
             let zone = crate::plan::Zone::of_side(width)
                 .filter(|_| width == height)
                 .expect("a vivarium's zone, by its side");
-            return Self::on_window_by(zone.window(seed), seed, VIVARIUM_GENERATOR);
+            return Self::on_window_by(zone.window(seed), seed, generator);
         }
         let cliff_rows = (height / 8).max(2);
         let waters = {
@@ -536,7 +543,7 @@ impl Map {
 
     /// [`Map::on_window`] made by `generator`, which must give back the
     /// same window from `seed` and the map's side.
-    pub(crate) fn on_window_by(window: Window, seed: u64, generator: u32) -> Self {
+    pub fn on_window_by(window: Window, seed: u64, generator: u32) -> Self {
         let side = window.side();
         let window = std::sync::Arc::new(window);
         let waters = Waters::on_window(std::sync::Arc::clone(&window));
@@ -680,6 +687,36 @@ impl Map {
     #[must_use]
     pub fn has_geology(&self) -> bool {
         matches!(self.spec, MapSpec::Valley { .. }) && self.generator() >= 2
+    }
+
+    /// Does the soil's moisture follow the atlas's water
+    /// ([`crate::soil`])? From the generator's version 5 on, on a window
+    /// of the atlas.
+    #[must_use]
+    pub fn has_soil_water(&self) -> bool {
+        self.generator() >= SOIL_GENERATOR && self.relief_window().is_some()
+    }
+
+    /// The atlas's water at `pos` ([`crate::plan::Window::atlas_water`]):
+    /// the yearly rain in millimetres and the water table's depth in
+    /// centimetres; `None` on a map without soil water
+    /// ([`Map::has_soil_water`]) and off the map.
+    #[must_use]
+    pub fn atlas_water(&self, pos: Pos) -> Option<(i64, i64)> {
+        let (x, y) = self.inside(pos)?;
+        if self.generator() < SOIL_GENERATOR {
+            return None;
+        }
+        self.relief_window()
+            .map(|w| w.atlas_water(i64::from(x), i64::from(y)))
+    }
+
+    /// The atlas's window under the map, if it is cut from one.
+    fn relief_window(&self) -> Option<&Window> {
+        match &self.ground {
+            Made::Valley(land) => land.relief(),
+            Made::Filled(_) => None,
+        }
     }
 
     /// Columns.

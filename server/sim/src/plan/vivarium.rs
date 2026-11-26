@@ -180,6 +180,58 @@ mod tests {
         MAP.get_or_init(|| Map::on_window_by(window().clone(), VIVARIUM_SEED, VIVARIUM_GENERATOR))
     }
 
+    /// The soil's water (generator 5) reads the atlas's rain and water
+    /// table: at a continent cell's centre, that cell's own; between two
+    /// centres, between their values; on the same window, the same map
+    /// as version 4 tile for tile, and soil water only on version 5.
+    #[test]
+    fn the_soil_water_reads_the_atlas_cells_around() {
+        let continent = crate::plan::net::continent();
+        let w = window();
+        let (ox, oy) = w.tile_origin();
+        let cell = super::super::CELL_M;
+        // The first continent cell centre inside the window.
+        let first = |o: i32| (i64::from(o) - cell / 2).div_euclid(cell) * cell + cell / 2 + cell;
+        let (cx, cy) = (first(ox), first(oy));
+        let (x, y) = (cx - i64::from(ox), cy - i64::from(oy));
+        assert!(
+            x < i64::from(w.side()) && y < i64::from(w.side()),
+            "a centre inside"
+        );
+        let i = continent.grid.index(
+            i32::try_from(cx / cell).expect("small"),
+            i32::try_from(cy / cell).expect("small"),
+        );
+        let (rain, table) = w.atlas_water(x, y);
+        assert_eq!(rain, i64::from(continent.rain[i]));
+        assert_eq!(
+            table,
+            i64::from(continent.water_table[i]).clamp(0, super::super::window::TABLE_CAP_CM)
+        );
+        // Halfway to the next centre east: between the two.
+        let j = continent.grid.index(
+            i32::try_from(cx / cell + 1).expect("small"),
+            i32::try_from(cy / cell).expect("small"),
+        );
+        let (mid, _) = w.atlas_water(x + cell / 2, y);
+        let (a, b) = (i64::from(continent.rain[i]), i64::from(continent.rain[j]));
+        assert!(
+            mid >= a.min(b) && mid <= a.max(b),
+            "{mid} between {a} and {b}"
+        );
+        // Version 5: the same tiles, and the soil's water.
+        let soiled = Map::on_window_by(w.clone(), VIVARIUM_SEED, crate::map::SOIL_GENERATOR);
+        let at = Pos::new(
+            i32::try_from(x).expect("small"),
+            i32::try_from(y).expect("small"),
+        );
+        assert_eq!(soiled.get(at), map().get(at));
+        assert!(map().atlas_water(at).is_none());
+        assert!(crate::soil::soil_water(map(), VIVARIUM_SEED, at).is_none());
+        let soil = crate::soil::soil_water(&soiled, VIVARIUM_SEED, at).expect("soil water");
+        assert!(soil <= 1000);
+    }
+
     fn pos((x, y): (u32, u32)) -> Pos {
         Pos::new(
             i32::try_from(x).expect("small"),

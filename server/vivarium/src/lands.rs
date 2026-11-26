@@ -114,6 +114,7 @@ const LAND_SOURCES: &[(&str, &[u8])] = &[
 /// by.
 const GROUND_SOURCES: &[(&str, &[u8])] = &[
     ("flora.rs", include_bytes!("../../sim/src/flora.rs")),
+    ("soil.rs", include_bytes!("../../sim/src/soil.rs")),
     ("ground.rs", include_bytes!("../../sim/src/ground.rs")),
     ("ahead.rs", include_bytes!("../../sim/src/ahead.rs")),
 ];

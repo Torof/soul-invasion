@@ -90,6 +90,9 @@ struct Held {
     /// The rock under each tile of a chunk (`geology`), on a map that has
     /// it: never changed by men, so held by the chunk alone.
     rocks: Lru<ChunkPos, Arc<[Rock]>>,
+    /// The soil's water under each tile of a chunk ([`crate::soil`]), on
+    /// a map that has it: as the rocks, never changed by men.
+    soils: Lru<ChunkPos, Arc<[u16]>>,
     /// The trees and plants of a chunk bearing a crop (D45), placed from
     /// the map, the seed, the content and the trees around: as the rocks,
     /// held by chunk alone, for no man changes a tree yet. Felling, when
@@ -505,6 +508,7 @@ impl Ground {
                 links: Lru::new(capacity),
                 versions: BTreeMap::new(),
                 rocks: Lru::new(capacity),
+                soils: Lru::new(capacity),
                 bearers: Lru::new(capacity),
                 bearers_placed: 0,
                 trees_placed: 0,
@@ -654,6 +658,7 @@ impl Ground {
         held.trees.widen(chunks);
         held.links.widen(chunks);
         held.rocks.widen(chunks);
+        held.soils.widen(chunks);
         held.bearers.widen(chunks);
     }
 
@@ -685,6 +690,22 @@ impl Ground {
         let rocks: Arc<[Rock]> = geology.rocks_in(seed, chunk, map.origin()).into();
         self.lock().rocks.insert(chunk, Arc::clone(&rocks));
         Some(rocks)
+    }
+
+    /// The soil's water under each tile of `chunk`, row by row
+    /// ([`crate::soil::soil_in`]): held, or else worked out now and held.
+    /// `None` on a map without soil water and for a chunk off the map.
+    #[must_use]
+    pub fn soils_in(&self, map: &Map, seed: u64, chunk: ChunkPos) -> Option<Arc<[u16]>> {
+        if !map.has_soil_water() || !map.has_chunk(chunk) {
+            return None;
+        }
+        if let Some(soils) = self.lock().soils.get(&chunk) {
+            return Some(Arc::clone(soils));
+        }
+        let soils: Arc<[u16]> = crate::soil::soil_in(map, seed, chunk)?.into();
+        self.lock().soils.insert(chunk, Arc::clone(&soils));
+        Some(soils)
     }
 
     /// Are `chunk`'s trees held? Does not count as a use.

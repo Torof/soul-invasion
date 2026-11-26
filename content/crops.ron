@@ -43,8 +43,16 @@
 //          on 25 November 2026 after the richness series (7.3, 1.5, 1.0,
 //          0.7): at 1.0 a tribe barely holds, hungry at times, walking
 //          near a kilometre and moving camp; at 0.7 it collapses.
+// soil_yield_permille: (400, 1400) — what every tree and plant bears
+//          follows the soil's water under it (lot 5, step 1, 26 November
+//          2026; D30 placeholder): its share of its crop on the driest
+//          soil (0) and in the wettest (1,000), in thousandths, in a
+//          straight line between; 1,000 at a soil of 600. Read only on
+//          worlds whose soil has its water (generator 5, `sim::soil`):
+//          older worlds bear as before.
 (
     richness_permille: Some(1000),
+    soil_yield_permille: Some((400, 1400)),
     crops: [
         // The winter's store: 3 to 10 kg a tree, years of plenty and
         // lean years.

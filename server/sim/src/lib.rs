@@ -34,6 +34,7 @@ pub mod memory;
 pub mod open_ground;
 pub mod plan;
 pub mod relief;
+pub mod soil;
 pub mod time;
 pub mod trees;
 pub mod woods;
@@ -1985,8 +1986,16 @@ impl World {
         let key = self.crop_keys.get(crop).copied();
         let crop = &self.crops[crop];
         let key = key.unwrap_or_else(|| crops::key_of(crop));
-        let (year, grams) =
-            crops::there_keyed(crop, key, &self.calendar, self.tick, self.seed(), frame, at)?;
+        let (year, grams) = crops::there_keyed(
+            crop,
+            key,
+            &self.calendar,
+            self.tick,
+            self.seed(),
+            frame,
+            at,
+            self.soil_under(at),
+        )?;
         // Looked up without making the key's text: the picks of one
         // source sit together, few of them.
         let taken = changes
@@ -2026,7 +2035,24 @@ impl World {
             frame,
             bearer.at,
             year,
+            self.soil_under(bearer.at),
         ))
+    }
+
+    /// The soil's water under `at`, in thousandths ([`soil`]), from the
+    /// chunks held ([`ground::Ground::soils_in`]); `None` on a map
+    /// without it, at no cost there.
+    #[must_use]
+    pub fn soil_under(&self, at: FinePos) -> Option<u16> {
+        if !self.map.has_soil_water() {
+            return None;
+        }
+        let tile = at.tile();
+        let chunk = tile.chunk();
+        let soils = self.ground_cache.soils_in(&self.map, self.seed(), chunk)?;
+        let size = i32::try_from(CHUNK_SIZE).expect("small chunk");
+        let i = tile.y.rem_euclid(size) * size + tile.x.rem_euclid(size);
+        soils.get(usize::try_from(i).ok()?).copied()
     }
 
     /// The fruit `tree`, of `chunk`, shows now (D48, [`crops::fruit_on`]).

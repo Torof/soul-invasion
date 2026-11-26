@@ -628,6 +628,81 @@ pub struct Window {
     /// reaches it.
     by_chunk: Vec<Vec<u32>>,
     camp: (u32, u32),
+    /// The atlas's water under the window ([`Window::atlas_water`]).
+    water: AtlasWater,
+}
+
+/// The atlas's water under a window (generator 5, the soil water: lot 5,
+/// step 1, 26 November 2026): the yearly rain and the water table's depth
+/// of the continent's cells under the window and one around, a few cells
+/// a side (2 km each), read at a tile by [`Window::atlas_water`].
+#[derive(Debug, Clone)]
+struct AtlasWater {
+    /// The continent cell at the grid's north-west corner.
+    corner: (i64, i64),
+    /// Cells a side.
+    side: i64,
+    /// Per cell, row by row: the yearly rain, in millimetres.
+    rain: Vec<i64>,
+    /// Per cell: the water table's depth, in centimetres, at most
+    /// [`TABLE_CAP_CM`].
+    table: Vec<i64>,
+}
+
+/// The water table's depth past which every depth reads the same: far
+/// below any root, and a deep cell beside a lake would otherwise draw the
+/// lake's shallow table down over the whole 2 km between them.
+pub const TABLE_CAP_CM: i64 = 2000;
+
+impl AtlasWater {
+    /// The continent's cells under the tiles `lo..hi` (continent tiles,
+    /// each way) and one around.
+    fn cut(continent: &Continent, lo: (i64, i64), hi: (i64, i64)) -> Self {
+        let cell = super::CELL_M;
+        let first = |t: i64| (t - cell / 2).div_euclid(cell);
+        let corner = (first(lo.0), first(lo.1));
+        let side = (first(hi.0 - 1) + 2 - corner.0).max(first(hi.1 - 1) + 2 - corner.1);
+        let last = i64::try_from(continent.grid.side).expect("small") - 1;
+        let (mut rain, mut table) = (Vec::new(), Vec::new());
+        for y in 0..side {
+            for x in 0..side {
+                // A cell off the continent reads its nearest.
+                let cx = i32::try_from((corner.0 + x).clamp(0, last)).expect("small");
+                let cy = i32::try_from((corner.1 + y).clamp(0, last)).expect("small");
+                let i = continent.grid.index(cx, cy);
+                rain.push(i64::from(continent.rain[i]));
+                table.push(i64::from(continent.water_table[i]).clamp(0, TABLE_CAP_CM));
+            }
+        }
+        Self {
+            corner,
+            side,
+            rain,
+            table,
+        }
+    }
+
+    /// The rain (mm a year) and the water table's depth (cm) at the
+    /// continent's tile `t`, interpolated between the centres of the four
+    /// cells around it.
+    fn at(&self, t: (i64, i64)) -> (i64, i64) {
+        let cell = super::CELL_M;
+        let local = |t: i64, corner: i64| {
+            let u = t - cell / 2 - corner * cell;
+            let c = u.div_euclid(cell).clamp(0, self.side - 2);
+            (c, (u - c * cell).clamp(0, cell))
+        };
+        let ((x, fx), (y, fy)) = (local(t.0, self.corner.0), local(t.1, self.corner.1));
+        let read = |grid: &[i64]| {
+            let v = |dx: i64, dy: i64| {
+                grid[usize::try_from((y + dy) * self.side + x + dx).expect("inside")]
+            };
+            let top = v(0, 0) * (cell - fx) + v(1, 0) * fx;
+            let bottom = v(0, 1) * (cell - fx) + v(1, 1) * fx;
+            (top * (cell - fy) + bottom * fy) / (cell * cell)
+        };
+        (read(&self.rain), read(&self.table))
+    }
 }
 
 impl Window {
@@ -1204,6 +1279,14 @@ impl Window {
             stretches,
             by_chunk,
             camp: (side / 2, side / 2),
+            water: AtlasWater::cut(
+                continent,
+                (origin.0 * CELL, origin.1 * CELL),
+                (
+                    origin.0 * CELL + i64::from(side),
+                    origin.1 * CELL + i64::from(side),
+                ),
+            ),
         };
         window.camp = window.find_camp();
         window
@@ -1435,6 +1518,15 @@ impl Window {
     pub fn height_dm(&self, x: i64, y: i64) -> i16 {
         let dm = (self.height_cm(x, y) + 5).div_euclid(10);
         i16::try_from(dm.clamp(i64::from(i16::MIN), i64::from(i16::MAX))).expect("clamped")
+    }
+
+    /// The atlas's water at tile `(x, y)` (generator 5, the soil water):
+    /// the yearly rain in millimetres and the water table's depth in
+    /// centimetres (at most [`TABLE_CAP_CM`]), interpolated between the
+    /// centres of the continent's cells around it, 2 km apart.
+    #[must_use]
+    pub fn atlas_water(&self, x: i64, y: i64) -> (i64, i64) {
+        self.water.at(self.world(x, y))
     }
 
     /// Is tile `(x, y)` in a forest's biome? Its border with the open
