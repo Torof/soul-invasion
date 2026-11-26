@@ -898,6 +898,13 @@
     // giver_kin_only_fat_percent: 25 — under a quarter, it feeds its own
     //                        young only: nobody starves for a stranger's
     //                        child.
+    // giver_starving_fat_percent: 15 — under this, a starving giver eats
+    //                        first and gives nothing, even to its own (the
+    //                        project lead, 26 November 2026: his hunger bar
+    //                        of 25 November kept, « mourir de faim et avoir
+    //                        de la nourriture, ça personne ne le fera
+    //                        jamais », the floor lowered to 15 for the
+    //                        giver). Absent: no floor.
     pooling: (
         fed_until_years: 8,
         young_first_until_years: 12,
@@ -913,6 +920,7 @@
         giver_care: true,
         giver_short_fat_percent: 50,
         giver_kin_only_fat_percent: 25,
+        giver_starving_fat_percent: 15,
     ),
     // The gestures of the hands (D57; the project lead, 24 November 2026:
     // "C'est parfait"): pick up, cut with what is in hand, fold. No

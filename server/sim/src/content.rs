@@ -617,6 +617,11 @@ pub struct Pooling {
     /// its own young only (`giver_care`).
     #[serde(default)]
     pub giver_kin_only_fat_percent: u32,
+    /// Under this per cent of its fat reserve left, a starving giver eats
+    /// first and feeds no young one, even its own (`giver_care`; the
+    /// project lead's hunger bar, 26 November 2026). Absent: no floor.
+    #[serde(default)]
+    pub giver_starving_fat_percent: u32,
 }
 
 /// The default width of a heap of the hearth's reserve: one journée.
@@ -656,6 +661,7 @@ impl Pooling {
             giver_care: false,
             giver_short_fat_percent: 50,
             giver_kin_only_fat_percent: 25,
+            giver_starving_fat_percent: 15,
         }
     }
 
@@ -731,9 +737,10 @@ impl Pooling {
         }
         if self.giver_short_fat_percent > 100
             || self.giver_kin_only_fat_percent > self.giver_short_fat_percent
+            || self.giver_starving_fat_percent > self.giver_kin_only_fat_percent
         {
             return Err(ContentError::Needs(
-                "pooling: giver_kin_only_fat_percent at most giver_short_fat_percent, at most 100",
+                "pooling: giver_starving_fat_percent at most giver_kin_only_fat_percent, at most giver_short_fat_percent, at most 100",
             ));
         }
         if self.on()

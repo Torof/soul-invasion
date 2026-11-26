@@ -564,6 +564,12 @@ pub(super) fn feed_young(
         return None;
     }
     let short = pooling.giver_care && short_giver(rules, body);
+    // Starving, it eats first and gives nothing, even to its own (the
+    // project lead, 26 November 2026: his hunger bar kept, its floor at
+    // `giver_starving_fat_percent` for the giver).
+    if short && fat_left_percent(rules, body) < u64::from(pooling.giver_starving_fat_percent) {
+        return None;
+    }
     let gives = |young: &Body| !short || cares_enough(world, rules, (body, mind.care), young, seed);
     let camp = camp_of(rules, mind.ways.home);
     let Some((young, at)) = hungry_young_seen(world, rules, reserves, (id, here, camp), gives)
@@ -661,7 +667,8 @@ fn own_young(world: &World, body: &Body, young: &Body) -> bool {
 /// (`own_care_percent`, at most certain) for a child or grandchild of
 /// its own, drawn once a journée for the two of them so that it does not
 /// change its mind each thought; under `giver_kin_only_fat_percent` of
-/// its fat reserve left, its own only.
+/// its fat reserve left, its own only; under `giver_starving_fat_percent`
+/// it is never asked ([`feed_young`] has it eat first).
 fn cares_enough(
     world: &World,
     rules: &Content,
@@ -1933,10 +1940,11 @@ mod tests {
         }
     }
 
-    /// Whether a grown one of `care`, `hunger` points and a tenth of its
-    /// fat left if `thin`, gives a mouthful to a hungry child, a stranger
-    /// (`kin` 0), its child (1) or its grandchild (2), with `giver_care`.
-    fn gives_to(care: u8, kin: u8, hunger: u32, thin: bool) -> bool {
+    /// Whether a grown one of `care`, `hunger` points and `fat_left` per
+    /// cent of its fat reserve gives a mouthful to a hungry child, a
+    /// stranger (`kin` 0), its child (1) or its grandchild (2), with
+    /// `giver_care`.
+    fn gives_to(care: u8, kin: u8, hunger: u32, fat_left: u64) -> bool {
         let mut rules = pooled();
         rules.needs.pooling.young_seen = true;
         rules.needs.pooling.giver_care = true;
@@ -1958,9 +1966,9 @@ mod tests {
         world.step(&rules, &mut Vec::new());
         hungry(&mut world, &rules, child, 70);
         hungry(&mut world, &rules, grown, hunger);
-        if thin {
+        if fat_left < 100 {
             let b = world.bodies.iter_mut().find(|b| b.id() == grown).unwrap();
-            b.condition.deficit_j = b.condition.reserve_j(&rules.needs) * 9 / 10;
+            b.condition.deficit_j = b.condition.reserve_j(&rules.needs) * (100 - fat_left) / 100;
         }
         let body = world.body(grown).unwrap();
         let mind = brains.minds.get_mut(&grown).unwrap();
@@ -1981,25 +1989,29 @@ mod tests {
         // The project lead, 26 November 2026: "an old man who goes
         // without for his grandchildren is a story; an old man who ruins
         // himself for any child of the camp is a defect."
-        // (care, kin, hunger, thin, gives)
+        // (care, kin, hunger, fat left %, gives)
         let cases = [
             // Not short: it gives, whatever its care.
-            (0, 0, 0, false, true),
+            (0, 0, 0, 100, true),
             // Hungry: its care decides for a stranger's child.
-            (0, 0, 60, false, false),
-            (100, 0, 60, false, true),
+            (0, 0, 60, 100, false),
+            (100, 0, 60, 100, true),
             // Under a quarter of its fat: never for a stranger's child.
-            (100, 0, 60, true, false),
-            // Its own: its care doubled, even starving.
-            (50, 1, 60, true, true),
-            (50, 2, 60, true, true),
-            (0, 1, 60, true, false),
+            (100, 0, 60, 20, false),
+            // Its own: its care doubled.
+            (50, 1, 60, 20, true),
+            (50, 2, 60, 20, true),
+            (0, 1, 60, 20, false),
+            // Starving, under 15 %: it eats first, even its own waits (the
+            // lead's hunger bar: "on mange la nourriture").
+            (100, 1, 60, 10, false),
+            (100, 2, 60, 10, false),
         ];
-        for (care, kin, hunger, thin, gives) in cases {
+        for (care, kin, hunger, fat_left, gives) in cases {
             assert_eq!(
-                gives_to(care, kin, hunger, thin),
+                gives_to(care, kin, hunger, fat_left),
                 gives,
-                "care {care}, kin {kin}, hunger {hunger}, thin {thin}"
+                "care {care}, kin {kin}, hunger {hunger}, fat left {fat_left}"
             );
         }
     }
