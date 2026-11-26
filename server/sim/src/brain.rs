@@ -4624,6 +4624,7 @@ impl Brains {
         // Who is gone, and who is due: the due noted on the way, by their
         // ids, rather than swept again.
         let spread = wake_spread(world);
+        let wake_asleep = rules.needs.thought.wake_asleep;
         let mut due: Vec<BodyId> = Vec::new();
         let (memory, gone_wills) = (&mut self.memory, &mut self.gone_wills);
         // Bodies and minds both by id: one walk through each.
@@ -4646,7 +4647,16 @@ impl Brains {
                 // A gauge past a threshold: in its own tick too, as the
                 // dawn (a tribe born at once grows hungry at once).
                 mind.past = past;
-                mind.wake(id, now, spread);
+                if wake_asleep || !(past.3 && (!past.1 || past.4)) {
+                    mind.wake(id, now, spread);
+                } else {
+                    // Falling asleep, or a gauge moving in its sleep: no
+                    // thought (the audit of wakes, step 2). It drops what
+                    // it was about, as its thought asleep did.
+                    mind.doing = Doing::Nothing;
+                    mind.stopped = false;
+                    mind.blocked = None;
+                }
             }
             if mind.wake_at.is_some_and(|tick| now >= tick) {
                 mind.due = true;
@@ -7188,6 +7198,16 @@ impl Brains {
                     let now = world.tick().0;
                     let spread = wake_spread(world);
                     for (id, mind) in &mut self.minds {
+                        // A sleeper does not hear the dawn nor the dusk
+                        // (the audit of wakes, step 2): it thinks when it
+                        // wakes, its sleep done.
+                        if !thought.wake_asleep
+                            && world
+                                .body(*id)
+                                .is_some_and(|b| sleeps_on(b, rules, mind.past.2))
+                        {
+                            continue;
+                        }
                         mind.wake(*id, now, spread);
                     }
                     continue;
@@ -7233,16 +7253,30 @@ impl Brains {
                 continue;
             }
             if let Some(mind) = self.minds.get_mut(&body) {
-                mind.due = true;
-                if matches!(
-                    event,
-                    Event::BodyStopped { .. }
-                        | Event::BodyBlocked { .. }
-                        | Event::MoveRefused { .. }
-                ) {
+                let heard = thought.wake_asleep
+                    || !world
+                        .body(body)
+                        .is_some_and(|b| sleeps_on(b, rules, mind.past.2));
+                if heard {
+                    mind.due = true;
+                } else {
+                    // Asleep, it hears nothing (step 2): fallen asleep
+                    // on its way or at its work, it drops what it was
+                    // about, as its thought asleep did.
+                    mind.doing = Doing::Nothing;
+                }
+                if heard
+                    && matches!(
+                        event,
+                        Event::BodyStopped { .. }
+                            | Event::BodyBlocked { .. }
+                            | Event::MoveRefused { .. }
+                    )
+                {
                     mind.stopped = true;
                 }
                 if let Event::BodyBlocked { reason, .. } | Event::MoveRefused { reason, .. } = event
+                    && heard
                 {
                     mind.blocked = Some(*reason);
                 }
@@ -7301,6 +7335,14 @@ fn pasts_of(body: &Body, rules: &Content, was_hungry: bool) -> (bool, bool, bool
         c.asleep,
         c.asleep && c.fatigue.points() >= COLLAPSED,
     )
+}
+
+/// Whether a body asleep sleeps on whatever it would think (D45): asleep,
+/// and not parched, or parched but collapsed of fatigue. Such a body's
+/// thought only lays down what it was about.
+fn sleeps_on(body: &Body, rules: &Content, was_hungry: bool) -> bool {
+    let (_, parched, _, asleep, collapsed) = pasts_of(body, rules, was_hungry);
+    asleep && (!parched || collapsed)
 }
 
 /// Can a body stand on `pos`?

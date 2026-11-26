@@ -1745,6 +1745,13 @@ pub struct Thought {
     /// not; it has just decided, and falling asleep has its own threshold.
     #[serde(default = "yes")]
     pub wake_on_interrupt: bool,
+    /// Whether a sleeper thinks when it falls asleep, at dawn and dusk,
+    /// and at a gauge past a threshold or an event while it sleeps on
+    /// (the audit of wakes, step 2). True, or absent: it does, the rule
+    /// before. False: it does not; it thinks when it wakes, or when it is
+    /// parched and not collapsed (it gets up to drink, D45).
+    #[serde(default = "yes")]
+    pub wake_asleep: bool,
 }
 
 /// True: a switch whose absence keeps the rule before.
@@ -1765,6 +1772,7 @@ impl Default for Thought {
             patch_tiles: 4,
             hearth_wakes: false,
             wake_on_interrupt: true,
+            wake_asleep: true,
         }
     }
 }

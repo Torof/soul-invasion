@@ -5316,6 +5316,7 @@ pub struct Relief {
 /// before, each step's: the control run of `--old-wakes`.
 fn old_wakes(needs: &mut sim::content::Needs) {
     needs.thought.wake_on_interrupt = true;
+    needs.thought.wake_asleep = true;
 }
 
 fn factors_of(content: &Content) -> Vec<(String, serde_json::Value)> {

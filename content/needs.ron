@@ -413,6 +413,15 @@
     //                    2026, step 1: 4.4 thoughts a person-journée, 99 %
     //                    changing nothing). true, or absent: the rule
     //                    before (the vivarium's --old-wakes).
+    // wake_asleep:       false — a sleeper does not think: not when it
+    //                    falls asleep, nor at dawn or dusk, nor at a gauge
+    //                    or an event while it sleeps on (it drops what it
+    //                    was about, as its thought asleep did); it thinks
+    //                    when it wakes, its sleep done, or when it is
+    //                    parched and not collapsed (it gets up to drink).
+    //                    Step 2 of the audit: 1.4 thoughts a
+    //                    person-journée, 97 to 100 % changing nothing.
+    //                    true, or absent: the rule before.
     thought: (
         plant_sight_tiles: 30,
         fed_under: 30,
@@ -422,6 +431,7 @@
         patch_tiles: 4,
         hearth_wakes: false,
         wake_on_interrupt: false,
+        wake_asleep: false,
     ),
     // The evening fire and the common memory (D55, lot 4 of the
     // simulation, decided by the project lead on 22 November 2026). Every
