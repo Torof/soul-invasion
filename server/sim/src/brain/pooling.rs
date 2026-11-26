@@ -216,16 +216,17 @@ fn kept_heap(world: &World, rules: &Content, item: ItemId) -> Option<Heap> {
 /// [`heap`] of an item or a record found.
 fn heap_of(world: &World, rules: &Content, found: &crate::Item) -> Option<Heap> {
     let food = rules.material(found.material())?.food?;
-    let keeps = food.ticks_kept(world.calendar());
-    // Spoiled as the world says it (D45), read from the item at hand.
-    if world.tick().0.saturating_sub(found.made().0) >= keeps {
+    // Spoiled as the world says it (D45; a heap of a store by the
+    // journée, D58), read from the item at hand.
+    let ends = world.spoils_at(found, rules)?;
+    if world.tick().0 >= ends {
         return None;
     }
     Some(Heap {
         item: found.id(),
         at: found.pos(),
         kj: u64::from(food.energy_kj(found.mass_g())),
-        ends: found.made().0 + keeps,
+        ends,
     })
 }
 
@@ -339,15 +340,23 @@ impl Reserves {
         self.camp_of.insert(item, camp);
     }
 
-    /// The item `item` laid at a reserve joined the heap `into` there
-    /// ([`crate::Event::Kept`]): the reserve holds the heap, not it. A
-    /// heap another hearth holds stays that hearth's.
-    fn joined(&mut self, item: ItemId, into: ItemId) {
-        let Some(camp) = self.camp_of.remove(&item) else {
+    /// The record of `item` at a reserve is now held by `into` there
+    /// ([`crate::Event::Kept`]): laid, `item` joined the heap `into`, and
+    /// the reserve holds the heap, not it; or a hand took a part of the
+    /// heap `item` (`taken`), and the rest left is `into`, the reserve's
+    /// too (the part taken is followed as a heap taken whole is, till
+    /// dawn). A heap another hearth holds stays that hearth's.
+    fn joined(&mut self, item: ItemId, into: ItemId, taken: bool) {
+        let Some(&camp) = self.camp_of.get(&item) else {
             return;
         };
+        if !taken {
+            self.camp_of.remove(&item);
+        }
         if let Some(reserve) = self.by_camp.get_mut(&camp) {
-            reserve.items.remove(&item);
+            if !taken {
+                reserve.items.remove(&item);
+            }
             if let std::collections::btree_map::Entry::Vacant(heap) = self.camp_of.entry(into) {
                 heap.insert(camp);
                 reserve.items.insert(into);
@@ -809,9 +818,10 @@ impl Brains {
             if let crate::Event::Kept { item, into, .. } = event
                 && item != into
             {
-                // Laid and joined to a heap there: the due below is the
-                // heap's hearth's.
-                self.reserves.joined(*item, *into);
+                // Laid and joined to a heap there, or a part of a heap
+                // taken: the due below is the heap's hearth's.
+                self.reserves
+                    .joined(*item, *into, world.item(*item).is_some());
             }
         }
         for event in events {
@@ -1222,6 +1232,22 @@ mod tests {
         lay(&mut world, &mut brains);
         assert_eq!(brains.reserves.kj(&world, &rules, camp), 1500);
         assert_eq!(brains.reserves.by_camp[&camp].items.len(), 1);
+        // A heap too heavy for the arms: a hand takes a part of it, the
+        // rest stays the reserve's.
+        let big = world.spawn_kept("berries", 40_000, at);
+        brains.reserves.put(camp, at, big);
+        let mut events = Vec::new();
+        world.queue(Intention::PickUp {
+            body: id,
+            item: big,
+        });
+        world.step(&rules, &mut events);
+        brains.hearth_events(&events, &world, &rules);
+        let taken = world.item(big).map_or(0, crate::Item::mass_g);
+        assert!(taken > 0 && taken < 40_000);
+        let rest_kj = u64::from(40_000 - taken) * 2500 / 1000;
+        assert_eq!(brains.reserves.kj(&world, &rules, camp), 1500 + rest_kj);
+        assert_eq!(brains.reserves.camp_holding(big), Some(camp));
     }
 
     /// The valley at midday of day 28, blackberries ripe, a fed grown

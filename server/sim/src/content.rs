@@ -557,6 +557,20 @@ pub struct Pooling {
     /// hearth's food: (will, per cent), the wills rising.
     #[serde(default)]
     pub keep_percent_by_will: Vec<(u32, u32)>,
+    /// The width of a heap of the hearth's reserve, in journées (amended
+    /// 26 November 2026, the reserve as heaps): food laid there joins the
+    /// heap of the same food whose band of `heap_days` journées it goes
+    /// spoiled in, and the whole heap goes at the start of the band's
+    /// first journée. 1 (the default, 0 read as 1): each part goes at the
+    /// very journée's start it would have gone at alone; more, fewer
+    /// heaps, food spoiling up to `heap_days - 1` journées early.
+    #[serde(default = "one_day")]
+    pub heap_days: u32,
+}
+
+/// The default width of a heap of the hearth's reserve: one journée.
+fn one_day() -> u32 {
+    1
 }
 
 /// How hungry a body is by its fat reserve left (D58, amended 25 November
@@ -584,6 +598,7 @@ impl Pooling {
             very_hungry_fat_percent: 50,
             starving_fat_percent: 25,
             keep_percent_by_will: vec![(0, 10), (100, 90)],
+            heap_days: 1,
         }
     }
 

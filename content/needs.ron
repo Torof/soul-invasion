@@ -787,6 +787,15 @@
     //                        body keeps the hearth's food, by its will (0 to
     //                        100): the weak-willed eat, the strong-willed
     //                        carry it home. Drawn once a game day.
+    // heap_days:          1 — the reserve's heaps (amended 26 November
+    //                        2026, « une fois 125 noisettes »): food laid
+    //                        joins the heap of the same food that goes
+    //                        spoiled in the same band of this many
+    //                        journées, and the whole heap goes at the start
+    //                        of the band's first journée. 1: each part goes
+    //                        the very journée it would have gone alone;
+    //                        3: fewer heaps, but food spoils up to two
+    //                        journées early (berries keep three).
     pooling: (
         fed_until_years: 8,
         young_first_until_years: 12,
@@ -796,6 +805,7 @@
         very_hungry_fat_percent: 50,
         starving_fat_percent: 25,
         keep_percent_by_will: [(0, 10), (100, 90)],
+        heap_days: 1,
     ),
     // The gestures of the hands (D57; the project lead, 24 November 2026:
     // "C'est parfait"): pick up, cut with what is in hand, fold. No
