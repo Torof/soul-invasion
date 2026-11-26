@@ -207,6 +207,56 @@
         old_age_from_years: 60,
         mate_years: (16, 50),
     ),
+    // Illness as episodes (D49, amended 26 November 2026; the study
+    // etude-maladie-2026-11-26.md, validated by the project lead the same
+    // day: big camps long slept at get sicker; today's deaths kept in
+    // average conditions; two ailments). Placeholders (D30). Absent: the
+    // old rule, a death drawn by age alone (life.death_by_age). Under the
+    // life rule's old age, illness replaces that draw: each day, at its own
+    // hour, a healthy body may fall ill of the gut or of the chest, with
+    // its age's episodes an age-year shared over the age-year's days, times
+    // the season, times its exposure, plus what its hearth's sick add.
+    // Ill, it goes at 70 % of its pace for 2 days (gut) or 4 (chest); at
+    // the end it dies with its age's chance an episode (times 2.5 thin,
+    // under half its reserve; times 5 weak, under a fifth: Pelletier et al.
+    // 1995, 2.4 and 4.6 for mildly and moderately thin children), or heals
+    // and is safe from that ailment 4 days. From the old age the death
+    // curve kills alone, as before; the old still fall ill and pass it on.
+    // The gut's exposure: 1 + the body-nights slept at its hearth's place
+    // (fading to 958 thousandths a dawn: half in 16 days) over 400 (25
+    // bodies a season); an infant nursed by a carrier not weak, 30 %. The
+    // chest's: 1 + the hearth's members over 25, by 25; 150 % after a
+    // night whose cold reached 100 (a winter night in the open). Each sick
+    // of the hearth adds 1 % a day to falling ill of the same, 20 % at most.
+    // Calibrated on paper (a hearth of 25 moved each season, all fat):
+    // about 0.7 episodes an age-year for the grown, 0.9 for the weaned
+    // young, 0.75 for the infants, so that the deaths an age-year stay the
+    // old curve's (100 in the first year, 50 to four, 10 to thirty-nine, 20
+    // to fifty-four, 50 to fifty-nine).
+    illness: (
+        gut_by_age: [(0, 500), (4, 500), (5, 200)],
+        chest_by_age: [(0, 500), (4, 500), (5, 200)],
+        death_by_age: [
+            (0, 200), (1, 70), (2, 55), (4, 55), (5, 15), (39, 15),
+            (40, 30), (54, 30), (55, 75),
+        ],
+        thin_death_percent: 250,
+        weak_death_percent: 500,
+        gut_days: 2,
+        chest_days: 4,
+        gut_season_percent: (spring: 100, summer: 150, autumn: 100, winter: 70),
+        chest_season_percent: (spring: 100, summer: 50, autumn: 100, winter: 200),
+        fouling_reference: 400,
+        fouling_keep_permille: 958,
+        nursed_gut_percent: 30,
+        crowd_reference: 25,
+        cold_chest_percent: 150,
+        cold_points: 100,
+        contagion_permille: 10,
+        contagion_max_permille: 200,
+        immune_days: 4,
+        sick_pace_percent: 70,
+    ),
     // Trials, selection and imitation (D50, decided by the project lead on
     // 22 November 2026): the NPCs invent by their own trials, judged by
     // the world, kept by selection and spread by imitation; no AI.

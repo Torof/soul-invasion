@@ -91,6 +91,10 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            pooling.young_seen and
                            pooling.giver_care,
                            temperance.kin_seen false)
+  --old-illness            the control run of illness as episodes (D49,
+                           amended 26 November 2026): the old rule, a
+                           background death by age alone (the content's
+                           illness section replaced by none)
   --no-passages            the control run of the passages: nobody keeps,
                            tells or walks through a passage (the content's
                            passages section replaced by none)
@@ -207,6 +211,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-problems" => settings.problems = false,
             "--wake-all" => settings.wake_all = true,
             "--old-wakes" => settings.old_wakes = true,
+            "--old-illness" => settings.old_illness = true,
             "--no-passages" => settings.passages = false,
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,

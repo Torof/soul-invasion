@@ -515,6 +515,20 @@ pub struct Needs {
     /// and walks there in two legs. Absent: nobody keeps a passage.
     #[serde(default)]
     pub passages: Passages,
+    /// Illness as episodes (D49, amended 26 November 2026): a body falls
+    /// ill of the gut or of the chest by its age, the season, its camp's
+    /// fouling, its hearth's crowd and sick, goes slower a few days, then
+    /// heals or dies by its age and its thinness. Absent: the old rule,
+    /// a background death drawn by age alone (`life.death_by_age`).
+    #[serde(default, deserialize_with = "present")]
+    pub illness: Option<Illness>,
+}
+
+/// A section read as present when written, without RON's `Some(…)`.
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 /// Food pooled at the hearth (D58; the project lead, 25 November 2026:
@@ -2696,6 +2710,128 @@ impl Life {
     }
 }
 
+/// Illness as episodes (D49, amended 26 November 2026; the study
+/// `etude-maladie-2026-11-26.md`, validated by the project lead): two
+/// ailments, each a chance a day to fall ill, a few days ill, then an end
+/// drawn by the body. Every value a D30 placeholder in `needs.ron`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Illness {
+    /// Serious episodes of the gut an age-year, by age (years, per mille),
+    /// before the season and the exposure: straight lines between the
+    /// points, as `death_by_age`.
+    pub gut_by_age: Vec<(u32, u32)>,
+    /// The same for the chest.
+    pub chest_by_age: Vec<(u32, u32)>,
+    /// The chance an episode kills a body with more than `thin_percent` of
+    /// its reserve, by age (years, per mille), under the life rule's
+    /// `old_age_from_years`; from it, the old age curve kills alone.
+    pub death_by_age: Vec<(u32, u32)>,
+    /// That chance for a thin body, in percent of the above.
+    pub thin_death_percent: u32,
+    /// That chance for a weak body, in percent of the above.
+    pub weak_death_percent: u32,
+    /// Days an episode of the gut lasts.
+    pub gut_days: u32,
+    /// Days an episode of the chest lasts.
+    pub chest_days: u32,
+    /// The gut's chance by season, in percent.
+    pub gut_season_percent: BySeason<u32>,
+    /// The chest's chance by season, in percent.
+    pub chest_season_percent: BySeason<u32>,
+    /// The fouling that doubles the gut's chance, in body-nights slept at
+    /// a hearth's place.
+    pub fouling_reference: u32,
+    /// What a place keeps of its fouling from one dawn to the next, in
+    /// thousandths.
+    pub fouling_keep_permille: u32,
+    /// The gut's chance of an infant nursed by a carrier not weak, in
+    /// percent.
+    pub nursed_gut_percent: u32,
+    /// The hearth's size from which the chest's chance rises: each as many
+    /// again doubles it once more.
+    pub crowd_reference: u32,
+    /// The chest's chance after a night whose cold reached
+    /// `cold_points`, in percent.
+    pub cold_chest_percent: u32,
+    /// The cold at dawn, in points, that makes a cold night.
+    pub cold_points: u32,
+    /// The chance a day added by each of its hearth's sick of an ailment
+    /// to fall ill of it, in per mille.
+    pub contagion_permille: u32,
+    /// The most the hearth's sick add, in per mille a day.
+    pub contagion_max_permille: u32,
+    /// Days a body healed of an ailment cannot fall ill of it again.
+    pub immune_days: u32,
+    /// A sick body's pace, walking and working, in percent of its own.
+    pub sick_pace_percent: u32,
+}
+
+impl Illness {
+    /// The serious episodes of `ailment` an age-year at `age_milli`
+    /// thousandths of an age-year, in thousandths, before the season and
+    /// the exposure.
+    #[must_use]
+    pub fn episodes_permille(&self, ailment: crate::Ailment, age_milli: u64) -> u64 {
+        match ailment {
+            crate::Ailment::Gut => along(&self.gut_by_age, age_milli, 1),
+            crate::Ailment::Chest => along(&self.chest_by_age, age_milli, 1),
+        }
+    }
+
+    /// The chance an episode kills a fat body at `age_milli`, in
+    /// thousandths.
+    #[must_use]
+    pub fn death_permille(&self, age_milli: u64) -> u64 {
+        along(&self.death_by_age, age_milli, 1)
+    }
+
+    /// Days an episode of `ailment` lasts, one at least.
+    #[must_use]
+    pub fn days(&self, ailment: crate::Ailment) -> u32 {
+        match ailment {
+            crate::Ailment::Gut => self.gut_days,
+            crate::Ailment::Chest => self.chest_days,
+        }
+        .max(1)
+    }
+
+    /// The chance of `ailment` by season, in percent.
+    #[must_use]
+    pub fn season_percent(&self, ailment: crate::Ailment, season: Season) -> u32 {
+        match ailment {
+            crate::Ailment::Gut => self.gut_season_percent.get(season),
+            crate::Ailment::Chest => self.chest_season_percent.get(season),
+        }
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let table = |points: &[(u32, u32)]| {
+            !points.is_empty()
+                && points.windows(2).all(|p| p[0].0 < p[1].0)
+                && points.iter().all(|p| p.1 <= 1000)
+        };
+        if !table(&self.gut_by_age)
+            || !table(&self.chest_by_age)
+            || !table(&self.death_by_age)
+            || self.fouling_reference == 0
+            || self.crowd_reference == 0
+            || self.fouling_keep_permille >= 1000
+            || self.contagion_max_permille > 1000
+            || !(1..=100).contains(&self.sick_pace_percent)
+            || self.gut_days == 0
+            || self.chest_days == 0
+        {
+            return Err(ContentError::Needs(
+                "illness: the three tables not empty, their ages rising and their per mille at most \
+                 1000; fouling_reference and crowd_reference positive; fouling_keep_permille under \
+                 1000; contagion_max_permille at most 1000; sick_pace_percent from 1 to 100; \
+                 gut_days and chest_days positive",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// The value at `age_milli` thousandths of a year along `points`: (years,
 /// value), the ages rising, each value scaled by `scale`, straight lines
 /// between the points, the first held before and the last after.
@@ -2856,6 +2992,9 @@ impl Needs {
         self.trips.validate()?;
         self.problems.validate()?;
         self.passages.validate()?;
+        if let Some(illness) = &self.illness {
+            illness.validate()?;
+        }
         self.hands.validate()
     }
 

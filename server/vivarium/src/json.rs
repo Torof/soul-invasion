@@ -540,6 +540,9 @@ impl Report {
         // --- the passages (26 November 2026) ---
         value["passages"] = self.passages.json();
         // --- end of the passages ---
+        // --- illness as episodes (26 November 2026) ---
+        value["illness"] = self.illness.json();
+        // --- end of illness as episodes ---
         value
     }
 
@@ -604,6 +607,10 @@ impl Report {
         out.push_str(",\n  \"passages\": ");
         layout(&value["passages"], 1, &mut out);
         // --- end of the passages ---
+        // --- illness as episodes (26 November 2026): last ---
+        out.push_str(",\n  \"illness\": ");
+        layout(&value["illness"], 1, &mut out);
+        // --- end of illness as episodes ---
         out.push_str("\n}\n");
         out
     }
@@ -638,6 +645,7 @@ impl Report {
                 "decisions": s.decisions,
                 "moves": s.moves,
                 "passages": s.passages,
+                "old_illness": s.old_illness,
                 "content": s.content.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
             },
             "map_tiles": [self.map_side.0, self.map_side.1],

@@ -39,7 +39,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 18;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 19;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -874,6 +874,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             15 => migrate_v15_to_v16(data),
             16 => migrate_v16_to_v17(data),
             17 => migrate_v17_to_v18(&data)?,
+            18 => migrate_v18_to_v19(data),
             _ => return Err(unsupported()),
         };
         version += 1;
@@ -1157,6 +1158,14 @@ fn migrate_v17_to_v18(data: &str) -> Result<String, StorageError> {
             .or_insert_with(|| sim::Calendar::LEGACY_AGE_YEARS_PER_CYCLE.into());
     }
     Ok(old.to_string())
+}
+
+/// v19: illness as episodes (D49, amended 26 November 2026): a body's
+/// episode and its immunities, the world's fouled places. A world saved
+/// before has every body healthy, never ill, and every place clean, which
+/// is what the fields read as when absent: the data is the same.
+fn migrate_v18_to_v19(data: String) -> String {
+    data
 }
 
 fn standard_world_at_old_tick(data: &str, content: &Content) -> Result<String, StorageError> {

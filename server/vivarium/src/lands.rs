@@ -131,6 +131,7 @@ const NOT_LAND_SOURCES: &[&str] = &[
     "content.rs",
     "crops.rs",
     "hands.rs",
+    "illness.rs",
     "invariants.rs",
     "items.rs",
     "life.rs",

@@ -46,6 +46,7 @@ pub mod passages;
 // --- end of the passages ---
 pub mod continents;
 pub mod hands;
+pub mod illness;
 pub mod json;
 pub mod land_food;
 pub mod lands;
@@ -202,6 +203,10 @@ pub struct Settings {
     /// switch of its steps at the rule before (`old_wakes`),
     /// `--old-wakes`.
     pub old_wakes: bool,
+    /// The control run of illness as episodes (D49, amended 26 November
+    /// 2026): true is the old rule, a background death by age alone
+    /// (`--old-illness`), the content's `illness` section replaced by none.
+    pub old_illness: bool,
     /// The passages remembered and told (D53, amended 26 November 2026):
     /// false is the control run without them (`--no-passages`), the
     /// content's `passages` section replaced by none.
@@ -293,6 +298,7 @@ impl Default for Settings {
             problems: true,
             wake_all: false,
             old_wakes: false,
+            old_illness: false,
             passages: true,
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
@@ -2052,6 +2058,8 @@ pub struct Report {
     pub hands: hands::HandsProbe,
     /// The problems (D50 and D57, amended 26 November 2026).
     pub problems: problems::ProblemsProbe,
+    /// Illness as episodes (D49, amended 26 November 2026).
+    pub illness: illness::IllnessProbe,
     /// The goals held, in the order set (D56, amended 24 November 2026).
     pub goals: Vec<GoalRow>,
     /// The fire's counts by tribe and year (D55).
@@ -2271,6 +2279,7 @@ pub fn run_watched(
         || !settings.problems
         || settings.wake_all
         || settings.old_wakes
+        || settings.old_illness
         || !settings.passages
     {
         let mut own = content.clone();
@@ -2305,6 +2314,9 @@ pub fn run_watched(
         }
         if settings.old_wakes {
             old_wakes(&mut own.needs);
+        }
+        if settings.old_illness {
+            own.needs.illness = None;
         }
         if !settings.trips {
             own.needs.trips = sim::content::Trips::default();
@@ -2660,6 +2672,7 @@ pub fn run_watched(
     let mut moving = MovingProbe::default();
     let mut hands = hands::HandsProbe::default();
     let mut problems_probe = problems::ProblemsProbe::new(content);
+    let mut illness_probe = illness::IllnessProbe::new(content);
     let days_per_age_year = u64::from(calendar.days_per_age_year().max(1));
     let ticks_per_age_year = calendar.ticks_per_day() * days_per_age_year;
     let mut goals: Vec<GoalRow> = Vec::new();
@@ -2751,6 +2764,7 @@ pub fn run_watched(
         // --- the hearth's pooling (25 November 2026) ---
         pooling.tick((&world, &brains, content), &events, day);
         problems_probe.tick(&world);
+        illness_probe.tick((&world, content), &events);
         // --- end of the hearth's pooling ---
         // --- the food carried home (25 November 2026) ---
         carried.tick((&world, &brains, content), &events, &people);
@@ -3775,6 +3789,7 @@ pub fn run_watched(
         moving,
         hands,
         problems: problems_probe,
+        illness: illness_probe,
         goals,
         fire: tally.fire,
         seasons: tally.seasons,
@@ -6925,6 +6940,7 @@ mod tests {
             problems: true,
             wake_all: false,
             old_wakes: false,
+            old_illness: false,
             passages: true,
             continents: None,
             lands: None,
