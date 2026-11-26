@@ -567,12 +567,17 @@ impl CarryProbe {
             let Some(b) = world.body(*body) else {
                 continue;
             };
+            let hunger = b.condition().hunger.points();
+            // A body not hungry and not eating is not counted, whatever
+            // it carries: what it carries is not weighed then.
+            if hunger < HUNGRY && !matches!(decision.intention, Intention::Eat { .. }) {
+                continue;
+            }
             let carried = carried_kj(world, content, *body);
             let held = raw.min(carried);
             if held == 0 {
                 continue;
             }
-            let hunger = b.condition().hunger.points();
             let c = &mut self.carrying;
             let h = match decision.intention {
                 Intention::Eat { item, .. } => {

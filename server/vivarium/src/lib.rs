@@ -466,8 +466,31 @@ pub struct Person {
     pub believes: Vec<(PlaceKey, Access)>,
     /// Its own lines of the chronicle.
     pub entries: Vec<Entry>,
+    /// Its lines of thought, meals, drinks and gathers not kept in
+    /// `entries` (a run of more than [`FULL_LINES_DAYS`] days), only counted.
+    pub unkept: usize,
     /// Its gauges 24 times a day.
     pub gauges: Vec<Gauges>,
+}
+
+impl Person {
+    /// Writes a line of thought, meal, drink or gather on its page: kept
+    /// when the page shows every line (`every`: a run of at most
+    /// [`FULL_LINES_DAYS`] days) or when it is a line shown anyway (of
+    /// its life, its trials, the fire), else only counted (D51, amended
+    /// 26 November 2026: a long run kept millions of such lines to count
+    /// them at the end).
+    fn note(&mut self, entry: Entry, every: bool) {
+        if every
+            || is_life_line(&entry.what)
+            || is_trial_line(&entry.what)
+            || is_fire_line(&entry.what)
+        {
+            self.entries.push(entry);
+        } else {
+            self.unkept += 1;
+        }
+    }
 }
 
 /// One trial of a person (D50), as its page tells it: "day 212, searches
@@ -2545,6 +2568,8 @@ pub fn run_watched(
         placer.follow(&world, content);
     }
     let ticks_per_day = calendar.ticks_per_day();
+    // Every line of a person's page kept, or only those its page shows.
+    let every_line = settings.days <= FULL_LINES_DAYS;
     for _ in 0..ticks {
         events.clear();
         // The homes the minds hold, told before each dawn (D49, amended
@@ -2624,11 +2649,16 @@ pub fn run_watched(
                         .gathered(content, gives, *grams);
                     let person = people.entry(*body).or_default();
                     person.gathered_j += joules(content, gives, *grams);
-                    person.entries.push(Entry {
-                        tick,
-                        day,
-                        what: format!("gathers {grams} g of {gives} ({energy} kJ), stops: {why:?}"),
-                    });
+                    person.note(
+                        Entry {
+                            tick,
+                            day,
+                            what: format!(
+                                "gathers {grams} g of {gives} ({energy} kJ), stops: {why:?}"
+                            ),
+                        },
+                        every_line,
+                    );
                 }
                 Event::Spoiled {
                     material,
@@ -2641,11 +2671,14 @@ pub fn run_watched(
                     food.entry((tribe, year))
                         .or_default()
                         .spoiled(content, material, *grams);
-                    people.entry(*body).or_default().entries.push(Entry {
-                        tick,
-                        day,
-                        what: format!("{grams} g of {material} it carried spoil ({energy} kJ)"),
-                    });
+                    people.entry(*body).or_default().note(
+                        Entry {
+                            tick,
+                            day,
+                            what: format!("{grams} g of {material} it carried spoil ({energy} kJ)"),
+                        },
+                        every_line,
+                    );
                 }
                 Event::NightFell { .. } => {
                     // Each grown body's nightfall, hungry or not (the
@@ -2757,20 +2790,26 @@ pub fn run_watched(
                     let person = people.entry(*body).or_default();
                     person.meals.0 += 1;
                     person.meals.1 += grams;
-                    person.entries.push(Entry {
-                        tick,
-                        day,
-                        what: format!("eats {grams} g of {material} ({energy_kj} kJ)"),
-                    });
+                    person.note(
+                        Entry {
+                            tick,
+                            day,
+                            what: format!("eats {grams} g of {material} ({energy_kj} kJ)"),
+                        },
+                        every_line,
+                    );
                 }
                 Event::BodyDrank { body, at } => {
                     let person = people.entry(*body).or_default();
                     person.drinks += 1;
-                    person.entries.push(Entry {
-                        tick,
-                        day,
-                        what: format!("drinks at ({}, {})", at.x, at.y),
-                    });
+                    person.note(
+                        Entry {
+                            tick,
+                            day,
+                            what: format!("drinks at ({}, {})", at.x, at.y),
+                        },
+                        every_line,
+                    );
                 }
                 // The registry of kinship (lot 3 C, D49): a birth opens a
                 // page in its mother's tribe, carried by her, with a mind
@@ -2889,12 +2928,14 @@ pub fn run_watched(
         carried.thoughts((&world, &brains, content), &decisions, &batch);
         // --- end of the food carried home ---
         for (body, decision) in decisions {
-            let person = people.entry(body).or_default();
-            person.entries.push(Entry {
-                tick,
-                day,
-                what: thought(&decision.intention, decision.why),
-            });
+            people.entry(body).or_default().note(
+                Entry {
+                    tick,
+                    day,
+                    what: thought(&decision.intention, decision.why),
+                },
+                every_line,
+            );
             world.queue(decision.intention);
         }
         // --- the hearth's pooling (25 November 2026) ---
@@ -6071,6 +6112,7 @@ table{{border-collapse:collapse}}td,th{{padding:2px 10px;text-align:left;border-
                     .iter()
                     .filter(|e| !is_life_line(&e.what) && !is_trial_line(&e.what))
                     .count()
+                    + person.unkept
             );
         }
         h.push_str("<table class=\"chronicle\">");

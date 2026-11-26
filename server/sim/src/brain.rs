@@ -8133,7 +8133,9 @@ struct Patched {
 /// same crop); 0 for those worth a step alone, weighed alone as before.
 /// A forager picks a patch of dandelions, not a dandelion. The plants are
 /// sorted once into squares of `reach`, so each sum reads the nine
-/// squares around it, not every plant.
+/// squares around it, not every plant: three rows of three squares
+/// side by side, each row found once for all the plants of a square
+/// (D51, amended 26 November 2026; the same plants in the same order).
 fn patch_grams(plants: &[Patched], reach: i32) -> Vec<u32> {
     let reach = reach.max(1);
     let square = |p: Pos| (p.x.div_euclid(reach), p.y.div_euclid(reach));
@@ -8147,31 +8149,51 @@ fn patch_grams(plants: &[Patched], reach: i32) -> Vec<u32> {
         })
         .collect();
     sorted.sort_unstable();
-    plants
-        .iter()
-        .map(|plant| {
-            if plant.alone {
-                return 0;
-            }
-            let (sx, sy) = square(plant.tile);
-            let mut grams = 0u32;
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let key = (plant.kind, sy + dy, sx + dx);
-                    let from = sorted.partition_point(|(k, _)| *k < key);
-                    for &(_, j) in sorted[from..].iter().take_while(|(k, _)| *k == key) {
-                        let other = plants[j];
-                        if (other.tile.x - plant.tile.x).abs() <= reach
-                            && (other.tile.y - plant.tile.y).abs() <= reach
-                        {
-                            grams = grams.saturating_add(other.left_g);
-                        }
-                    }
+    // Where each of the three rows of squares around the square `key`
+    // starts in `sorted`: a row is the squares `sx - 1` to `sx + 1` of
+    // its kind, side by side in the sort.
+    let rows = |(kind, sy, sx): (u16, i32, i32)| {
+        [-1, 0, 1].map(|dy| {
+            let from = sorted.partition_point(|(k, _)| *k < (kind, sy + dy, sx - 1));
+            (from, (kind, sy + dy, sx + 1))
+        })
+    };
+    let sum = |plant: &Patched, rows: &[(usize, (u16, i32, i32)); 3]| {
+        let mut grams = 0u32;
+        for &(from, last) in rows {
+            for &(_, j) in sorted[from..].iter().take_while(|(k, _)| *k <= last) {
+                let other = plants[j];
+                if (other.tile.x - plant.tile.x).abs() <= reach
+                    && (other.tile.y - plant.tile.y).abs() <= reach
+                {
+                    grams = grams.saturating_add(other.left_g);
                 }
             }
-            grams
-        })
-        .collect()
+        }
+        grams
+    };
+    let mut out = vec![0u32; plants.len()];
+    // The plants of a square holding grams, its rows found once.
+    let mut i = 0;
+    while i < sorted.len() {
+        let key = sorted[i].0;
+        let end = i + sorted[i..].partition_point(|(k, _)| *k == key);
+        let around = rows(key);
+        for &(_, j) in &sorted[i..end] {
+            if !plants[j].alone {
+                out[j] = sum(&plants[j], &around);
+            }
+        }
+        i = end;
+    }
+    // One holding none is in no square: its rows found for it alone.
+    for (j, plant) in plants.iter().enumerate() {
+        if !plant.alone && plant.left_g == 0 {
+            let (sx, sy) = square(plant.tile);
+            out[j] = sum(plant, &rows((plant.kind, sy, sx)));
+        }
+    }
+    out
 }
 
 /// What an hour of a plant of `kind` gives, `alone` what it gives by
@@ -11609,6 +11631,58 @@ mod tests {
             place_to_gather(&world, &food, here, mind, 0, side, None).map(|p| p.0) != Some(key),
             "not chosen again this year"
         );
+    }
+
+    #[test]
+    fn a_patch_sums_what_every_plant_of_its_kind_within_reach_holds() {
+        // Plants drawn over a field across zero, of three kinds, some
+        // bare, some worth a step alone, some huge: each patch is the
+        // sum read plant by plant.
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut draw = |n: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % n
+        };
+        let plants: Vec<Patched> = (0..400)
+            .map(|_| {
+                let x = i32::try_from(draw(60)).unwrap() - 30;
+                let y = i32::try_from(draw(60)).unwrap() - 30;
+                let kind = u16::try_from(draw(3)).unwrap();
+                let left_g = match draw(10) {
+                    0 => 0,
+                    1 => u32::MAX / 3,
+                    _ => u32::try_from(draw(500)).unwrap(),
+                };
+                Patched {
+                    tile: Pos::new(x, y),
+                    kind,
+                    left_g,
+                    alone: draw(4) == 0,
+                }
+            })
+            .collect();
+        for reach in [1, 3, 4, 7] {
+            let read: Vec<u32> = plants
+                .iter()
+                .map(|p| {
+                    if p.alone {
+                        return 0;
+                    }
+                    plants
+                        .iter()
+                        .filter(|o| {
+                            o.kind == p.kind
+                                && o.left_g > 0
+                                && (o.tile.x - p.tile.x).abs() <= reach
+                                && (o.tile.y - p.tile.y).abs() <= reach
+                        })
+                        .fold(0u32, |g, o| g.saturating_add(o.left_g))
+                })
+                .collect();
+            assert_eq!(patch_grams(&plants, reach), read, "reach {reach}");
+        }
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::hands::Gesture;
 use crate::map::{ChunkPos, FinePos, Pos};
 use crate::memory::{Record, Store};
 use crate::trees::TreeKey;
-use crate::{BodyId, GATHER_REACH_MM, Intention, Item, ItemId, World};
+use crate::{BodyId, GATHER_REACH_MM, Intention, ItemId, World};
 
 use super::{AROUND, Decision, Doing, Mind, News, Way, Why, today, walkable};
 
@@ -448,15 +448,61 @@ fn carried(world: &World, rules: &Content, id: BodyId) -> Vec<(ItemId, u16)> {
 }
 
 /// The things lying within `near` tiles of `here`, nearest first, but
-/// those it could not reach today.
-fn things_near(world: &World, here: Pos, near: i32, mind: &Mind) -> Vec<Item> {
-    let mut out: Vec<Item> = world
-        .items_near(here, near)
+/// those it could not reach today: each its id, its tile and its
+/// material.
+fn things_near<'w>(
+    world: &'w World,
+    here: Pos,
+    near: i32,
+    mind: &Mind,
+) -> Vec<(ItemId, Pos, &'w str)> {
+    let mut out: Vec<(ItemId, Pos, &str)> = world
+        .things_near(here, near, |_| true)
         .into_iter()
-        .filter(|i| !mind.handwork.barred(Barred::Item(i.id())))
+        .filter(|&(id, _, _)| !mind.handwork.barred(Barred::Item(id)))
         .collect();
-    out.sort_by_key(|i| (i.pos().map(|p| super::far(p, here)), i.id()));
+    out.sort_by_key(|&(id, p, _)| (super::far(p, here), id));
     out
+}
+
+/// Of the things lying within `near` tiles of `here` that it could reach
+/// today, the nearest of each of `materials` (the id breaking ties): the
+/// thing [`things_near`] lists first of that material, looked for in one
+/// pass over the things of those materials alone (D51, amended 26
+/// November 2026: the hands looked at everything around once a deed, and
+/// copied it all).
+fn nearest_of(
+    world: &World,
+    rules: &Content,
+    (here, near): (Pos, i32),
+    mind: &Mind,
+    materials: &[u16],
+) -> Vec<(u16, ItemId, Pos)> {
+    // A material is known by the first of its name in the content, as
+    // `material_index` reads it.
+    let names: Vec<(u16, &str)> = materials
+        .iter()
+        .filter_map(|&m| {
+            let id = rules.materials.get(usize::from(m))?.id.as_str();
+            (material_index(rules, id) == Some(m)).then_some((m, id))
+        })
+        .collect();
+    let mut best: Vec<(u16, (i64, ItemId), Pos)> = Vec::new();
+    for (id, p, material) in world.things_near(here, near, |m| names.iter().any(|n| n.1 == m)) {
+        if mind.handwork.barred(Barred::Item(id)) {
+            continue;
+        }
+        let Some(&(m, _)) = names.iter().find(|n| n.1 == material) else {
+            continue;
+        };
+        let key = (super::far(p, here), id);
+        match best.iter_mut().find(|b| b.0 == m) {
+            Some(b) if key < b.1 => *b = (m, key, p),
+            Some(_) => {}
+            None => best.push((m, key, p)),
+        }
+    }
+    best.into_iter().map(|(m, (_, id), p)| (m, id, p)).collect()
 }
 
 /// Whether the bark a cut of a tree of `species` gives would go on the
@@ -727,12 +773,9 @@ fn draw(
     let deed = |on, with| Deed { gesture, on, with };
     match gesture {
         Gesture::Take => {
-            let thing = things.get(pick(things.len(), 0))?;
-            let on = material_index(rules, thing.material())?;
-            Some((
-                HandTarget::Item(thing.id(), thing.pos()?),
-                deed(on, NOTHING),
-            ))
+            let &(thing, pos, material) = things.get(pick(things.len(), 0))?;
+            let on = material_index(rules, material)?;
+            Some((HandTarget::Item(thing, pos), deed(on, NOTHING)))
         }
         Gesture::Cut => {
             let &(chunk, key, at, species) = trees.get(pick(trees.len(), 0))?;
@@ -774,6 +817,28 @@ fn needed(
         })
     };
     let held = world.body(id)?.held();
+    // The things lying near are looked at once, at the first deed that
+    // needs one, for the materials any deed might take up.
+    let mut nearest: Option<Vec<(u16, ItemId, Pos)>> = None;
+    let mut lying = |m: u16| {
+        nearest
+            .get_or_insert_with(|| {
+                let mut materials: Vec<u16> = deeds
+                    .iter()
+                    .filter_map(|d| match d.gesture {
+                        Gesture::Cut => Some(d.with),
+                        Gesture::Take => Some(d.on),
+                        Gesture::Fold => None,
+                    })
+                    .collect();
+                materials.sort_unstable();
+                materials.dedup();
+                nearest_of(world, rules, (here, near), mind, &materials)
+            })
+            .iter()
+            .find(|n| n.0 == m)
+            .map(|&(_, item, pos)| (item, pos))
+    };
     for gesture in [Gesture::Fold, Gesture::Cut, Gesture::Take] {
         for deed in deeds.iter().filter(|d| d.gesture == gesture) {
             if !lacks(deed) {
@@ -798,16 +863,13 @@ fn needed(
                         // its hands' sight is taken up for the cut, a
                         // tree near or not. A true gesture on a thing
                         // there, never a goal set.
-                        if let Some(tool) = things_near(world, here, near, mind)
-                            .iter()
-                            .find(|i| material_index(rules, i.material()) == Some(deed.with))
-                        {
+                        if let Some((tool, pos)) = lying(deed.with) {
                             let take = Deed {
                                 gesture: Gesture::Take,
                                 on: deed.with,
                                 with: NOTHING,
                             };
-                            return Some(((HandTarget::Item(tool.id(), tool.pos()?), take), true));
+                            return Some(((HandTarget::Item(tool, pos), take), true));
                         }
                         continue;
                     };
@@ -830,11 +892,8 @@ fn needed(
                     }
                 }
                 Gesture::Take => {
-                    if let Some(thing) = things_near(world, here, near, mind)
-                        .iter()
-                        .find(|i| material_index(rules, i.material()) == Some(deed.on))
-                    {
-                        return Some(((HandTarget::Item(thing.id(), thing.pos()?), deed), false));
+                    if let Some((thing, pos)) = lying(deed.on) {
+                        return Some(((HandTarget::Item(thing, pos), deed), false));
                     }
                 }
             }

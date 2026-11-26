@@ -111,6 +111,68 @@ impl World {
         out
     }
 
+    /// The things of [`World::items_near`] whose material `wanted`
+    /// holds, in its order, each as its id, its tile and its material,
+    /// nothing copied (D51, amended 26 November 2026): a natural thing of
+    /// a rule whose material is not wanted is not even looked for on the
+    /// ground. What a body's hands look at around it at a thought.
+    pub(crate) fn things_near(
+        &self,
+        pos: Pos,
+        tiles: i32,
+        wanted: impl Fn(&str) -> bool,
+    ) -> Vec<(ItemId, Pos, &str)> {
+        let near = |p: Pos| (p.x - pos.x).abs() <= tiles && (p.y - pos.y).abs() <= tiles;
+        let (low, high) = (
+            Pos::new(pos.x - tiles, pos.y - tiles).chunk(),
+            Pos::new(pos.x + tiles, pos.y + tiles).chunk(),
+        );
+        let mut out = Vec::new();
+        for y in low.y..=high.y {
+            for x in low.x..=high.x {
+                let chunk = ChunkPos::new(x, y);
+                // Food kept in a store (D58) after the things lying, as
+                // `items_near` sees them.
+                for i in self.laid_in(chunk).chain(self.kept_in(chunk)) {
+                    if let Some(p) = i.pos().filter(|&p| near(p))
+                        && wanted(i.material())
+                    {
+                        out.push((i.id(), p, i.material()));
+                    }
+                }
+            }
+        }
+        if !self.natural {
+            return out;
+        }
+        let rules: Vec<usize> = (0..self.spawns.len())
+            .filter(|&r| wanted(&self.spawns[r].material))
+            .collect();
+        if rules.is_empty() {
+            return out;
+        }
+        for y in pos.y - tiles..=pos.y + tiles {
+            for x in pos.x - tiles..=pos.x + tiles {
+                let tile = Pos::new(x, y);
+                let taken = self.changes.get(&tile.chunk()).map(|c| &c.taken);
+                for &rule in &rules {
+                    let Some(id) = items::natural_id(tile, rule) else {
+                        continue;
+                    };
+                    if taken.is_some_and(|t| t.contains(&items::slot_of(id))) {
+                        continue;
+                    }
+                    if let Some((at, spawn)) =
+                        items::natural_lies(&self.map, &self.spawns, self.seed(), id)
+                    {
+                        out.push((id, at, spawn.material.as_str()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The ticks of a gesture: the content's minutes.
     fn gesture_ticks(&self, rules: &Content) -> u64 {
         (self.calendar.ticks_per_day() * u64::from(rules.needs.hands.gesture_minutes) / (24 * 60))
@@ -575,5 +637,35 @@ mod tests {
         all.sort_unstable();
         assert_eq!(seen, all);
         assert!(seen.contains(&laid));
+    }
+
+    #[test]
+    fn the_hands_see_the_things_of_a_material_as_all_the_things_near_hold_them() {
+        let rules = rules();
+        let (mut world, id, ..) = by_a_birch(&rules);
+        let here = world.body(id).unwrap().pos();
+        picked(&mut world, &rules, id, "flint", 400);
+        world.spawn_item("pebble", 600, Pos::new(here.x + 2, here.y));
+        world.spawn_item("flint", 300, Pos::new(here.x - 1, here.y + 3));
+        let all: Vec<(ItemId, Pos, String)> = world
+            .items_near(here, 4)
+            .iter()
+            .map(|i| (i.id(), i.pos().unwrap(), i.material().to_owned()))
+            .collect();
+        assert!(all.iter().any(|t| crate::items::is_natural(t.0)));
+        assert!(all.iter().any(|t| !crate::items::is_natural(t.0)));
+        for wanted in [None, Some("flint"), Some("pebble"), Some("bark")] {
+            let seen: Vec<(ItemId, Pos, String)> = world
+                .things_near(here, 4, |m| wanted.is_none_or(|w| w == m))
+                .into_iter()
+                .map(|(i, p, m)| (i, p, m.to_owned()))
+                .collect();
+            let expected: Vec<(ItemId, Pos, String)> = all
+                .iter()
+                .filter(|t| wanted.is_none_or(|w| w == t.2))
+                .cloned()
+                .collect();
+            assert_eq!(seen, expected, "{wanted:?}");
+        }
     }
 }
