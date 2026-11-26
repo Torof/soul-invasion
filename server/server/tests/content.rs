@@ -52,7 +52,7 @@ fn the_long_durations_in_seasons_give_calendar_v1_its_days() {
     assert_eq!(kept("walnuts", v1), Some(96));
     assert_eq!(kept("berries", v1), Some(3), "a short keeping stays days");
     let bark = content.material("folded_birch_bark").unwrap();
-    assert_eq!(bark.days_worn(v1), 64);
+    assert_eq!(bark.days_worn(v1), 32);
     let needs = &content.needs;
     assert_eq!(needs.fire.hearth_nights(v1), 64);
     assert_eq!(needs.decisions.habit_days(v1), 64);
