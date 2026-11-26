@@ -96,7 +96,9 @@ use crate::{Blockage, Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, W
 
 mod handwork;
 mod pooling;
+mod problems;
 pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
+pub use problems::{Problem, ProblemAim, ProblemStep};
 
 /// Thirst from which a body goes to drink: half a game day without
 /// water (thirst rises 100 points a day), so it drinks before the night
@@ -846,6 +848,9 @@ pub struct Trial {
     /// The caller whose move it joined (D56, amended 24 November 2026):
     /// its credit in it at living moves by the judgement.
     pub caller: Option<BodyId>,
+    /// The problem it was begun from, judged by it (D50, amended 26
+    /// November 2026); `None` for every other trial.
+    pub problem: Option<ProblemAim>,
 }
 
 /// The days a body in trial heard at the fire from camp-mates who changed
@@ -908,6 +913,9 @@ struct Judged {
     /// A home's grades, the old home's and the new one's (D50, amended 24
     /// November 2026).
     grades: Option<(i64, i64)>,
+    /// The problem the trial was begun from (D50, amended 26 November
+    /// 2026): told with it.
+    problem: Option<u8>,
 }
 
 /// The direction of a step of `way` from `before` to `after`: wider or
@@ -1732,6 +1740,18 @@ pub enum News {
         /// The tick.
         at: u64,
     },
+    /// A problem of `body` (D50, amended 26 November 2026): lived, or a
+    /// trial of its hands begun from it, kept, given up or ended unjudged.
+    Problem {
+        /// Who.
+        body: BodyId,
+        /// The kind: its index in the content's `problems.kinds`.
+        kind: u8,
+        /// What happened of it.
+        step: ProblemStep,
+        /// The tick.
+        at: u64,
+    },
     /// `body`, in a trial of its hands, drew its first gesture at random
     /// (D57): `heard`, in a trial begun on a tale, which keeps a free hand
     /// when no gesture heard can be made there (amended 25 November 2026).
@@ -2235,6 +2255,9 @@ pub struct Mind {
     thoughts: u64,
     /// Its hands (D57): what it tries, steps to and practised.
     handwork: Handwork,
+    /// The problems it lived and still remembers (D50, amended 26
+    /// November 2026): one record a kind, forgotten when not lived again.
+    problems: Vec<Problem>,
 }
 
 /// A confidence moved by the four rules of temperance (D50 amended,
@@ -2437,6 +2460,7 @@ impl Mind {
             turn_at: None,
             thoughts: 0,
             handwork: Handwork::default(),
+            problems: Vec::new(),
         }
     }
 
@@ -2541,6 +2565,12 @@ impl Mind {
     /// Its will, 0 to 100 (D50).
     pub fn will(&self) -> u8 {
         self.will
+    }
+
+    /// The problems it lived and remembers (D50, amended 26 November
+    /// 2026).
+    pub fn problems(&self) -> &[Problem] {
+        &self.problems
     }
 
     /// What it carries for its hearth now, in kilojoules (D58): not its
@@ -2793,6 +2823,7 @@ fn judge(
             before: trial.before_days,
             during,
             grades,
+            problem: None,
         },
     )
 }
@@ -3590,6 +3621,7 @@ impl Mind {
                 will: self.will,
                 before: judged.before,
                 during: judged.during,
+                problem: judged.problem,
             });
             own.push(id);
         }
@@ -4653,6 +4685,7 @@ impl Brains {
         self.notice(events, world);
         self.hearth_events(events, world, rules);
         self.count_gathers(events, world, rules);
+        self.live_problems(events, world, rules);
         let now = world.tick().0;
         self.bearers.left = cold_chunks_at(world, now);
         let chunks = world.map().chunks_wide() as usize * world.map().chunks_high() as usize;
@@ -4895,9 +4928,8 @@ impl Brains {
                 &mut self.news,
             );
             mind.distressed(hungry || thirsty || gathered_kj == 0);
-            let due = mind.trial.filter(|t| {
-                day >= t.started_day + u64::from(trials.days_for(t.way.key(), per_year))
-            });
+            let (due, lapsed) =
+                problems::nightfall(rules, (id, day, now, per_year), mind, &mut self.news);
             if let Some(news) = due.and_then(|t| handwork::end_untried(mind, &t, (id, now))) {
                 self.news.push(news);
             } else if let Some(trial) = due {
@@ -4909,7 +4941,7 @@ impl Brains {
                     &trial,
                 );
                 self.news.push(news);
-            } else if mind.trial.is_none() && mind.calling.is_none() {
+            } else if !lapsed && mind.trial.is_none() && mind.calling.is_none() {
                 // What it knows bare holds while no crop came on.
                 mind.bare.fade(mind.ways.home, self.food.comings);
                 let grown = world.age_milli(body) >= 16_000;
@@ -6573,6 +6605,7 @@ impl Brains {
                     before_days: mind.lately(trials.days_for(Way::Home.key(), per_year)),
                     heard: HeardDays::default(),
                     caller: Some(by),
+                    problem: None,
                 });
                 mind.changed_day = Some(today);
                 self.news.push(News::Trying {
@@ -7977,6 +8010,20 @@ fn decide(
                 Why::Hunger,
             );
         }
+    }
+    // A calm thought its hands reach is a free moment for its things to
+    // think about (D50, amended 26 November 2026): read only when not
+    // empty.
+    if !night && !going_home && !mind.problems.is_empty() {
+        let now = world.tick().0;
+        let day = today(world);
+        news.extend(problems::free_moment(
+            world,
+            rules,
+            memory,
+            (id, here, day, now),
+            mind,
+        ));
     }
     // Its hands (D57): a deed it knows and lacks what it gives, or a
     // gesture of a trial of its hands, on what lies around it.
@@ -10276,11 +10323,20 @@ fn change_or_move(
         mind.changed_day = Some(day);
         return called;
     }
+    // A free moment for its things to think about (D50, amended 26
+    // November 2026, the project lead's design): its top problem, tried
+    // when something new lies around.
+    let here = world.body(id).map_or(mind.ways.home, Body::pos);
+    let mut news = problems::free_moment(world, rules, memory, (id, here, day, now), mind);
+    if mind.trial.is_some() {
+        return news;
+    }
     if wants_to_try(&rules.needs.trials, seed, (id, day), mind)
-        && let Some(news) = start_trial(world, rules, (memory, seed), id, mind, day)
+        && let Some(begun) = start_trial(world, rules, (memory, seed), id, mind, day)
     {
         mind.changed_day = Some(day);
-        return vec![news];
+        news.push(begun);
+        return news;
     }
     // A deed heard is tried more readily than an invention (D57, the
     // project lead, 25 November 2026): an extra chance, by its will and
@@ -10293,10 +10349,10 @@ fn change_or_move(
             && scatter::roll(seed, purpose::HANDS_HEARD, &[u64::from(id.0), day]) % 1000 < chance
         {
             mind.changed_day = Some(day);
-            return vec![start_heard_deeds(world, rules, id, mind, (&heard, day))];
+            news.push(start_heard_deeds(world, rules, id, mind, (&heard, day)));
         }
     }
-    Vec::new()
+    news
 }
 
 /// `id` sets out on `day` to try the deeds of the hands it heard and does
@@ -10320,6 +10376,7 @@ fn start_heard_deeds(
         before_days: before_trial(world, trials, mind, Way::Hands, day),
         heard: HeardDays::default(),
         caller: None,
+        problem: None,
     });
     News::Trying {
         body: id,
@@ -10340,6 +10397,10 @@ fn start_heard_deeds(
 /// what the days before gave. A short trial whose days would leave the
 /// season is not begun: it waits for the next season (`trial_fits`;
 /// amended 25 November 2026).
+#[allow(
+    clippy::too_many_lines,
+    reason = "the way heard first, then the way drawn, in order"
+)]
 fn start_trial(
     world: &World,
     rules: &Content,
@@ -10382,6 +10443,7 @@ fn start_trial(
                 before_days,
                 heard: HeardDays::default(),
                 caller: None,
+                problem: None,
             });
             return Some(News::Trying {
                 body: id,
@@ -10453,6 +10515,7 @@ fn start_trial(
         before_days,
         heard: HeardDays::default(),
         caller: None,
+        problem: None,
     });
     Some(News::Trying {
         body: id,
@@ -10506,11 +10569,17 @@ fn lessons(
             up,
             kept,
             day: rec_day,
+            problem,
             ..
         }) = memory.get(access.record)
         else {
             continue;
         };
+        // A lesson told with a problem it does not live is not its own
+        // (D50, amended 26 November 2026).
+        if problem.is_some_and(|k| !mind.carries(k)) {
+            continue;
+        }
         let age = day.saturating_sub(u64::from(*rec_day));
         let factor = if age < whole {
             100
@@ -10549,12 +10618,16 @@ fn heard_candidate(memory: &Store, seed: u64, id: BodyId, mind: &Mind) -> Option
                 will,
                 during,
                 day: rec_day,
+                problem,
                 ..
             } = memory.get(access.record)?
             else {
                 return None;
             };
-            if way.same(&mind.ways, after)
+            // Told with a problem it does not live: no reason to try it
+            // (D50, amended 26 November 2026).
+            if problem.is_some_and(|k| !mind.carries(k))
+                || way.same(&mind.ways, after)
                 || *way == Way::Home
                 || (*way == Way::Hands && after.hands.within(&mind.ways.hands))
             {
@@ -10680,6 +10753,7 @@ fn call_move(
         before_days: mind.lately(rules.needs.trials.days_for(Way::Home.key(), per_year)),
         heard: HeardDays::default(),
         caller: None,
+        problem: None,
     };
     let mut news = vec![News::MoveFelt {
         body: id,
@@ -14564,6 +14638,7 @@ mod tests {
             before_days: before,
             heard: HeardDays::default(),
             caller: None,
+            problem: None,
         });
         mind.days = vec![first];
         mind.gathered_today_kj = kj;
@@ -14609,6 +14684,7 @@ mod tests {
             before_days: Lately::default(),
             heard: HeardDays::default(),
             caller: None,
+            problem: None,
         });
         let news = nightfall(&world, &rules, &mut brains);
         assert!(
@@ -14767,6 +14843,7 @@ mod tests {
             before_days: Lately::default(),
             heard: HeardDays::default(),
             caller: None,
+            problem: None,
         };
         // The season holds days 4 to 7: two days counted from day 5 at the
         // latest, whatever day after it the deed was learnt.
@@ -14950,6 +15027,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one camp's evening, the copy and its exceptions, in order"
+    )]
     fn without_the_fire_a_body_at_the_camp_copies_the_best_mates_way_losing_a_step_at_times() {
         let mut world = field(64, 40, Pos::new(5, 5));
         world.spawn_body(Pos::new(6, 5));
@@ -15039,6 +15120,7 @@ mod tests {
             before_days: Lately::default(),
             heard: HeardDays::default(),
             caller: None,
+            problem: None,
         });
         brains.imitate_at_camp(&world, &rules, me);
         assert!(brains.news().is_empty(), "under a trial, it copies nothing");
@@ -16307,6 +16389,7 @@ mod tests {
                 before_days: Lately::default(),
                 heard: HeardDays::default(),
                 caller: None,
+                problem: None,
             },
         });
     }
@@ -16447,6 +16530,7 @@ mod tests {
                 before_days: Lately::default(),
                 heard: HeardDays::default(),
                 caller: None,
+                problem: None,
             });
         }
     }
@@ -16710,6 +16794,7 @@ mod tests {
             before_days: Lately::default(),
             heard: HeardDays::default(),
             caller: None,
+            problem: None,
         });
         assert!(matches!(
             set_goal(&world, &rules, id, mind, to),
@@ -16838,6 +16923,7 @@ mod tests {
                     before_days: Lately::default(),
                     heard: HeardDays::default(),
                     caller: None,
+                    problem: None,
                 });
             }
         }
@@ -17389,6 +17475,7 @@ mod tests {
                 kj_per_day: 3000,
                 ..Lately::default()
             },
+            problem: None,
         });
         brains.minds.get_mut(&id).unwrap().heard_ways.push(Access {
             record,
@@ -17832,6 +17919,7 @@ mod tests {
             before_days: Lately::default(),
             heard: HeardDays::default(),
             caller: None,
+            problem: None,
         });
         brains.imitate(&world, &rules, me);
         assert!(brains.news().is_empty(), "under a trial, it copies nothing");
@@ -17892,6 +17980,7 @@ mod tests {
             will: 50,
             before: Lately::default(),
             during: Lately::default(),
+            problem: None,
         });
         mind.heard_ways.push(Access {
             record,
@@ -17979,6 +18068,7 @@ mod tests {
             before_days: before,
             heard,
             caller: None,
+            problem: None,
         });
         mind.days = vec![Day {
             gathered_kj: kj,
@@ -18067,6 +18157,7 @@ mod tests {
             before_days: Lately::default(),
             heard: HeardDays::default(),
             caller: None,
+            problem: None,
         });
         brains.minds.get_mut(&steady).unwrap().days = vec![day(2000)];
         let m = brains.minds.get_mut(&changed).unwrap();
@@ -18102,6 +18193,7 @@ mod tests {
             before: Lately::default(),
             during: Lately::default(),
             grades: None,
+            problem: None,
         });
         let news = night(&mut world, &rules, &mut brains, &[teller, listener]);
         let told: Vec<RecordId> = news
@@ -18246,6 +18338,7 @@ mod tests {
                 },
                 heard: HeardDays::default(),
                 caller: None,
+                problem: None,
             });
             let kj = 1000;
             mind.days = vec![Day {
@@ -18290,6 +18383,7 @@ mod tests {
                 before_days: Lately::default(),
                 heard: HeardDays::default(),
                 caller: None,
+                problem: None,
             });
             mind.handwork.gestured = gestured;
             let news = nightfall(&world, &rules, &mut brains);
@@ -18325,6 +18419,7 @@ mod tests {
             will: 50,
             before: Lately::default(),
             during: Lately::default(),
+            problem: None,
         });
         brains.minds.get_mut(&me).unwrap().heard_ways.push(Access {
             record,
@@ -18829,6 +18924,7 @@ mod tests {
                 },
                 heard: HeardDays::default(),
                 caller: None,
+                problem: None,
             };
             (mind, trial)
         };
@@ -19449,6 +19545,7 @@ mod tests {
                 before_days: Lately::default(),
                 heard: HeardDays::default(),
                 caller: None,
+                problem: None,
             };
             (mind, trial)
         };

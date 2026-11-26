@@ -827,6 +827,56 @@
         near_tiles: 4,
         tries_per_day: 4,
     ),
+    // The problems (D50 and D57, amended 26 November 2026; the project
+    // lead: "not a feeling added to push them, rather a limitation that
+    // leads to thought: my arms are full, I can't take more"). A refusal of
+    // the world lived by a body is remembered as a problem (the refusal, the
+    // place, the day, how many times), linked to the property of the
+    // materials the refusal's test read, and carried among its things to
+    // think about (mind_slots below). Living it, the chance of its will may
+    // make a body mean to try it; it begins a trial of its hands at a free
+    // moment (hunger and thirst under the day's distress lines: a calm
+    // thought by day, or nightfall) where the things around allow a gesture
+    // its hands do not know: there and then, or later, wherever it is
+    // (the lead: "one may think about a problem in front of it, or later;
+    // and in front of it, it is often when one is free"). Its gesture is
+    // drawn as in any trial of the hands; that trial is judged by the
+    // problem: has the limit moved when it comes again? It is told at the fire
+    // with its problem, and only a listener who lives the same problem
+    // tries it first. Absent: nothing is remembered as a problem.
+    // kinds:               one, `full` (a gathering stopped with the arms
+    //                      full, the plant still bearing), whose test read
+    //                      `holds_g` (what a body's containers hold beyond
+    //                      its arms); its limit moved when a later
+    //                      gathering stopped full finds the body carrying
+    //                      more than its arms alone;
+    //   trials_per_season: 1 — at most one trial a season begun from it;
+    //   gives_up_seasons:  1 — a trial from it is given up when a season
+    //                      passed since it began with the problem lived
+    //                      again and the limit unmoved (16 days in
+    //                      calendar v1);
+    // fades_seasons:       2 — a problem not lived for two seasons is
+    //                      forgotten, and a tale told with it no longer
+    //                      concerns the listener;
+    // mind_slots:          3 — the things to think about a body keeps (the
+    //                      project lead's design): a problem lived is
+    //                      pushed on top, already there it moves up; a full
+    //                      list lets its oldest drop off. At a free moment
+    //                      the body pops the top problem it means to try and
+    //                      tries if something new lies around, else puts
+    //                      it back below the top.
+    problems: (
+        kinds: [
+            (
+                refusal: "full",
+                property: "holds_g",
+                trials_per_season: 1,
+                gives_up_seasons: 1,
+            ),
+        ],
+        fades_seasons: 2,
+        mind_slots: 3,
+    ),
     // The point of no return and the trips (D53, D56, amended 25 November
     // 2026; the project lead: "réfléchir à faire demi-tour, quand c'est
     // nécessaire, mais aussi prendre la décision de dormir sur place et de

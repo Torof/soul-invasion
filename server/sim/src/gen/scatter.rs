@@ -196,6 +196,9 @@ pub(crate) mod purpose {
     pub(crate) const HANDS_THING: u64 = 0x0d57_7419;
     /// The extra chance to try a deed heard (D57, 25 November 2026).
     pub(crate) const HANDS_HEARD: u64 = 0x0d57_4ea2;
+    /// The chance to begin a trial of the hands where a problem was just
+    /// lived (D50, amended 26 November 2026).
+    pub(crate) const PROBLEM_TRY: u64 = 0x0d50_9b1e;
 
     /// The point of no return (D53, D56, amended 25 November 2026):
     /// whether a body away stays out, goes on, or goes home.
@@ -207,7 +210,7 @@ pub(crate) mod purpose {
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 77] = [
+    pub(crate) const ALL: [u64; 78] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -283,6 +286,7 @@ pub(crate) mod purpose {
         HANDS_GESTURE,
         HANDS_THING,
         HANDS_HEARD,
+        PROBLEM_TRY,
         TRIP_TURN,
         HUNGER_BAR,
     ];

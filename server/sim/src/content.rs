@@ -497,6 +497,11 @@ pub struct Needs {
     /// gesture.
     #[serde(default)]
     pub hands: Hands,
+    /// The refusals of the world remembered as problems (D50 and D57,
+    /// amended 26 November 2026). Absent: nothing is remembered as a
+    /// problem.
+    #[serde(default)]
+    pub problems: Problems,
     /// The point of no return and the trips (D53, D56, amended 25
     /// November 2026): away from its camp when the walk home would take
     /// the rest of the light, and each morning away, a body chooses to go
@@ -841,6 +846,132 @@ impl Hands {
         if !(1..=24 * 60).contains(&self.gesture_minutes) || !(1..=16).contains(&self.near_tiles) {
             return Err(ContentError::Needs(
                 "hands: gesture_minutes 1 to a day, near_tiles 1 to 16",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The refusals of the world a body remembers as a problem (D50 and D57,
+/// amended 26 November 2026; the project lead: "not a feeling added to
+/// push them, rather a limitation that leads to thought: my arms are full,
+/// I can't take more"). Each kind links a refusal of the world to the
+/// property of the materials its test read: `full` (a gathering stopped
+/// with its arms full, the plant still bearing) to `holds_g`. A lived
+/// problem lets a willing body try its hands there and then, and that
+/// trial is judged by the problem. No word for what would answer it. D30
+/// placeholders, named and explained in `content/needs.ron`. Absent (no
+/// kinds): nothing is remembered as a problem.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Problems {
+    /// The kinds remembered, each a refusal and its property.
+    pub kinds: Vec<ProblemKind>,
+    /// A problem not lived again for this many seasons is forgotten.
+    pub fades_seasons: u32,
+    /// The things to think about a body keeps, at most (the project
+    /// lead's design): a full list lets its oldest drop off.
+    pub mind_slots: u32,
+}
+
+/// One kind of problem (D50, amended 26 November 2026).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProblemKind {
+    /// The refusal of the world, in the simulation's own word: `full`
+    /// (a gathering stopped with all it could carry, [`crate::WorkEnd::Full`]).
+    pub refusal: String,
+    /// The property of the materials the refusal's test read: `holds_g`.
+    pub property: String,
+    /// The trials a body begins from this problem in a season, at most.
+    pub trials_per_season: u32,
+    /// A trial from this problem is given up when this many seasons
+    /// passed since it began with the problem lived again and the limit
+    /// unmoved (D09: written in seasons).
+    pub gives_up_seasons: u32,
+}
+
+impl ProblemKind {
+    /// The days a trial from this problem has before it is given up, in
+    /// days of a cycle of `days_per_cycle`, at least one.
+    #[must_use]
+    pub fn gives_up_days(&self, days_per_cycle: u32) -> u32 {
+        season_days(self.gives_up_seasons, days_per_cycle).max(1)
+    }
+}
+
+/// The refusals a problem may name, each with the one property its test
+/// reads (D50, amended 26 November 2026).
+const PROBLEM_LINKS: [(&str, &str); 1] = [("full", "holds_g")];
+
+impl Problems {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            kinds: vec![ProblemKind {
+                refusal: "full".to_owned(),
+                property: "holds_g".to_owned(),
+                trials_per_season: 1,
+                gives_up_seasons: 1,
+            }],
+            fades_seasons: 2,
+            mind_slots: 3,
+        }
+    }
+
+    /// Whether any problem is remembered.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        !self.kinds.is_empty()
+    }
+
+    /// The index of the kind named by `refusal`, if remembered.
+    #[must_use]
+    pub fn kind_of(&self, refusal: &str) -> Option<u8> {
+        self.kinds
+            .iter()
+            .position(|k| k.refusal == refusal)
+            .and_then(|i| u8::try_from(i).ok())
+    }
+
+    /// The kind at `index`.
+    #[must_use]
+    pub fn kind(&self, index: u8) -> Option<&ProblemKind> {
+        self.kinds.get(usize::from(index))
+    }
+
+    /// The days a problem not lived again is kept, in days of a cycle of
+    /// `days_per_cycle`.
+    #[must_use]
+    pub fn fade_days(&self, days_per_cycle: u32) -> u32 {
+        season_days(self.fades_seasons, days_per_cycle).max(1)
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if !self.on() {
+            return Ok(());
+        }
+        let linked = |k: &ProblemKind| {
+            PROBLEM_LINKS
+                .iter()
+                .any(|(r, p)| *r == k.refusal && *p == k.property)
+        };
+        let unique = self
+            .kinds
+            .iter()
+            .enumerate()
+            .all(|(i, k)| self.kinds[..i].iter().all(|o| o.refusal != k.refusal));
+        if self.kinds.len() > usize::from(u8::MAX)
+            || !unique
+            || self.fades_seasons == 0
+            || !(1..=255).contains(&self.mind_slots)
+            || !self
+                .kinds
+                .iter()
+                .all(|k| linked(k) && k.gives_up_seasons > 0)
+        {
+            return Err(ContentError::Needs(
+                "problems: each refusal once, linked to the property its test reads \
+                 (full: holds_g), gives_up_seasons and fades_seasons at least 1, mind_slots 1 to 255",
             ));
         }
         Ok(())
@@ -2552,6 +2683,7 @@ impl Needs {
         self.family.validate()?;
         self.pooling.validate()?;
         self.trips.validate()?;
+        self.problems.validate()?;
         self.hands.validate()
     }
 
@@ -4112,5 +4244,32 @@ mod bounds_tests {
         .unwrap()
         .validate_bounds()
         .unwrap();
+    }
+
+    #[test]
+    fn the_problems_link_a_refusal_to_the_property_its_test_reads() {
+        let repo = crate::crops::tests::content();
+        assert_eq!(repo.needs.problems, Problems::placeholders());
+        assert_eq!(repo.needs.problems.kind_of("full"), Some(0));
+        assert!(!Problems::default().on() && Problems::default().validate().is_ok());
+        let mut p = Problems::placeholders();
+        assert!(p.validate().is_ok());
+        p.kinds[0].property = "wears_days".to_owned();
+        assert!(p.validate().is_err(), "full reads holds_g");
+        let mut p = Problems::placeholders();
+        p.kinds[0].refusal = "water".to_owned();
+        assert!(p.validate().is_err(), "no such refusal linked");
+        let mut p = Problems::placeholders();
+        p.kinds.push(p.kinds[0].clone());
+        assert!(p.validate().is_err(), "each refusal once");
+        let mut p = Problems::placeholders();
+        p.kinds[0].gives_up_seasons = 0;
+        assert!(p.validate().is_err());
+        let mut p = Problems::placeholders();
+        p.fades_seasons = 0;
+        assert!(p.validate().is_err());
+        let mut p = Problems::placeholders();
+        p.mind_slots = 0;
+        assert!(p.validate().is_err());
     }
 }

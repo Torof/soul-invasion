@@ -534,6 +534,9 @@ impl Report {
         let tribes = u8::try_from(self.camps.len()).unwrap_or(u8::MAX);
         value["hands"] = self.hands.json(&changes, days, tribes);
         value["reach"] = self.reach_json();
+        // --- the problems (26 November 2026) ---
+        value["problems"] = self.problems.json(&self.hands);
+        // --- end of the problems ---
         value
     }
 
@@ -590,6 +593,10 @@ impl Report {
         out.push_str(",\n  \"meetings\": ");
         layout(&value["meetings"], 1, &mut out);
         // --- end of the meetings between tribes ---
+        // --- the problems (26 November 2026): last ---
+        out.push_str(",\n  \"problems\": ");
+        layout(&value["problems"], 1, &mut out);
+        // --- end of the problems ---
         out.push_str("\n}\n");
         out
     }

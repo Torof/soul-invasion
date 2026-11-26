@@ -50,6 +50,9 @@ pub mod lands;
 pub mod pooling;
 // --- end of the hearth's pooling ---
 pub mod png;
+// --- the problems (26 November 2026): their own module ---
+pub mod problems;
+// --- end of the problems ---
 pub mod pyramid;
 
 /// Where the content is looked for when no directory is given: as the
@@ -182,6 +185,11 @@ pub struct Settings {
     /// (`--no-trips`), the content's `trips` section replaced by none: a
     /// body gathers until night and walks home in the dark.
     pub trips: bool,
+    /// The problems (D50 and D57, amended 26 November 2026): false is the
+    /// control run without them (`--no-problems`), the content's
+    /// `problems` section replaced by none: nothing is remembered as a
+    /// problem, and behaviour is the run's without the change.
+    pub problems: bool,
     /// Where the vivarium's continent is kept between runs
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
@@ -266,6 +274,7 @@ impl Default for Settings {
             pooling: true,
             care: true,
             trips: true,
+            problems: true,
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
             helpers: 1,
@@ -2018,6 +2027,8 @@ pub struct Report {
     pub moving: MovingProbe,
     /// The hands (D57): the containers made, carried, torn, told.
     pub hands: hands::HandsProbe,
+    /// The problems (D50 and D57, amended 26 November 2026).
+    pub problems: problems::ProblemsProbe,
     /// The goals held, in the order set (D56, amended 24 November 2026).
     pub goals: Vec<GoalRow>,
     /// The fire's counts by tribe and year (D55).
@@ -2229,6 +2240,7 @@ pub fn run_watched(
         || !settings.pooling
         || !settings.care
         || !settings.trips
+        || !settings.problems
     {
         let mut own = content.clone();
         if settings.fed {
@@ -2253,6 +2265,9 @@ pub fn run_watched(
         }
         if !settings.care {
             own.needs.pooling.care_days = 0;
+        }
+        if !settings.problems {
+            own.needs.problems = sim::content::Problems::default();
         }
         if !settings.trips {
             own.needs.trips = sim::content::Trips::default();
@@ -2604,6 +2619,7 @@ pub fn run_watched(
     let mut move_calls: Vec<MoveCall> = Vec::new();
     let mut moving = MovingProbe::default();
     let mut hands = hands::HandsProbe::default();
+    let mut problems_probe = problems::ProblemsProbe::new(content);
     let days_per_age_year = u64::from(calendar.days_per_age_year().max(1));
     let ticks_per_age_year = calendar.ticks_per_day() * days_per_age_year;
     let mut goals: Vec<GoalRow> = Vec::new();
@@ -2691,6 +2707,7 @@ pub fn run_watched(
         let year = (tick - 1) / per_year + 1;
         // --- the hearth's pooling (25 November 2026) ---
         pooling.tick((&world, &brains, content), &events, day);
+        problems_probe.tick(&world);
         // --- end of the hearth's pooling ---
         // --- the food carried home (25 November 2026) ---
         carried.tick((&world, &brains, content), &events, &people);
@@ -3053,6 +3070,7 @@ pub fn run_watched(
         }
         // --- end of the hearth's pooling ---
         hands.news(&brains, (&world, content), &people, &batch, (day, age_year));
+        problems_probe.news(&world, &batch);
         // Who held what from whom this dawn (D55): the sentence of a
         // trial told names those who believed it.
         let mut believed: BTreeMap<(RecordId, BodyId), Vec<BodyId>> = BTreeMap::new();
@@ -3360,7 +3378,8 @@ pub fn run_watched(
                 | News::Turned { .. }
                 | News::Untried { .. }
                 | News::Drew { .. }
-                | News::ToolTaken { .. } => continue,
+                | News::ToolTaken { .. }
+                | News::Problem { .. } => continue,
                 News::Copied {
                     body,
                     from,
@@ -3549,6 +3568,7 @@ pub fn run_watched(
         // The year's last tick, or the run's: what the living carry, and
         // the ways in use (D50).
         if tick % per_year == 0 || tick == ticks {
+            problems_probe.cycle_end((&world, content), &brains, year);
             settlements.insert(year, settlements_of(&world, &brains, &people));
             let carried = reserves(&world, content, &people);
             for (tribe, &j) in carried.iter().enumerate().take(tribes) {
@@ -3702,6 +3722,7 @@ pub fn run_watched(
         move_calls,
         moving,
         hands,
+        problems: problems_probe,
         goals,
         fire: tally.fire,
         seasons: tally.seasons,
@@ -6833,6 +6854,7 @@ mod tests {
             pooling: true,
             care: true,
             trips: true,
+            problems: true,
             continents: None,
             lands: None,
             helpers: 1,
