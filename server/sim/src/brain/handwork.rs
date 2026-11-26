@@ -16,6 +16,7 @@ use crate::memory::{Record, Store};
 use crate::trees::TreeKey;
 use crate::{BodyId, GATHER_REACH_MM, Intention, ItemId, World};
 
+use super::pooling::Reserves;
 use super::{AROUND, Decision, Doing, Mind, News, Way, Why, today, walkable};
 
 /// The most deeds a body holds in its ways.
@@ -475,9 +476,13 @@ fn nearest_of(
     world: &World,
     rules: &Content,
     (here, near): (Pos, i32),
-    mind: &Mind,
+    (mind, reserves): (&Mind, &Reserves),
     materials: &[u16],
 ) -> Vec<(u16, ItemId, Pos)> {
+    // Never from its own hearth's reserve (D58, amended 26 November 2026):
+    // a deed it knows took there what it had just laid, and laid it again,
+    // one take every two ticks.
+    let own = super::pooling::on(rules).then(|| super::pooling::camp_of(rules, mind.ways.home));
     // A material is known by the first of its name in the content, as
     // `material_index` reads it.
     let names: Vec<(u16, &str)> = materials
@@ -489,7 +494,9 @@ fn nearest_of(
         .collect();
     let mut best: Vec<(u16, (i64, ItemId), Pos)> = Vec::new();
     for (id, p, material) in world.things_near(here, near, |m| names.iter().any(|n| n.1 == m)) {
-        if mind.handwork.barred(Barred::Item(id)) {
+        if mind.handwork.barred(Barred::Item(id))
+            || (own.is_some() && reserves.camp_holding(id) == own)
+        {
             continue;
         }
         let Some(&(m, _)) = names.iter().find(|n| n.1 == material) else {
@@ -589,7 +596,7 @@ pub(super) fn hands_turn(
     rules: &Content,
     (id, here): (BodyId, Pos),
     mind: &mut Mind,
-    (seed, news): (u64, &mut Vec<News>),
+    (seed, news, reserves): (u64, &mut Vec<News>, &Reserves),
 ) -> HandsTurn {
     let hands = &rules.needs.hands;
     let Some(body) = world.body(id).filter(|_| hands.on()) else {
@@ -667,10 +674,11 @@ pub(super) fn hands_turn(
     for deed in mind.handwork.aim.iter() {
         deeds.add(deed);
     }
+    let around: (&Deeds, &[(ItemId, u16)], i32) = (&deeds, &have, near);
     let found = if deeds.is_empty() {
         None
     } else {
-        needed(world, rules, (id, here), (&deeds, &have, near), mind)
+        needed(world, rules, (id, here), around, (mind, reserves))
     };
     if let Some(((HandTarget::Item(item, _), _), true)) = found {
         mind.handwork.fetch = Some(item);
@@ -807,7 +815,7 @@ fn needed(
     rules: &Content,
     (id, here): (BodyId, Pos),
     (deeds, have, near): (&Deeds, &[(ItemId, u16)], i32),
-    mind: &Mind,
+    (mind, reserves): (&Mind, &Reserves),
 ) -> Option<((HandTarget, Deed), bool)> {
     let lacks = |deed: Deed| {
         product(rules, deed).is_some_and(|p| {
@@ -833,7 +841,7 @@ fn needed(
                     .collect();
                 materials.sort_unstable();
                 materials.dedup();
-                nearest_of(world, rules, (here, near), mind, &materials)
+                nearest_of(world, rules, (here, near), (mind, reserves), &materials)
             })
             .iter()
             .find(|n| n.0 == m)
@@ -1217,9 +1225,13 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         mind.ways.hands = bark_deeds(&rules, birch);
         // Beside the birch, the flint carried: it cuts.
-        let HandsTurn::Decide(Some(decision)) =
-            hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()))
-        else {
+        let HandsTurn::Decide(Some(decision)) = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            mind,
+            (7, &mut Vec::new(), &Reserves::default()),
+        ) else {
             panic!("a deed");
         };
         assert!(
@@ -1233,9 +1245,13 @@ mod tests {
         brains.notice(&events, &world);
         let mind = brains.minds.get_mut(&id).unwrap();
         // The bark carried: it folds it.
-        let HandsTurn::Decide(Some(decision)) =
-            hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()))
-        else {
+        let HandsTurn::Decide(Some(decision)) = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            mind,
+            (7, &mut Vec::new(), &Reserves::default()),
+        ) else {
             panic!("a deed");
         };
         let Intention::Fold { item, .. } = decision.intention else {
@@ -1249,7 +1265,13 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         // A container carried: nothing more to do with its hands.
         assert_eq!(
-            hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new())),
+            hands_turn(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (7, &mut Vec::new(), &Reserves::default())
+            ),
             HandsTurn::Free
         );
         assert_eq!(world.item(item).unwrap().material(), "folded_birch_bark");
@@ -1276,7 +1298,13 @@ mod tests {
         };
         let cuts = |world: &World, mind: &mut Mind| {
             matches!(
-                hands_turn(world, &rules, (id, here), mind, (7, &mut Vec::new())),
+                hands_turn(
+                    world,
+                    &rules,
+                    (id, here),
+                    mind,
+                    (7, &mut Vec::new(), &Reserves::default())
+                ),
                 HandsTurn::Decide(Some(Decision {
                     intention: Intention::Cut { .. },
                     ..
@@ -1310,9 +1338,13 @@ mod tests {
         let pebble = picked(&mut world, &rules, id, "pebble");
         picked(&mut world, &rules, id, "berries");
         let mind = brains.minds.get_mut(&id).unwrap();
-        let HandsTurn::Decide(Some(decision)) =
-            hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()))
-        else {
+        let HandsTurn::Decide(Some(decision)) = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            mind,
+            (7, &mut Vec::new(), &Reserves::default()),
+        ) else {
             panic!("a deed");
         };
         assert_eq!(
@@ -1331,9 +1363,13 @@ mod tests {
         let here = world.body(id).unwrap().pos();
         let flint = picked(&mut world, &rules, id, "flint");
         let mut idle = brains.minds.get(&id).unwrap().clone();
-        let HandsTurn::Decide(Some(decision)) =
-            hands_turn(&world, &rules, (id, here), &mut idle, (7, &mut Vec::new()))
-        else {
+        let HandsTurn::Decide(Some(decision)) = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            &mut idle,
+            (7, &mut Vec::new(), &Reserves::default()),
+        ) else {
             panic!("a deed");
         };
         assert_eq!(
@@ -1353,7 +1389,13 @@ mod tests {
         };
         mind.handwork.pending = Some((cut, flint));
         mind.handwork.done = Some(true);
-        let turn = hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()));
+        let turn = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            mind,
+            (7, &mut Vec::new(), &Reserves::default()),
+        );
         assert!(mind.handwork.served(material(&rules, "flint")));
         assert!(mind.ways.hands.is_empty(), "served, not learnt: no trial");
         assert_eq!(turn, HandsTurn::Free, "the flint stays in its hands");
@@ -1366,7 +1408,13 @@ mod tests {
         picked(&mut world, &rules, id, "folded_birch_bark");
         let container = material(&rules, "folded_birch_bark");
         let mind = brains.minds.get_mut(&id).unwrap();
-        let _ = hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()));
+        let _ = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            mind,
+            (7, &mut Vec::new(), &Reserves::default()),
+        );
         assert!(!mind.handwork.served(container), "empty, it served nothing");
         let berries = world.spawn_item("berries", 3000, here);
         let mut events = Vec::new();
@@ -1377,7 +1425,13 @@ mod tests {
         world.advance(1, &rules, &mut events);
         assert!(world.body(id).unwrap().food_g() > 1000, "{events:?}");
         let mind = brains.minds.get_mut(&id).unwrap();
-        let _ = hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()));
+        let _ = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            mind,
+            (7, &mut Vec::new(), &Reserves::default()),
+        );
         assert!(mind.handwork.served(container));
     }
 
@@ -1443,7 +1497,13 @@ mod tests {
             with: NOTHING,
         }));
         assert_eq!(
-            hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new())),
+            hands_turn(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (7, &mut Vec::new(), &Reserves::default())
+            ),
             HandsTurn::Free,
             "out of a trial it only does what it knows, and holds the flint"
         );
@@ -1462,9 +1522,13 @@ mod tests {
             mind.handwork.to = None;
             mind.handwork.pending = None;
             mind.doing = Doing::Nothing;
-            if let HandsTurn::Decide(Some(d)) =
-                hands_turn(&world, &rules, (id, here), mind, (seed, &mut Vec::new()))
-                && let Intention::Cut { with, .. } = d.intention
+            if let HandsTurn::Decide(Some(d)) = hands_turn(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (seed, &mut Vec::new(), &Reserves::default()),
+            ) && let Intention::Cut { with, .. } = d.intention
             {
                 assert_eq!(with, flint, "it cuts with the flint it knew to take");
                 cut = true;
@@ -1512,9 +1576,13 @@ mod tests {
         };
         in_a_trial(mind, &[heard], day);
         let mut news = Vec::new();
-        let HandsTurn::Decide(Some(decision)) =
-            hands_turn(&world, &rules, (id, here), mind, (7, &mut news))
-        else {
+        let HandsTurn::Decide(Some(decision)) = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            mind,
+            (7, &mut news, &Reserves::default()),
+        ) else {
             panic!("a gesture drawn");
         };
         assert_eq!(decision.why, Why::Hands);
@@ -1537,7 +1605,13 @@ mod tests {
         mind.handwork.to = None;
         mind.doing = Doing::Nothing;
         let mut again = Vec::new();
-        let _ = hands_turn(&world, &rules, (id, here), mind, (8, &mut again));
+        let _ = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            mind,
+            (8, &mut again, &Reserves::default()),
+        );
         assert!(
             !again.iter().any(|n| matches!(n, News::Drew { .. })),
             "{again:?}"
@@ -1561,9 +1635,13 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         in_a_trial(mind, &[cut], day);
         let mut news = Vec::new();
-        let HandsTurn::Decide(Some(decision)) =
-            hands_turn(&world, &rules, (id, here), mind, (7, &mut news))
-        else {
+        let HandsTurn::Decide(Some(decision)) = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            mind,
+            (7, &mut news, &Reserves::default()),
+        ) else {
             panic!("the flint taken up");
         };
         assert!(
@@ -1578,9 +1656,13 @@ mod tests {
         assert!(world.body(id).unwrap().has(flint));
         let mind = brains.minds.get_mut(&id).unwrap();
         let mut news = Vec::new();
-        let HandsTurn::Decide(Some(decision)) =
-            hands_turn(&world, &rules, (id, here), mind, (7, &mut news))
-        else {
+        let HandsTurn::Decide(Some(decision)) = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            mind,
+            (7, &mut news, &Reserves::default()),
+        ) else {
             panic!("the cut");
         };
         assert!(

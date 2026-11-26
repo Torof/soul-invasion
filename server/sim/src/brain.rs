@@ -7881,7 +7881,7 @@ fn decide(
     if !night
         && !going_home
         && let handwork::HandsTurn::Decide(decision) =
-            handwork::hands_turn(world, rules, (id, here), mind, (seed, news))
+            handwork::hands_turn(world, rules, (id, here), mind, (seed, news, reserves))
     {
         return decision;
     }
