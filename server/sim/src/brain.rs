@@ -1508,73 +1508,7 @@ pub enum PassageStep {
         /// Heard, not its own.
         heard: bool,
     },
-    /// A walk to a place ended (a probe, 26 November 2026): `kind`
-    /// [`WALK_HARD`] (straight, the place not on a clear line from where
-    /// it set off) or [`WALK_VIA`] (through a passage); `end` one of the
-    /// `END_*` codes; `leg` the leg it was on through a passage, of `legs`
-    /// (0 of 0 when straight).
-    Walk {
-        /// How it set off.
-        kind: u8,
-        /// How it ended.
-        end: u8,
-        /// The leg, from 0.
-        leg: u8,
-        /// The legs, the place's included.
-        legs: u8,
-    },
 }
-
-/// A walk straight to a place not on a clear line from where the body set
-/// off ([`PassageStep::Walk`]).
-pub const WALK_HARD: u8 = 1;
-/// A walk through a passage.
-pub const WALK_VIA: u8 = 2;
-/// A walk through a passage begun seeing no elbow on a clear line.
-pub const WALK_VIA_BLIND: u8 = 3;
-/// How a walk to a place ended ([`PassageStep::Walk`]): the codes, in the
-/// order of [`END_NAMES`].
-pub const END_ARRIVED: u8 = 0;
-/// Barred by water.
-pub const END_WATER: u8 = 1;
-/// Barred by rock.
-pub const END_ROCK: u8 = 2;
-/// Stopped short, nothing barring (no way seen).
-pub const END_SHORT: u8 = 3;
-/// Gone home at night.
-pub const END_NIGHT: u8 = 4;
-/// Gone home by day.
-pub const END_HOME: u8 = 5;
-/// Gone to drink.
-pub const END_DRINK: u8 = 6;
-/// Gone to eat.
-pub const END_EAT: u8 = 7;
-/// Gone looking.
-pub const END_LOOK: u8 = 8;
-/// Gone to another place.
-pub const END_SWITCHED: u8 = 9;
-/// Anything else (its hands, nothing by day).
-pub const END_OTHER: u8 = 10;
-/// Gone to gather a plant elsewhere.
-pub const END_GATHER: u8 = 11;
-/// Standing still at night: lying down out there.
-pub const END_OUT: u8 = 12;
-/// The ends' names, by code.
-pub const END_NAMES: [&str; 13] = [
-    "arrived",
-    "water",
-    "rock",
-    "short",
-    "night",
-    "home",
-    "drink",
-    "eat",
-    "look",
-    "switched",
-    "other",
-    "gather",
-    "night_out",
-];
 
 /// What the brain tells of its trials (D50), drained with
 /// [`Brains::news`] after each turn: the vivarium's chronicle reads it.
@@ -2283,16 +2217,10 @@ pub struct Mind {
     /// place, and the next elbow it walks to ([`VIA_PLACE`]: the place
     /// itself, its last leg; [`VIA_STRAIGHT`]: straight, no passage).
     via: Option<(PlaceKey, u8)>,
-    /// The walk to a place it is on, watched (a probe): the place and how
-    /// it set off ([`WALK_HARD`], [`WALK_VIA`]).
-    walk_probe: Option<(PlaceKey, u8)>,
     /// The place and the day of its last walk through a passage begun: a
     /// walk taken up again after a drink or a meal is the same walk (a
     /// measure).
     via_begun: Option<(PlaceKey, u32)>,
-    /// The place of its walk through a passage set off seeing no elbow on
-    /// a clear line: on its way to the first, until it stands there.
-    via_blind: Option<PlaceKey>,
     /// The last day a walk of it was barred by water: a measure.
     water_day: u32,
     /// The places it could not walk to, and the day it tried: left alone
@@ -2567,8 +2495,6 @@ impl Mind {
             passages_new: Vec::new(),
             via: None,
             via_begun: None,
-            via_blind: None,
-            walk_probe: None,
             water_day: u32::MAX,
             out_of_reach: BTreeMap::new(),
             unseen: Vec::new(),
@@ -8171,22 +8097,13 @@ fn decide(
     }
     // Its walk through a passage (D53, amended 26 November 2026): going
     // elsewhere, it is over; stopped at an elbow, it walks the next leg.
-    walk_ended(world, rules, (id, here), mind, news);
     let at_elbow = elbow_reached(mind, here);
     if let Doing::ToPlace(place) = mind.doing
         && mind.stopped
         && !at_elbow
         && !at_place(here, place, place_side(rules))
     {
-        // On its way to an elbow it did not see when it set off, it was
-        // looking for the passage, not walking it: barred, the place is
-        // left for the day, the passage kept (amended 26 November 2026).
-        let blind = mind.via_blind == Some(place)
-            && mind
-                .via
-                .is_some_and(|(k, next)| k == place && next != VIA_STRAIGHT);
         mind.via = None;
-        mind.via_blind = None;
         // Stopped short of the place: the way there is not one it knows.
         // Left for the day, or it would try every corner beyond the same
         // river one after the other. Barred by water or rock (D32), the
@@ -8194,9 +8111,7 @@ fn decide(
         // anything else, only the day.
         mind.doing = Doing::Nothing;
         leave_for_today(world, mind, place);
-        if let Some(cause @ (Blockage::Water | Blockage::Rock)) = mind.blocked
-            && !blind
-        {
+        if let Some(cause @ (Blockage::Water | Blockage::Rock)) = mind.blocked {
             bar(world, (id, place, cause), mind, (memory, news));
         }
     }
@@ -10156,7 +10071,6 @@ fn go_for(
         Goal::Place(key, stand) => {
             mind.doing = Doing::ToPlace(key);
             let target = via_target(world, rules, (id, here, key, stand), mind, news);
-            watch_walk(world, (id, here, key, stand), mind, news);
             Some(Decision {
                 intention: Intention::MoveTo { body: id, target },
                 why,
@@ -10165,140 +10079,14 @@ fn go_for(
     }
 }
 
-/// A probe (26 November 2026): a walk to the place `key` set off from
-/// `here`, watched until it ends ([`walk_ended`]) when it is through a
-/// passage or straight to a place not on a clear line; another place
-/// gone to ends the one watched. Nothing it decides reads it.
-fn watch_walk(
-    world: &World,
-    (id, here, key, stand): (BodyId, Pos, PlaceKey, Pos),
-    mind: &mut Mind,
-    news: &mut Vec<News>,
-) {
-    if mind.walk_probe.is_some_and(|(k, _)| k == key) {
-        return;
-    }
-    if let Some((old, kind)) = mind.walk_probe.take() {
-        push_walk(world, (id, old, kind, END_SWITCHED), mind, news);
-    }
-    let elbow = |next: u8| {
-        mind.places
-            .get(&key)
-            .and_then(|p| p.passage.as_ref())
-            .and_then(|p| p.via.get(usize::from(next)).copied())
-    };
-    let kind = if let Some((k, next)) = mind.via
-        && k == key
-        && next != VIA_STRAIGHT
-    {
-        if elbow(next).is_some_and(|e| clear_line(world.map(), here, e)) {
-            WALK_VIA
-        } else {
-            WALK_VIA_BLIND
-        }
-    } else if !clear_line(world.map(), here, stand) {
-        WALK_HARD
-    } else {
-        0
-    };
-    mind.walk_probe = Some((key, kind));
-}
-
-/// The walk watched ended `end` (a probe): told when watched.
-fn push_walk(
-    world: &World,
-    (id, key, kind, end): (BodyId, PlaceKey, u8, u8),
-    mind: &Mind,
-    news: &mut Vec<News>,
-) {
-    if kind == 0 {
-        return;
-    }
-    let (leg, legs) = match mind.via {
-        Some((k, next)) if k == key && next != VIA_STRAIGHT => {
-            let legs = mind
-                .places
-                .get(&key)
-                .and_then(|p| p.passage.as_ref())
-                .map_or(0, |p| p.via.len() + 1);
-            (next, u8::try_from(legs).unwrap_or(u8::MAX))
-        }
-        _ => (0, 0),
-    };
-    news.push(News::Passage {
-        body: id,
-        place: key,
-        step: PassageStep::Walk {
-            kind,
-            end,
-            leg,
-            legs,
-        },
-        at: world.tick().0,
-    });
-}
-
-/// The walk watched at a thought (a probe), before anything else reads
-/// the walk: at the place, it arrived; doing something else, it ended so;
-/// stopped short of it (not at an elbow), barred or stopped.
-fn walk_ended(
-    world: &World,
-    rules: &Content,
-    (id, here): (BodyId, Pos),
-    mind: &mut Mind,
-    news: &mut Vec<News>,
-) {
-    let Some((key, kind)) = mind.walk_probe else {
-        return;
-    };
-    let side = place_side(rules);
-    let at_elbow = mind.stopped
-        && mind.via.is_some_and(|(k, next)| {
-            k == key
-                && next != VIA_STRAIGHT
-                && mind
-                    .places
-                    .get(&key)
-                    .and_then(|p| p.passage.as_ref())
-                    .and_then(|p| p.via.get(usize::from(next)))
-                    .is_some_and(|&elbow| within(here, elbow, ELBOW_TILES))
-        });
-    let end = if at_place(here, key, side) {
-        END_ARRIVED
-    } else if mind.doing != Doing::ToPlace(key) {
-        match mind.doing {
-            Doing::Home if world.is_night(rules) => END_NIGHT,
-            Doing::Home => END_HOME,
-            Doing::ToDrink(_) => END_DRINK,
-            Doing::ToEat(..) | Doing::ToReserve(_) => END_EAT,
-            Doing::Exploring(_) => END_LOOK,
-            Doing::ToPlace(_) => END_SWITCHED,
-            Doing::ToGather(_) | Doing::Gathering(_) => END_GATHER,
-            Doing::Nothing if world.is_night(rules) => END_OUT,
-            _ => END_OTHER,
-        }
-    } else if mind.stopped && !at_elbow {
-        match mind.blocked {
-            Some(Blockage::Water) => END_WATER,
-            Some(Blockage::Rock) => END_ROCK,
-            _ => END_SHORT,
-        }
-    } else {
-        return;
-    };
-    push_walk(world, (id, key, kind, end), mind, news);
-    mind.walk_probe = None;
-}
-
 /// Where a body going to the place `key`, its tile to stand on `stand`,
 /// walks now (D53, amended 26 November 2026): holding a passage to it and
 /// not seeing `stand` on a clear line from `here`, it walks through the
 /// passage, an elbow after the other, from the last it sees on a clear
-/// line (else the first: then it is looking for the passage, and a walk
-/// to that first elbow barred by water or rock leaves the place for the
-/// day, neither marked nor its passage dropped), then to `stand`; each leg
-/// is an ordinary walk, with the same sight. Otherwise, or with the
-/// passages off, straight to `stand`, as before.
+/// line, then to `stand`; each leg is an ordinary walk, with the same
+/// sight. Seeing no elbow (they were found from the camp), with no passage,
+/// or with the passages off, straight to `stand`, as before; the passage
+/// stays known.
 fn via_target(
     world: &World,
     rules: &Content,
@@ -10321,9 +10109,16 @@ fn via_target(
         Some((k, next)) if k == key => next,
         _ => {
             let map = world.map();
-            mind.via_blind = None;
-            let next = match held(mind) {
-                Some(via) if !clear_line(map, here, stand) => {
+            // The elbows were found from the camp: a body uses them only
+            // from where it sees one on a clear line, the last it sees;
+            // seeing none, it walks straight as without them, the passage
+            // still known (the project lead, 26 November 2026, on the
+            // audit of the passages: the walk "à l'aveugle" removed).
+            let from = held(mind)
+                .filter(|_| !clear_line(map, here, stand))
+                .and_then(|via| via.iter().rposition(|&e| clear_line(map, here, e)));
+            let next = match from {
+                Some(from) => {
                     let begun = Some((key, today_u32(world)));
                     if mind.via_begun != begun {
                         mind.via_begun = begun;
@@ -10334,11 +10129,9 @@ fn via_target(
                             at: world.tick().0,
                         });
                     }
-                    let from = via.iter().rposition(|&e| clear_line(map, here, e));
-                    mind.via_blind = from.is_none().then_some(key);
-                    u8::try_from(from.unwrap_or(0)).unwrap_or(0)
+                    u8::try_from(from).unwrap_or(0)
                 }
-                _ => VIA_STRAIGHT,
+                None => VIA_STRAIGHT,
             };
             mind.via = Some((key, next));
             next
@@ -10609,7 +10402,6 @@ fn elbow_reached(mind: &mut Mind, here: Pos) -> bool {
             .is_some_and(|&elbow| within(here, elbow, ELBOW_TILES));
     if at {
         mind.via = Some((key, next + 1));
-        mind.via_blind = None;
     }
     at
 }
@@ -14028,6 +13820,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one passage's life, read top to bottom"
+    )]
     fn a_passage_fades_is_told_within_its_bound_and_drops_when_it_fails() {
         let mut rules = passages_rules();
         rules.needs.passages.told_per_night = 1;
@@ -14080,9 +13876,8 @@ mod tests {
             keep,
             faded
         ));
-        // Barred on its way to an elbow it did not see when it set off: it
-        // was looking for the passage, not walking it; the place is left
-        // for the day, the passage kept.
+        // Seeing no elbow from where it stands, it walks straight as
+        // without the passage, which stays known.
         let (world, id, mut mind, key, here) = a_crossing();
         stand_on(
             &world,
@@ -14091,21 +13886,54 @@ mod tests {
             &mut mind,
             (&mut Store::new(), &mut Vec::new()),
         );
-        (mind.doing, mind.stopped, mind.blocked) =
-            (Doing::ToPlace(key), true, Some(Blockage::Water));
-        (mind.via, mind.via_blind) = (Some((key, 0)), Some(key));
-        decide_alone(&world, &rules, id, &mut mind);
+        let stand = place_stand(&world, &rules, key, place_side(&rules)).unwrap();
+        // A wall of rock down x = 30: from (20, 20) neither the place nor
+        // any elbow lies on a clear line.
+        let mut map = world.map().clone();
+        for y in 0..200 {
+            map.set(Pos::new(30, y), Terrain::Rock);
+        }
+        let walled = World::empty(Calendar::new(1, 7200).unwrap(), map);
+        let blind_at = Pos::new(20, 20);
+        let via = mind.places[&key].passage.clone().unwrap().via;
+        assert!(!via.iter().any(|&e| clear_line(walled.map(), blind_at, e)));
+        let decision = go_for(
+            &walled,
+            &rules,
+            (id, blind_at),
+            &mut mind,
+            Goal::Place(key, stand),
+            (Why::Gather, &mut Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(
+            decision.intention,
+            Intention::MoveTo {
+                body: id,
+                target: stand
+            },
+            "no elbow seen: straight"
+        );
+        assert_eq!(mind.via, Some((key, VIA_STRAIGHT)));
+        mind.via = None;
+        let decision = go_for(
+            &world,
+            &rules,
+            (id, Pos::new(60, 30)),
+            &mut mind,
+            Goal::Place(key, stand),
+            (Why::Gather, &mut Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(
+            decision.intention,
+            Intention::MoveTo {
+                body: id,
+                target: stand
+            },
+            "the place seen from there: straight"
+        );
         assert!(mind.places[&key].passage.is_some());
-        assert!(!mind.places[&key].is_barred());
-        assert_eq!(mind.out_of_reach.get(&key), Some(&today(&world)));
-        // Seeing the elbow when it set off, barred: the passage is
-        // dropped, the place marked seen, not reached.
-        (mind.doing, mind.stopped, mind.blocked) =
-            (Doing::ToPlace(key), true, Some(Blockage::Water));
-        (mind.via, mind.via_blind) = (Some((key, 0)), None);
-        decide_alone(&world, &rules, id, &mut mind);
-        assert_eq!(mind.places[&key].passage, None);
-        assert!(mind.places[&key].is_barred());
         // A walk through the passage barred by water: the passage is
         // dropped, the place marked seen, not reached.
         let (world, id, mut mind, key, here) = a_crossing();

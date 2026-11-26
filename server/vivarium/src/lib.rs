@@ -2789,6 +2789,9 @@ pub fn run_watched(
                         .gathered(content, gives, *grams);
                     if let (Some(b), Some(mind)) = (world.body(*body), brains.mind(*body)) {
                         let (at, home) = (b.pos(), mind.home());
+                        // --- the passages (26 November 2026) ---
+                        passages.gathered(world.map(), (home, at), energy);
+                        // --- end of the passages ---
                         let (dx, dy) = (i64::from(at.x - home.x), i64::from(at.y - home.y));
                         let tiles = (dx * dx + dy * dy).unsigned_abs().isqrt();
                         let r = reach.entry(year).or_default();
@@ -3097,7 +3100,7 @@ pub fn run_watched(
         }
         // --- the passages (26 November 2026) ---
         for news in &batch {
-            passages.news(news);
+            passages.news(news, &brains);
         }
         // --- end of the passages ---
         // --- the hearth's pooling (25 November 2026) ---
