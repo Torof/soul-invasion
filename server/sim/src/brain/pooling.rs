@@ -496,12 +496,13 @@ fn young_ahead(
 /// audit of wakes, step 5: the project lead, "the young are seen, not
 /// their stomach"): one its circle saw at dawn, fed by the hearth, not an
 /// infant (nursed), within six tiles, with room to eat (one full refuses
-/// food); the nearest.
+/// food), one it `gives` to; the nearest.
 fn hungry_young_seen(
     world: &World,
     rules: &Content,
     reserves: &Reserves,
     (id, here, camp): (BodyId, Pos, Pos),
+    gives: impl Fn(&Body) -> bool,
 ) -> Option<(BodyId, Pos)> {
     reserves
         .young
@@ -518,6 +519,7 @@ fn hungry_young_seen(
                 && !world.is_infant(y, rules)
                 && (y.pos().x - here.x).abs() <= HOME_TILES
                 && (y.pos().y - here.y).abs() <= HOME_TILES
+                && gives(y)
         })
         .min_by_key(|y| (super::far(y.pos(), here), y.id()))
         .map(|y| (y.id(), y.pos()))
@@ -532,7 +534,10 @@ fn hungry_young_seen(
 /// A perception of the giver, never a wake of the young: the young eats
 /// what it is given without a thought of its own. `None`: no young seen
 /// hungry, `pooling.young_seen` off, or its own hunger gives way (the
-/// hunger bar, [`gives_way`]): then it eats first.
+/// hunger bar, [`gives_way`]): then it eats first. With
+/// `pooling.giver_care`, the hunger bar no longer decides for the giver:
+/// short, it feeds only a young one its care draws it to
+/// ([`cares_enough`]).
 pub(super) fn feed_young(
     world: &World,
     rules: &Content,
@@ -552,13 +557,23 @@ pub(super) fn feed_young(
     }
     // The hunger bar holds for the giver too (D58, amended 25 November
     // 2026): hungry, and its hunger giving way, it eats; it gives nothing.
-    if body.condition().hunger.points() >= HUNGRY
+    if !pooling.giver_care
+        && body.condition().hunger.points() >= HUNGRY
         && gives_way(world, rules, body, mind, seed).is_some()
     {
         return None;
     }
+    let short = pooling.giver_care && short_giver(rules, body);
+    // Starving, it eats first and gives nothing, even to its own (the
+    // project lead, 26 November 2026: his hunger bar kept, its floor at
+    // `giver_starving_fat_percent` for the giver).
+    if short && fat_left_percent(rules, body) < u64::from(pooling.giver_starving_fat_percent) {
+        return None;
+    }
+    let gives = |young: &Body| !short || cares_enough(world, rules, (body, mind.care), young, seed);
     let camp = camp_of(rules, mind.ways.home);
-    let Some((young, at)) = hungry_young_seen(world, rules, reserves, (id, here, camp)) else {
+    let Some((young, at)) = hungry_young_seen(world, rules, reserves, (id, here, camp), gives)
+    else {
         if matches!(mind.doing, Doing::ToFeed(_)) {
             mind.doing = Doing::Nothing;
         }
@@ -620,6 +635,68 @@ pub(super) fn feed_young(
     }
     mind.doing = Doing::ToFeed(young);
     decision(Intention::MoveTo { body: id, target })
+}
+
+/// Whether `body` is short as a giver (D58, amended 26 November 2026,
+/// `pooling.giver_care`): hungry, or under `giver_short_fat_percent` of
+/// its fat reserve left.
+fn short_giver(rules: &Content, body: &Body) -> bool {
+    body.condition().hunger.points() >= HUNGRY
+        || fat_left_percent(rules, body) < u64::from(rules.needs.pooling.giver_short_fat_percent)
+}
+
+/// Whether `young` is `body`'s own to go without for: its child, or its
+/// child's child, read through the young's parents still in the world
+/// (a dead parent's line is not read).
+fn own_young(world: &World, body: &Body, young: &Body) -> bool {
+    let me = Some(body.id());
+    let parents = [young.mother(), young.father()];
+    parents.contains(&me)
+        || parents
+            .into_iter()
+            .flatten()
+            .filter_map(|p| world.body(p))
+            .any(|p| p.mother() == me || p.father() == me)
+}
+
+/// **The giver's care** (D58, amended 26 November 2026; the project
+/// lead: "an old man who goes without for his grandchildren is a story;
+/// an old man who ruins himself for any child of the camp is a defect"):
+/// whether `body`, short, feeds `young` this journée. Its innate `care`
+/// (`care_percent`, drawn for life) is the chance, its care for its own
+/// (`own_care_percent`, at most certain) for a child or grandchild of
+/// its own, drawn once a journée for the two of them so that it does not
+/// change its mind each thought; under `giver_kin_only_fat_percent` of
+/// its fat reserve left, its own only; under `giver_starving_fat_percent`
+/// it is never asked ([`feed_young`] has it eat first).
+fn cares_enough(
+    world: &World,
+    rules: &Content,
+    (body, care): (&Body, u8),
+    young: &Body,
+    seed: u64,
+) -> bool {
+    let pooling = &rules.needs.pooling;
+    let own = own_young(world, body, young);
+    if !own && fat_left_percent(rules, body) < u64::from(pooling.giver_kin_only_fat_percent) {
+        return false;
+    }
+    let care = u64::from(care);
+    let chance = if own {
+        (care * u64::from(pooling.own_care_percent) / 100).min(100)
+    } else {
+        care
+    };
+    let roll = scatter::roll(
+        seed,
+        purpose::GIVER_CARE,
+        &[
+            u64::from(body.id().0),
+            u64::from(young.id().0),
+            today(world),
+        ],
+    ) % 100;
+    roll < chance
 }
 
 /// **Taking from the common reserve** (D58, the hearth's own act, never
@@ -1859,6 +1936,82 @@ mod tests {
                     .is_some_and(|d| matches!(d.intention, Intention::Feed { .. })),
                 !starving,
                 "starving {starving}: {gives:?}"
+            );
+        }
+    }
+
+    /// Whether a grown one of `care`, `hunger` points and `fat_left` per
+    /// cent of its fat reserve gives a mouthful to a hungry child, a
+    /// stranger (`kin` 0), its child (1) or its grandchild (2), with
+    /// `giver_care`.
+    fn gives_to(care: u8, kin: u8, hunger: u32, fat_left: u64) -> bool {
+        let mut rules = pooled();
+        rules.needs.pooling.young_seen = true;
+        rules.needs.pooling.giver_care = true;
+        let at = Pos::new(5, 5);
+        let bodies = [(at, 50), (Pos::new(6, 5), 5), (Pos::new(40, 40), 25)];
+        let (mut world, mut brains, ids) = field(&rules, &bodies);
+        let (grown, child, parent) = (ids[0], ids[1], ids[2]);
+        match kin {
+            1 => world.set_parents(child, Some(grown), None),
+            2 => {
+                world.set_parents(parent, Some(grown), None);
+                world.set_parents(child, Some(parent), None);
+            }
+            _ => {}
+        }
+        brains.see_hearths(&world, &rules, &[(camp_of(&rules, at), vec![grown, child])]);
+        let item = world.spawn_item("berries", 400, at);
+        world.queue(Intention::PickUp { body: grown, item });
+        world.step(&rules, &mut Vec::new());
+        hungry(&mut world, &rules, child, 70);
+        hungry(&mut world, &rules, grown, hunger);
+        if fat_left < 100 {
+            let b = world.bodies.iter_mut().find(|b| b.id() == grown).unwrap();
+            b.condition.deficit_j = b.condition.reserve_j(&rules.needs) * (100 - fat_left) / 100;
+        }
+        let body = world.body(grown).unwrap();
+        let mind = brains.minds.get_mut(&grown).unwrap();
+        mind.care = care;
+        let gives = feed_young(
+            &world,
+            &rules,
+            &mut brains.reserves,
+            (grown, body, at),
+            mind,
+            7,
+        );
+        gives.is_some_and(|d| matches!(d.intention, Intention::Feed { .. }))
+    }
+
+    #[test]
+    fn a_short_giver_gives_as_its_care_says() {
+        // The project lead, 26 November 2026: "an old man who goes
+        // without for his grandchildren is a story; an old man who ruins
+        // himself for any child of the camp is a defect."
+        // (care, kin, hunger, fat left %, gives)
+        let cases = [
+            // Not short: it gives, whatever its care.
+            (0, 0, 0, 100, true),
+            // Hungry: its care decides for a stranger's child.
+            (0, 0, 60, 100, false),
+            (100, 0, 60, 100, true),
+            // Under a quarter of its fat: never for a stranger's child.
+            (100, 0, 60, 20, false),
+            // Its own: its care doubled.
+            (50, 1, 60, 20, true),
+            (50, 2, 60, 20, true),
+            (0, 1, 60, 20, false),
+            // Starving, under 15 %: it eats first, even its own waits (the
+            // lead's hunger bar: "on mange la nourriture").
+            (100, 1, 60, 10, false),
+            (100, 2, 60, 10, false),
+        ];
+        for (care, kin, hunger, fat_left, gives) in cases {
+            assert_eq!(
+                gives_to(care, kin, hunger, fat_left),
+                gives,
+                "care {care}, kin {kin}, hunger {hunger}, fat left {fat_left}"
             );
         }
     }
