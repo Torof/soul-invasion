@@ -13,8 +13,10 @@
 //! away (the hands may), it is an item again. **Heaps** (amended 26
 //! November 2026: « 125 noisettes, ce n'est pas 125 fois une noisette
 //! mais une fois 125 noisettes »): what is laid joins the record of the
-//! same food there that spoils the same day, so a reserve holds one
-//! record a kind of food and day. The brain remembers which records are
+//! same food there that spoils the same journée, so a reserve holds one
+//! record a kind of food and journée; it spoils whole at its journée's
+//! start, a bite is one of the items it was laid as, and a hand takes a
+//! handful of it. The brain remembers which records are
 //! the hearth's (giving outside the hearth is not built), and what they
 //! hold while the world's records do not change.
 //!
