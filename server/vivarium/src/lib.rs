@@ -199,7 +199,7 @@ pub struct Settings {
     /// the content's `thought.hearth_wakes` set to true.
     pub wake_all: bool,
     /// The control run of the audit of wakes (26 November 2026): every
-    /// switch of its steps at the rule before ([`old_wakes`]),
+    /// switch of its steps at the rule before (`old_wakes`),
     /// `--old-wakes`.
     pub old_wakes: bool,
     /// The passages remembered and told (D53, amended 26 November 2026):
