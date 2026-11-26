@@ -537,6 +537,16 @@
     //                          derrière"); 0: it never does;
     // behind_wait_minutes: 30 — half an hour of such waits a day at most,
     //                          in game minutes (a 1,440th of the day).
+    // behind_glance: true — the look behind is a glance, not a thought
+    //                (the audit of wakes, 26 November 2026, step 3): the
+    //                caller on its way glances behind every 4 seconds and
+    //                thinks only when it sees a member to wait for;
+    //                waiting at dawn it thinks when the last member it
+    //                waits for wakes and comes within reach (or its hour
+    //                is up), not every 4 seconds; a member waiting by its
+    //                caller thinks when the caller sets off. 10.9 thoughts
+    //                a person-journée, 97 % changing nothing. false, or
+    //                absent: the rule before (--old-wakes).
     // The evening's review (PR 1 ter; the lead, 23 November 2026: "on
     // peut mettre ça en place... les améliorer et les pousser un peu plus
     // loin"): a caller keeps dated facts on its companions, never a level
@@ -580,6 +590,7 @@
         review_outings: 3,
         review_bad: 2,
         near_camp_minutes: 3,
+        behind_glance: true,
     ),
     // The will tempered, and a confidence by activity (D50 amended, D56;
     // the project lead, 23 November 2026: "je suis d'accord avec toutes

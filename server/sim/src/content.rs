@@ -1298,6 +1298,16 @@ pub struct Decisions {
     /// absent: the review as decided.
     #[serde(default = "review_parts_all")]
     pub review_parts: Vec<String>,
+    /// Whether the caller of a group glances behind without a thought
+    /// (the audit of wakes, 26 November 2026, step 3): walking to the
+    /// group's place it looks behind every few seconds and thinks only
+    /// when it sees a member to wait for; waiting at dawn for its members,
+    /// it thinks when the last it waits for wakes and comes within reach
+    /// (or its hour of waiting is up), and a member waiting by its caller
+    /// when the caller sets off. False, or absent: a thought every few
+    /// seconds, the rule before.
+    #[serde(default)]
+    pub behind_glance: bool,
 }
 
 /// The parts of the review a caller may hold to ([`Decisions::review_parts`]).
@@ -1328,6 +1338,7 @@ impl Default for Decisions {
             review_bad: 0,
             near_camp_minutes: 0,
             review_parts: review_parts_all(),
+            behind_glance: false,
         }
     }
 }

@@ -261,6 +261,20 @@ enum Doing {
     ToHands,
 }
 
+/// What a mind watches without a thought (D56, the audit of wakes, step
+/// 3, `decisions.behind_glance`): it thinks when what it waits for comes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Glance {
+    /// The caller walking to the group's place glances behind at this
+    /// tick: it thinks if it sees a member to wait for.
+    Behind(u64),
+    /// The caller waiting at dawn: it thinks when none of its members
+    /// sleeps or stands out of its reach any more.
+    Members,
+    /// A member waiting by its caller: it thinks when the caller sets off.
+    Caller(BodyId),
+}
+
 /// A tree or plant a body is going to gather from, or gathers from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Aim {
@@ -2253,6 +2267,9 @@ pub struct Mind {
     /// The tick its point of no return may come at the earliest, walking
     /// straight away from its camp: looked at then, without a thought.
     turn_at: Option<u64>,
+    /// What a group's caller, or a member waiting by its caller, watches
+    /// without a thought (D56, the audit of wakes, step 3).
+    glance: Option<Glance>,
     /// How many times it thought.
     thoughts: u64,
     /// Its hands (D57): what it tries, steps to and practised.
@@ -2460,6 +2477,7 @@ impl Mind {
             out: None,
             trip_from: None,
             turn_at: None,
+            glance: None,
             thoughts: 0,
             handwork: Handwork::default(),
             problems: Vec::new(),
@@ -4627,6 +4645,7 @@ impl Brains {
         let wake_asleep = rules.needs.thought.wake_asleep;
         let mut due: Vec<BodyId> = Vec::new();
         let (memory, gone_wills) = (&mut self.memory, &mut self.gone_wills);
+        let groups = &self.groups;
         // Bodies and minds both by id: one walk through each.
         let (bodies, mut at) = (world.bodies(), 0);
         self.minds.retain(|&id, mind| {
@@ -4674,6 +4693,9 @@ impl Brains {
                         Err(next) => mind.turn_at = Some(next),
                     }
                 }
+            }
+            if mind.glance.is_some() {
+                glance(world, rules, groups, (id, body), mind, now);
             }
             if mind.due {
                 due.push(id);
@@ -4744,6 +4766,7 @@ impl Brains {
             };
             mind.due = false;
             mind.wake_at = None;
+            mind.glance = None;
             mind.thoughts += 1;
             land.food.refresh(world, rules);
             used += 1 + look(world, rules, id, body.pos(), mind, &mut land);
@@ -8709,17 +8732,16 @@ fn follow_or_wait(
     if leader == id {
         // The caller waits, an hour after dawn at most, while a member
         // still sleeps or has not come within reach of it.
-        let waits = early
-            && !g.started
-            && g.members.iter().skip(1).any(|m| {
-                !g.left.contains(m)
-                    && world.body(*m).is_some_and(|b| {
-                        b.condition().asleep || !within(b.pos(), body.pos(), crate::FOLLOW_TILES)
-                    })
-            });
+        let waits = early && !g.started && members_away(world, g, body);
         if waits {
             mind.doing = Doing::Nothing;
-            mind.wake_at = Some(now + group_wait(world));
+            if rules.needs.decisions.behind_glance {
+                // Woken by the members it waits for, or its hour up.
+                mind.glance = Some(Glance::Members);
+                mind.wake_at = Some(g.dawn + hour(world));
+            } else {
+                mind.wake_at = Some(now + group_wait(world));
+            }
             return None;
         }
         return look_behind(world, rules, g, (id, body), mind, d, now);
@@ -8746,7 +8768,13 @@ fn follow_or_wait(
         if near {
             // The caller has not set off (or still sleeps): it waits by it.
             mind.doing = Doing::Nothing;
-            mind.wake_at = Some(now + group_wait(world));
+            if rules.needs.decisions.behind_glance {
+                // Woken when its caller sets off, or the hour is up.
+                mind.glance = Some(Glance::Caller(leader));
+                mind.wake_at = Some(g.dawn + hour(world));
+            } else {
+                mind.wake_at = Some(now + group_wait(world));
+            }
             return None;
         }
         // It goes to stand by its caller first.
@@ -9197,30 +9225,12 @@ fn look_behind(
         g.started = true;
         if dec.behind_tiles > 0 && !g.arrived.contains_key(&id) {
             // Setting off, it will look behind in a moment.
-            mind.wake_at = Some(now + group_wait(world));
+            look_again(world, dec, mind, now);
         }
         return Some(d);
     }
-    let reach = i32::try_from(dec.behind_tiles).unwrap_or(i32::MAX);
     let most = game_minutes(world, dec.behind_wait_minutes);
-    // It sees a member walking behind it, out of reach: it waits for it.
-    // One it does not see, or that stands still, it cannot wait for.
-    let sight = sight_at(world.map(), rules, body.pos());
-    let behind: Vec<BodyId> = g
-        .members
-        .iter()
-        .skip(1)
-        .filter(|m| {
-            !g.left.contains(m)
-                && !g.arrived.contains_key(m)
-                && world.body(**m).is_some_and(|b| {
-                    b.is_walking()
-                        && within(b.pos(), body.pos(), sight)
-                        && !within(b.pos(), body.pos(), reach)
-                })
-        })
-        .copied()
-        .collect();
+    let behind = behind_of(world, rules, g, body);
     if !behind.is_empty() && g.waited < most {
         // A fact of its review (PR 1 ter): whom it waited for.
         g.waited_for.extend(behind);
@@ -9239,12 +9249,108 @@ fn look_behind(
             why: d.why,
         });
     }
-    mind.wake_at = Some(now + group_wait(world));
+    look_again(world, dec, mind, now);
     if g.held {
         g.held = false;
         return Some(d);
     }
     None
+}
+
+/// The members of `g` its caller `body` sees walking behind it, not yet
+/// there, farther than `behind_tiles` (D56): those it waits for. One it
+/// does not see, or that stands still, it cannot wait for.
+fn behind_of(world: &World, rules: &Content, g: &Group, body: &Body) -> Vec<BodyId> {
+    let reach = i32::try_from(rules.needs.decisions.behind_tiles).unwrap_or(i32::MAX);
+    let sight = sight_at(world.map(), rules, body.pos());
+    g.members
+        .iter()
+        .skip(1)
+        .filter(|m| {
+            !g.left.contains(m)
+                && !g.arrived.contains_key(m)
+                && world.body(**m).is_some_and(|b| {
+                    b.is_walking()
+                        && within(b.pos(), body.pos(), sight)
+                        && !within(b.pos(), body.pos(), reach)
+                })
+        })
+        .copied()
+        .collect()
+}
+
+/// Whether a member of `g` its caller `body` waits for at dawn still
+/// sleeps or stands out of its reach (D56).
+fn members_away(world: &World, g: &Group, body: &Body) -> bool {
+    g.members.iter().skip(1).any(|m| {
+        !g.left.contains(m)
+            && world.body(*m).is_some_and(|b| {
+                b.condition().asleep || !within(b.pos(), body.pos(), crate::FOLLOW_TILES)
+            })
+    })
+}
+
+/// The caller on its way looks behind again in [`GROUP_WAIT_SECONDS`]:
+/// a thought then, or, with `behind_glance`, a glance (step 3 of the
+/// audit of wakes).
+fn look_again(world: &World, dec: &crate::content::Decisions, mind: &mut Mind, now: u64) {
+    let at = now + group_wait(world);
+    if dec.behind_glance {
+        mind.glance = Some(Glance::Behind(at));
+    } else {
+        mind.wake_at = Some(at);
+    }
+}
+
+/// What a mind watches without a thought (step 3 of the audit of wakes):
+/// due when what it waits for comes, or what it watched is gone.
+fn glance(
+    world: &World,
+    rules: &Content,
+    groups: &BTreeMap<BodyId, Group>,
+    (id, body): (BodyId, &Body),
+    mind: &mut Mind,
+    now: u64,
+) {
+    let Some(watch) = mind.glance else {
+        return;
+    };
+    let wake = match watch {
+        Glance::Behind(at) if now < at => return,
+        Glance::Behind(_) => {
+            let on_way = groups.get(&id).filter(|g| {
+                g.members[0] == id && !g.arrived.contains_key(&id) && g.ended.is_none() && !g.home
+            });
+            match on_way {
+                Some(g) if body.is_walking() => {
+                    let most = game_minutes(world, rules.needs.decisions.behind_wait_minutes);
+                    if g.waited >= most || behind_of(world, rules, g, body).is_empty() {
+                        mind.glance = Some(Glance::Behind(now + group_wait(world)));
+                        return;
+                    }
+                    true
+                }
+                _ => true,
+            }
+        }
+        Glance::Members => groups
+            .get(&id)
+            .is_none_or(|g| g.started || !members_away(world, g, body)),
+        Glance::Caller(leader) => {
+            let lead = world.body(leader);
+            groups.get(&leader).is_none_or(|g| {
+                g.home
+                    || g.arrived.contains_key(&leader)
+                    || lead.is_none_or(|l| {
+                        l.is_walking() || !within(l.pos(), body.pos(), crate::FOLLOW_TILES)
+                    })
+            })
+        }
+    };
+    if wake {
+        mind.glance = None;
+        mind.due = true;
+    }
 }
 
 /// What a member of a group does once it is there (D56).

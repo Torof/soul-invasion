@@ -85,7 +85,8 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --old-wakes              the control run of the audit of wakes (26
                            November 2026): every switch of its steps at the
                            rule before (thought.wake_on_interrupt and
-                           thought.wake_asleep true, ...)
+                           thought.wake_asleep true,
+                           decisions.behind_glance false, ...)
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
