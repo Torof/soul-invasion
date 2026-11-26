@@ -131,14 +131,14 @@ pub const MEMORY_PLACES: usize = 64;
 /// from where it last looked are kept, the content's
 /// `thought.places_remembered` of them). Half an hour: the walk there and
 /// back then takes the hour of gathering it buys (`thought.plant_choice_hours`).
-/// It was 32 tiles, some 2 game minutes on the reference ground, until 24
+/// It was 32 tiles, some 2 game minutes on the reference ground, until 26
 /// November 2026 (the project lead: "Faut le passer non en mètres, mais en
 /// temps de marche").
 pub const WORTH_HALF_MINUTES: u64 = 30;
 /// How long a walk from home a grove lies within to count as near it, in
-/// game minutes: a day gathered there is no news at the fire (amended 24
+/// game minutes: a day gathered there is no news at the fire (amended 26
 /// November 2026). It was a grove's side, 64 tiles on each axis, until the
-/// brain counted in walking time the same day (the project lead: "Faut le
+/// brain counted in walking time (the project lead: "Faut le
 /// passer non en mètres, mais en temps de marche"): 4 game minutes are 64
 /// tiles on the reference ground, 43 in the forest.
 pub const GROVE_NEAR_MINUTES: u64 = 4;

@@ -1154,7 +1154,7 @@ pub struct Decisions {
     pub review_bad: u32,
     /// One told "not with us tomorrow" weighs first the places it knows
     /// within this many game minutes of walk from the camp (a game minute
-    /// a 1,440th of the game day; 40 tiles on each axis until 24 November
+    /// a 1,440th of the game day; 40 tiles on each axis until 26 November
     /// 2026, the brain in walking time): those set aside may make their
     /// own group near the camp.
     #[serde(default)]
@@ -1923,7 +1923,13 @@ pub struct Trials {
 }
 
 /// The ways a trial may move, as the content names them (D50).
-pub const TRIAL_WAYS: [&str; 5] = ["worth_half_minutes", "sleep_out", "stock_kj", "home", "hands"];
+pub const TRIAL_WAYS: [&str; 5] = [
+    "worth_half_minutes",
+    "sleep_out",
+    "stock_kj",
+    "home",
+    "hands",
+];
 
 impl Default for Trials {
     /// Nobody tries anything nor copies anybody.

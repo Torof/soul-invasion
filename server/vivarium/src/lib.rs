@@ -7769,7 +7769,7 @@ mod tests {
         ] {
             assert!(full.contains(part), "the full page holds {part}");
         }
-        // A quarter until 24 November 2026: the full page's length follows
+        // A quarter until 26 November 2026: the full page's length follows
         // the run's chronicle, and a two-day run with the worth in walking
         // time wrote some 68 bytes too few for it.
         assert!(

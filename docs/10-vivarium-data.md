@@ -246,7 +246,7 @@ clock, the only field no seed decides.
 | `people[].believes[].seen` | Whether it saw it itself (false: heard) | boolean |
 | `people[].believes[].by` | Who it has it from: itself, or the teller | integer |
 | `people[].believes[].day` | The day it got it | day |
-| `people[].ways.worth_half_minutes` | Its ways at the end, or at its death (D50); the whole object is `null` for a mind never read. The walk that halves a plant's worth, in game minutes (`worth_half_tiles`, in tiles, until 24 November 2026) | game minutes |
+| `people[].ways.worth_half_minutes` | Its ways at the end, or at its death (D50); the whole object is `null` for a mind never read. The walk that halves a plant's worth, in game minutes (`worth_half_tiles`, in tiles, until 26 November 2026) | game minutes |
 | `people[].ways.sleep_out` | Whether it sleeps out | boolean |
 | `people[].ways.stock_kj` | What it stores before resting | kJ |
 | `people[].ways.home` | Its home | `[x, y]` |
