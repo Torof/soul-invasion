@@ -6979,6 +6979,27 @@ mod tests {
     }
 
     #[test]
+    fn a_bite_from_a_heap_is_one_of_the_items_it_was_laid_as_at_most() {
+        // 100 g and 50 g laid: one heap of two, a bite 75 g at most.
+        let (mut w, berries, _, _) = kept_berries(100);
+        lay(&mut w, "berries", 50, None);
+        assert_eq!(w.part_g(berries), 75);
+        let mut events = Vec::new();
+        w.queue(Intention::Eat {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::BodyAte { item, grams: 75, .. } if *item == berries
+        )));
+        // One item eaten: the rest is one.
+        assert_eq!(w.part_g(berries), 75);
+        assert_eq!(w.kept_parts.get(&berries), Some(&1));
+    }
+
+    #[test]
     fn a_heap_too_heavy_for_the_arms_is_taken_by_the_handful() {
         let mut w = fed_world();
         let heap = w.spawn_kept("berries", 50_000, Pos::new(1, 1));
