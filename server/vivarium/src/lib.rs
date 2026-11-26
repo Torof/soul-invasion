@@ -41,6 +41,9 @@ pub mod conception;
 // --- the meetings between tribes (25 November 2026): its own module ---
 pub mod meetings;
 // --- end of the meetings between tribes ---
+// --- the passages (26 November 2026): its own module ---
+pub mod passages;
+// --- end of the passages ---
 pub mod continents;
 pub mod hands;
 pub mod json;
@@ -195,6 +198,10 @@ pub struct Settings {
     /// 2026): true is the control run of the rule before (`--wake-all`),
     /// the content's `thought.hearth_wakes` set to true.
     pub wake_all: bool,
+    /// The passages remembered and told (D53, amended 26 November 2026):
+    /// false is the control run without them (`--no-passages`), the
+    /// content's `passages` section replaced by none.
+    pub passages: bool,
     /// Where the vivarium's continent is kept between runs
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
@@ -281,6 +288,7 @@ impl Default for Settings {
             trips: true,
             problems: true,
             wake_all: false,
+            passages: true,
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
             helpers: 1,
@@ -955,6 +963,10 @@ fn record_row(id: RecordId, record: &Record, refs: u32) -> RecordRow {
         }
         Record::Barred { place, .. } => {
             row.kind = "barred";
+            row.place = Some(*place);
+        }
+        Record::Passage { place, .. } => {
+            row.kind = "passage";
             row.place = Some(*place);
         }
     }
@@ -2107,6 +2119,11 @@ pub struct Report {
     /// nearest by season ([`meetings::MeetingProbe`]).
     pub meetings: meetings::MeetingProbe,
     // --- end of the meetings between tribes ---
+    // --- the passages (26 November 2026) ---
+    /// The passages remembered and told, and the water they answer
+    /// ([`passages::PassageProbe`]).
+    pub passages: passages::PassageProbe,
+    // --- end of the passages ---
     /// Seconds the run took on the wall.
     pub wall_s: f64,
     /// Seconds the world took to be born.
@@ -2248,6 +2265,7 @@ pub fn run_watched(
         || !settings.trips
         || !settings.problems
         || settings.wake_all
+        || !settings.passages
     {
         let mut own = content.clone();
         if settings.fed {
@@ -2281,6 +2299,9 @@ pub fn run_watched(
         }
         if !settings.trips {
             own.needs.trips = sim::content::Trips::default();
+        }
+        if !settings.passages {
+            own.needs.passages = sim::content::Passages::default();
         }
         if !settings.moves {
             own.needs.moving = Moving::default();
@@ -2655,6 +2676,9 @@ pub fn run_watched(
     // --- the meetings between tribes (25 November 2026) ---
     let mut meetings = meetings::MeetingProbe::new(calendar.ticks_per_day());
     // --- end of the meetings between tribes ---
+    // --- the passages (26 November 2026) ---
+    let mut passages = passages::PassageProbe::default();
+    // --- end of the passages ---
     let mut why = WhyProbe::default();
     // --- the scarcity chain (24 November 2026) ---
     let mut chain = chain::Chain::new(calendar.ticks_per_day());
@@ -2765,6 +2789,9 @@ pub fn run_watched(
                         .gathered(content, gives, *grams);
                     if let (Some(b), Some(mind)) = (world.body(*body), brains.mind(*body)) {
                         let (at, home) = (b.pos(), mind.home());
+                        // --- the passages (26 November 2026) ---
+                        passages.gathered(world.map(), (home, at), energy);
+                        // --- end of the passages ---
                         let (dx, dy) = (i64::from(at.x - home.x), i64::from(at.y - home.y));
                         let tiles = (dx * dx + dy * dy).unsigned_abs().isqrt();
                         let r = reach.entry(year).or_default();
@@ -3071,6 +3098,11 @@ pub fn run_watched(
             );
             world.queue(decision.intention);
         }
+        // --- the passages (26 November 2026) ---
+        for news in &batch {
+            passages.news(news, &brains);
+        }
+        // --- end of the passages ---
         // --- the hearth's pooling (25 November 2026) ---
         for news in &batch {
             pooling.news(news, &world, day);
@@ -3373,6 +3405,7 @@ pub fn run_watched(
                 | News::Barred { .. }
                 | News::Company { .. }
                 | News::Reached { .. }
+                | News::Passage { .. }
                 | News::MoveCalled { .. }
                 | News::MoveFelt { .. }
                 | News::Surprised { .. }
@@ -3763,6 +3796,9 @@ pub fn run_watched(
         // --- the meetings between tribes (25 November 2026) ---
         meetings,
         // --- end of the meetings between tribes ---
+        // --- the passages (26 November 2026) ---
+        passages,
+        // --- end of the passages ---
         map_side,
         camps,
         ticks,
@@ -6866,6 +6902,7 @@ mod tests {
             trips: true,
             problems: true,
             wake_all: false,
+            passages: true,
             continents: None,
             lands: None,
             helpers: 1,

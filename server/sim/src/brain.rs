@@ -303,10 +303,32 @@ struct Place {
     /// Seen, not reached (D53, amended 24 November 2026): its own mark,
     /// a walk to it barred by water or rock, or one heard at the fire.
     /// The place is no longer chosen nor called while it holds; it clears
-    /// only when the body itself stands on it.
+    /// only when the body itself stands on it, or hears the way there, a
+    /// passage (amended 26 November 2026).
     barred: Option<Mark>,
     /// The last day it stood on the place.
     stood: Option<u32>,
+    /// The passage it knows to the place (D53, amended 26 November 2026):
+    /// its own, found standing there, or heard at the fire.
+    passage: Option<Passage>,
+}
+
+/// A passage a body holds (D53, amended 26 November 2026; the project
+/// lead, 24 November 2026: "Une personne qui trouve le chemin vient le
+/// dire"): the elbow of a way through which a place across water or rock
+/// was reached, a ford, the end of a lake; a second elbow before it when
+/// the first is not on a clear line from the camp. Two legs, or three at
+/// most.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Passage {
+    /// The elbows, the nearest the camp first: one or two.
+    via: Vec<Pos>,
+    /// The day it found it, heard it or last walked through it: forgotten
+    /// the content's `passages.fade_seasons` later.
+    day: u32,
+    /// The record it holds (D55): its own, told at the fire; or one heard,
+    /// by whom and when. `None` for a draft never told.
+    access: Option<Access>,
 }
 
 /// A mark of seen, not reached a body holds (D53, amended 24 November
@@ -1450,6 +1472,44 @@ pub const FOLLOW_ASKED: u8 = 1;
 /// A follower went to a place another found and told.
 pub const FOLLOW_TOLD: u8 = 2;
 
+/// A step of a passage (D53, amended 26 November 2026), for the measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassageStep {
+    /// Its first walk of the day barred by water (told with the passages
+    /// on or off).
+    WaterDay,
+    /// It stood, the first time that day, on a place of its notebook that
+    /// a straight walk from its camp could not reach, water or rock in the
+    /// way (told with the passages on or off).
+    Beyond,
+    /// It found a passage to the place, standing on it.
+    Found,
+    /// It told the passage at the fire.
+    Told,
+    /// It heard the passage at the fire and holds it now; `lifted`: a
+    /// mark of seen, not reached it held there was lifted.
+    Heard {
+        /// A mark lifted.
+        lifted: bool,
+    },
+    /// It began a walk through the passage: once a place and a day, a
+    /// walk taken up again after a drink or a meal the same walk.
+    Begun,
+    /// It stood on the place at the end of a walk through the passage,
+    /// the place lying `milliminutes` of its walk from its home in a
+    /// straight line.
+    Arrived {
+        /// Thousandths of a game minute.
+        milliminutes: u64,
+    },
+    /// A walk through the passage barred by water or rock: the passage
+    /// dropped; `heard`: it had it from another.
+    Failed {
+        /// Heard, not its own.
+        heard: bool,
+    },
+}
+
 /// What the brain tells of its trials (D50), drained with
 /// [`Brains::news`] after each turn: the vivarium's chronicle reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1691,6 +1751,19 @@ pub enum News {
         body: BodyId,
         /// The place.
         place: PlaceKey,
+        /// When.
+        at: u64,
+    },
+    /// A step of a passage, or of the water's barring it answers (D53,
+    /// amended 26 November 2026): a measure.
+    Passage {
+        /// Who.
+        body: BodyId,
+        /// The place concerned; for [`PassageStep::WaterDay`], the tile
+        /// the body stood on.
+        place: PlaceKey,
+        /// What happened.
+        step: PassageStep,
         /// When.
         at: u64,
     },
@@ -2137,6 +2210,19 @@ pub struct Mind {
     /// The places it marked seen, not reached, since its last fire, with
     /// the day: told at the next one like a denial.
     barred_new: Vec<(PlaceKey, u32)>,
+    /// The places it found a passage to since its last fire (D53, amended
+    /// 26 November 2026): told at the next one.
+    passages_new: Vec<PlaceKey>,
+    /// Its walk through a passage (D53, amended 26 November 2026): the
+    /// place, and the next elbow it walks to ([`VIA_PLACE`]: the place
+    /// itself, its last leg; [`VIA_STRAIGHT`]: straight, no passage).
+    via: Option<(PlaceKey, u8)>,
+    /// The place and the day of its last walk through a passage begun: a
+    /// walk taken up again after a drink or a meal is the same walk (a
+    /// measure).
+    via_begun: Option<(PlaceKey, u32)>,
+    /// The last day a walk of it was barred by water: a measure.
+    water_day: u32,
     /// The places it could not walk to, and the day it tried: left alone
     /// until the next day, when it may stand elsewhere.
     out_of_reach: BTreeMap<PlaceKey, u64>,
@@ -2406,6 +2492,10 @@ impl Mind {
             stopped: false,
             blocked: None,
             barred_new: Vec::new(),
+            passages_new: Vec::new(),
+            via: None,
+            via_begun: None,
+            water_day: u32::MAX,
             out_of_reach: BTreeMap::new(),
             unseen: Vec::new(),
             wake_at: None,
@@ -3573,6 +3663,9 @@ impl Mind {
             if let Some(Mark::Held(access)) = place.barred.take() {
                 memory.release(access.record);
             }
+            if let Some(access) = place.passage.take().and_then(|p| p.access) {
+                memory.release(access.record);
+            }
         }
         for access in self.heard_ways.drain(..) {
             memory.release(access.record);
@@ -3591,7 +3684,93 @@ impl Mind {
             if let Some(Mark::Held(access)) = place.barred {
                 memory.release(access.record);
             }
+            if let Some(access) = place.passage.and_then(|p| p.access) {
+                memory.release(access.record);
+            }
         }
+        self.passages_new.retain(|k| *k != key);
+    }
+
+    /// Its passages at the fire (D53, amended 26 November 2026): the
+    /// passages faded past `keep` days (the content's
+    /// `passages.fade_seasons`) let go
+    /// first; then, apart from the slots like a mark, at most
+    /// `passages.told_per_night`, the ones found since its last fire
+    /// first, then those of the places it `told` tonight ("it travels
+    /// with the place"). A draft told becomes its own record held; one
+    /// beyond the cap waits for another night.
+    fn tell_passages(
+        &mut self,
+        passages: &crate::content::Passages,
+        told: &[RecordId],
+        (day, dawn, keep, me): (u32, u32, u32, BodyId),
+        memory: &mut Store,
+    ) -> Vec<RecordId> {
+        for place in self.places.values_mut() {
+            if place
+                .passage
+                .as_ref()
+                .is_some_and(|p| !passage_fresh(p, keep, dawn))
+                && let Some(access) = place.passage.take().and_then(|p| p.access)
+            {
+                memory.release(access.record);
+            }
+        }
+        let fresh = |mind: &Mind, key: &PlaceKey| {
+            mind.places
+                .get(key)
+                .is_some_and(|p| p.passage.is_some() && !p.is_barred())
+        };
+        let mut keys: Vec<PlaceKey> = std::mem::take(&mut self.passages_new)
+            .into_iter()
+            .filter(|k| fresh(self, k))
+            .collect();
+        for record in told {
+            if let Some(Record::Place { place, .. }) = memory.get(*record)
+                && !keys.contains(place)
+                && fresh(self, place)
+            {
+                keys.push(*place);
+            }
+        }
+        let most = usize::try_from(passages.told_per_night).unwrap_or(usize::MAX);
+        if keys.len() > most {
+            self.passages_new = keys
+                .split_off(most)
+                .into_iter()
+                .filter(|k| {
+                    self.places
+                        .get(k)
+                        .and_then(|p| p.passage.as_ref())
+                        .is_some_and(|p| p.access.is_none())
+                })
+                .collect();
+        }
+        let mut records = Vec::new();
+        for key in keys {
+            let Some(passage) = self.places.get_mut(&key).and_then(|p| p.passage.as_mut()) else {
+                continue;
+            };
+            let record = if let Some(access) = passage.access {
+                access.record
+            } else {
+                let (id, _) = memory.intern(Record::Passage {
+                    place: key,
+                    day: passage.day,
+                    witness: me,
+                    via: passage.via.clone(),
+                });
+                memory.hold(id);
+                passage.access = Some(Access {
+                    record: id,
+                    by: me,
+                    day,
+                });
+                id
+            };
+            records.push(record);
+        }
+        records
     }
 
     /// Holds a heard trial (a kept way, a lesson): at most `heard_max`,
@@ -5677,7 +5856,7 @@ impl Brains {
             };
             let need = need_kj_per_day(rules, body);
             let mind = self.minds.get_mut(&id).expect("present");
-            let (slots, denials) = mind.tell(
+            let (slots, mut denials) = mind.tell(
                 fire,
                 &self.food,
                 (camp, side, day, now),
@@ -5685,6 +5864,32 @@ impl Brains {
                 &mut self.memory,
                 &mut self.news,
             );
+            if rules.needs.passages.on() {
+                let passages = mind.tell_passages(
+                    &rules.needs.passages,
+                    &slots,
+                    (
+                        day,
+                        today_u32(world),
+                        keep_days(world, &rules.needs.passages),
+                        id,
+                    ),
+                    &mut self.memory,
+                );
+                for &record in &passages {
+                    let place = match self.memory.get(record) {
+                        Some(Record::Passage { place, .. }) => *place,
+                        _ => continue,
+                    };
+                    self.news.push(News::Passage {
+                        body: id,
+                        place,
+                        step: PassageStep::Told,
+                        at: now,
+                    });
+                }
+                denials.extend(passages);
+            }
             told.extend(slots.iter().map(|&record| (record, id)));
             denied.extend(denials.iter().map(|&record| (record, id)));
             for record in slots.into_iter().chain(denials) {
@@ -5733,6 +5938,10 @@ impl Brains {
         for &(record, teller) in denied {
             if matches!(self.memory.get(record), Some(Record::Barred { .. })) {
                 self.hear_barred(present, (record, teller), (day, now));
+                continue;
+            }
+            if matches!(self.memory.get(record), Some(Record::Passage { .. })) {
+                self.hear_passage(present, (record, teller), (day, dawn, now));
                 continue;
             }
             let Some(&Record::Place {
@@ -5802,7 +6011,12 @@ impl Brains {
             let Some(place) = self.minds.get_mut(&id).and_then(|m| m.places.get_mut(&key)) else {
                 continue;
             };
-            if place.is_barred() || place.stood.is_some_and(|stood| stood >= day) {
+            // One who knows a way there (D53, amended 26 November 2026)
+            // is not barred by another's failure.
+            if place.is_barred()
+                || place.stood.is_some_and(|stood| stood >= day)
+                || place.passage.is_some()
+            {
                 continue;
             }
             self.memory.hold(record);
@@ -5815,6 +6029,69 @@ impl Brains {
                 body: id,
                 place: key,
                 cause: None,
+                at: now,
+            });
+        }
+    }
+
+    /// A passage told at the fire (D53, amended 26 November 2026; the
+    /// project lead, 24 November 2026: "Une personne qui trouve le chemin
+    /// vient le dire"), heard like a mark: each present but its teller who
+    /// knows the place and holds no passage to it holds this one, dated
+    /// by the `dawn` it heard it; a mark of seen, not reached it held on
+    /// the place is lifted, the way now known. A listener who does not
+    /// know the place hears nothing: a passage adds no place.
+    fn hear_passage(
+        &mut self,
+        present: &[BodyId],
+        (record, teller): (RecordId, BodyId),
+        (night, dawn, now): (u32, u32, u64),
+    ) {
+        let Some(Record::Passage {
+            place: key, via, ..
+        }) = self.memory.get(record)
+        else {
+            return;
+        };
+        let (key, via) = (*key, via.clone());
+        for &id in present {
+            if id == teller {
+                continue;
+            }
+            let Some(mind) = self.minds.get_mut(&id) else {
+                continue;
+            };
+            let Some(place) = mind.places.get_mut(&key) else {
+                continue;
+            };
+            if place.passage.is_some() {
+                continue;
+            }
+            self.memory.hold(record);
+            place.passage = Some(Passage {
+                via: via.clone(),
+                day: dawn,
+                access: Some(Access {
+                    record,
+                    by: teller,
+                    day: night,
+                }),
+            });
+            let lifted = match place.barred.take() {
+                Some(Mark::Held(access)) => {
+                    self.memory.release(access.record);
+                    true
+                }
+                Some(Mark::Draft(_)) => true,
+                None => false,
+            };
+            if lifted {
+                mind.barred_new.retain(|(k, _)| *k != key);
+            }
+            self.news.push(News::Passage {
+                body: id,
+                place: key,
+                step: PassageStep::Heard { lifted },
                 at: now,
             });
         }
@@ -7228,6 +7505,19 @@ impl Brains {
                 if let Event::BodyBlocked { reason, .. } | Event::MoveRefused { reason, .. } = event
                 {
                     mind.blocked = Some(*reason);
+                    // A measure (D53, amended 26 November 2026): the days
+                    // a walk of it was barred by water.
+                    let day = today_u32(world);
+                    if *reason == Blockage::Water && mind.water_day != day {
+                        mind.water_day = day;
+                        let tile = world.body(body).map_or(mind.ways.home, Body::pos);
+                        self.news.push(News::Passage {
+                            body,
+                            place: (tile.x, tile.y),
+                            step: PassageStep::WaterDay,
+                            at: world.tick().0,
+                        });
+                    }
                 }
                 if let Event::BodyAte { item, .. } | Event::ActRefused { item, .. } = event {
                     // Eaten whole, refused or gone: looked at again when seen.
@@ -7803,12 +8093,17 @@ fn decide(
     if let Doing::ToGather(aim) = mind.doing
         && mind.stopped
     {
-        stopped_short(world, rules, id, mind, aim, news);
+        stopped_short(world, rules, id, mind, aim, (memory, news));
     }
+    // Its walk through a passage (D53, amended 26 November 2026): going
+    // elsewhere, it is over; stopped at an elbow, it walks the next leg.
+    let at_elbow = elbow_reached(mind, here);
     if let Doing::ToPlace(place) = mind.doing
         && mind.stopped
+        && !at_elbow
         && !at_place(here, place, place_side(rules))
     {
+        mind.via = None;
         // Stopped short of the place: the way there is not one it knows.
         // Left for the day, or it would try every corner beyond the same
         // river one after the other. Barred by water or rock (D32), the
@@ -7817,7 +8112,7 @@ fn decide(
         mind.doing = Doing::Nothing;
         leave_for_today(world, mind, place);
         if let Some(cause @ (Blockage::Water | Blockage::Rock)) = mind.blocked {
-            bar(world, (id, place, cause), mind, news);
+            bar(world, (id, place, cause), mind, (memory, news));
         }
     }
     // What to gather, chosen once a thought: hunger and the day's
@@ -7992,7 +8287,7 @@ fn decide(
             if fresh {
                 mind.chose_at = Some(now);
             }
-            let decision = go_for(world, rules, id, mind, goal, Why::Hunger);
+            let decision = go_for(world, rules, (id, here), mind, goal, (Why::Hunger, news));
             return follow_or_wait(world, rules, groups, id, mind, decision, now);
         }
         // It knows the seasons: it goes looking by day, and only when
@@ -8067,7 +8362,7 @@ fn decide(
         if fresh {
             mind.chose_at = Some(now);
         }
-        let decision = go_for(world, rules, id, mind, goal, Why::Gather);
+        let decision = go_for(world, rules, (id, here), mind, goal, (Why::Gather, news));
         return follow_or_wait(world, rules, groups, id, mind, decision, now);
     }
     let home = (here.x - camp.x).abs() <= HOME_TILES && (here.y - camp.y).abs() <= HOME_TILES;
@@ -9766,24 +10061,88 @@ fn leave_for_today(world: &World, mind: &mut Mind, key: PlaceKey) {
 fn go_for(
     world: &World,
     rules: &Content,
-    id: BodyId,
+    (id, here): (BodyId, Pos),
     mind: &mut Mind,
     goal: Goal<'_>,
-    why: Why,
+    (why, news): (Why, &mut Vec<News>),
 ) -> Option<Decision> {
     match goal {
         Goal::Plant(target) => go_gather(world, rules, id, mind, target, why),
         Goal::Place(key, stand) => {
             mind.doing = Doing::ToPlace(key);
+            let target = via_target(world, rules, (id, here, key, stand), mind, news);
             Some(Decision {
-                intention: Intention::MoveTo {
-                    body: id,
-                    target: stand,
-                },
+                intention: Intention::MoveTo { body: id, target },
                 why,
             })
         }
     }
+}
+
+/// Where a body going to the place `key`, its tile to stand on `stand`,
+/// walks now (D53, amended 26 November 2026): holding a passage to it and
+/// not seeing `stand` on a clear line from `here`, it walks through the
+/// passage, an elbow after the other, from the last it sees on a clear
+/// line, then to `stand`; each leg is an ordinary walk, with the same
+/// sight. Seeing no elbow (they were found from the camp), with no passage,
+/// or with the passages off, straight to `stand`, as before; the passage
+/// stays known.
+fn via_target(
+    world: &World,
+    rules: &Content,
+    (id, here, key, stand): (BodyId, Pos, PlaceKey, Pos),
+    mind: &mut Mind,
+    news: &mut Vec<News>,
+) -> Pos {
+    let passages = &rules.needs.passages;
+    if !passages.on() {
+        return stand;
+    }
+    let held = |mind: &Mind| -> Option<Vec<Pos>> {
+        mind.places
+            .get(&key)
+            .and_then(|p| p.passage.as_ref())
+            .filter(|p| passage_fresh(p, keep_days(world, passages), today_u32(world)))
+            .map(|p| p.via.clone())
+    };
+    let next = match mind.via {
+        Some((k, next)) if k == key => next,
+        _ => {
+            let map = world.map();
+            // The elbows were found from the camp: a body uses them only
+            // from where it sees one on a clear line, the last it sees;
+            // seeing none, it walks straight as without them, the passage
+            // still known (the project lead, 26 November 2026, on the
+            // audit of the passages: the walk "à l'aveugle" removed).
+            let from = held(mind)
+                .filter(|_| !clear_line(map, here, stand))
+                .and_then(|via| via.iter().rposition(|&e| clear_line(map, here, e)));
+            let next = match from {
+                Some(from) => {
+                    let begun = Some((key, today_u32(world)));
+                    if mind.via_begun != begun {
+                        mind.via_begun = begun;
+                        news.push(News::Passage {
+                            body: id,
+                            place: key,
+                            step: PassageStep::Begun,
+                            at: world.tick().0,
+                        });
+                    }
+                    u8::try_from(from).unwrap_or(0)
+                }
+                None => VIA_STRAIGHT,
+            };
+            mind.via = Some((key, next));
+            next
+        }
+    };
+    if next == VIA_STRAIGHT {
+        return stand;
+    }
+    held(mind)
+        .and_then(|via| via.get(usize::from(next)).copied())
+        .unwrap_or(stand)
 }
 
 /// Walks to the tree or plant `target`, or gathers from it when within
@@ -9842,7 +10201,7 @@ fn stopped_short(
     id: BodyId,
     mind: &mut Mind,
     aim: Aim,
-    news: &mut Vec<News>,
+    (memory, news): (&mut Store, &mut Vec<News>),
 ) {
     let Some(body) = world.body(id) else {
         return;
@@ -9863,7 +10222,7 @@ fn stopped_short(
     if let Some(cause @ (Blockage::Water | Blockage::Rock)) = mind.blocked
         && !at_place(body.pos(), place, side)
     {
-        bar(world, (id, place, cause), mind, news);
+        bar(world, (id, place, cause), mind, (memory, news));
     }
 }
 
@@ -9875,7 +10234,7 @@ fn bar(
     world: &World,
     (id, key, cause): (BodyId, PlaceKey, Blockage),
     mind: &mut Mind,
-    news: &mut Vec<News>,
+    (memory, news): (&mut Store, &mut Vec<News>),
 ) {
     let day = today_u32(world);
     let Some(place) = mind.places.get_mut(&key) else {
@@ -9886,6 +10245,22 @@ fn bar(
     }
     place.barred = Some(Mark::Draft(day));
     mind.barred_new.push((key, day));
+    // A passage that did not lead there is dropped (D53, amended 26
+    // November 2026).
+    if let Some(passage) = place.passage.take() {
+        if let Some(access) = passage.access {
+            memory.release(access.record);
+        }
+        mind.passages_new.retain(|k| *k != key);
+        news.push(News::Passage {
+            body: id,
+            place: key,
+            step: PassageStep::Failed {
+                heard: passage.access.is_some_and(|a| !a.is_own(id)),
+            },
+            at: world.tick().0,
+        });
+    }
     news.push(News::Barred {
         body: id,
         place: key,
@@ -9908,7 +10283,9 @@ fn stand_on(
     let Some(place) = mind.places.get_mut(&key) else {
         return;
     };
-    place.stood = Some(today_u32(world));
+    let today = today_u32(world);
+    let first = place.stood != Some(today);
+    place.stood = Some(today);
     if let Some(mark) = place.barred.take() {
         if let Mark::Held(access) = mark {
             memory.release(access.record);
@@ -9920,6 +10297,169 @@ fn stand_on(
             at: world.tick().0,
         });
     }
+    if first || mind.via.is_some_and(|(k, _)| k == key) {
+        reached(world, rules, (id, here, key, first), mind, (memory, news));
+    }
+}
+
+/// `id` stands at `here` on the place `key` of its notebook, the first
+/// time today or at the end of a walk through a passage (D53, amended 26
+/// November 2026). Through a passage, it arrived: the passage walked is
+/// kept fresh. The `first` time today, a place that a straight walk from
+/// its camp could not reach, water or rock in the way, is a place reached
+/// beyond them; with the
+/// passages on, holding none to it, it keeps one: the elbow of the way it
+/// came ([`elbows`]), told at its next fire.
+fn reached(
+    world: &World,
+    rules: &Content,
+    (id, here, key, first): (BodyId, Pos, PlaceKey, bool),
+    mind: &mut Mind,
+    (memory, news): (&mut Store, &mut Vec<News>),
+) {
+    let today = today_u32(world);
+    let at = world.tick().0;
+    let home = mind.ways.home;
+    let passages = &rules.needs.passages;
+    if let Some((_, next)) = mind.via.take_if(|(k, _)| *k == key)
+        && next != VIA_STRAIGHT
+    {
+        let tiles = u64::try_from(far(home, here).isqrt()).unwrap_or(0);
+        let milliminutes = mind.walk_milliminutes(tiles);
+        if let Some(passage) = mind.places.get_mut(&key).and_then(|p| p.passage.as_mut()) {
+            passage.day = today;
+        }
+        mind.via_begun = None;
+        news.push(News::Passage {
+            body: id,
+            place: key,
+            step: PassageStep::Arrived { milliminutes },
+            at,
+        });
+    }
+    let map = world.map();
+    if !first || at_place(home, key, place_side(rules)) || clear_line(map, home, here) {
+        return;
+    }
+    news.push(News::Passage {
+        body: id,
+        place: key,
+        step: PassageStep::Beyond,
+        at,
+    });
+    if !passages.on() || mind.trail_home != home {
+        return;
+    }
+    let Some(place) = mind.places.get_mut(&key) else {
+        return;
+    };
+    if place
+        .passage
+        .as_ref()
+        .is_some_and(|p| passage_fresh(p, keep_days(world, passages), today))
+    {
+        return;
+    }
+    let Some(via) = elbows(map, home, &mind.trail, here) else {
+        return;
+    };
+    if let Some(old) = place.passage.take().and_then(|p| p.access) {
+        memory.release(old.record);
+    }
+    place.passage = Some(Passage {
+        via,
+        day: today,
+        access: None,
+    });
+    mind.passages_new.retain(|k| *k != key);
+    mind.passages_new.push(key);
+    news.push(News::Passage {
+        body: id,
+        place: key,
+        step: PassageStep::Found,
+        at,
+    });
+}
+
+/// Its walk through a passage at a thought (D53, amended 26 November
+/// 2026): going elsewhere than the place, the walk is over; its walk
+/// ended at the elbow it walked to, it walks the next leg: `true`.
+fn elbow_reached(mind: &mut Mind, here: Pos) -> bool {
+    let Some((key, next)) = mind.via else {
+        return false;
+    };
+    if mind.doing != Doing::ToPlace(key) {
+        mind.via = None;
+        return false;
+    }
+    let at = mind.stopped
+        && next != VIA_STRAIGHT
+        && mind
+            .places
+            .get(&key)
+            .and_then(|p| p.passage.as_ref())
+            .and_then(|p| p.via.get(usize::from(next)))
+            .is_some_and(|&elbow| within(here, elbow, ELBOW_TILES));
+    if at {
+        mind.via = Some((key, next + 1));
+    }
+    at
+}
+
+/// A walk with no passage: straight to the place ([`Mind::via`]).
+const VIA_STRAIGHT: u8 = u8::MAX;
+
+/// A body within this many tiles of an elbow on each axis stands at it.
+const ELBOW_TILES: i32 = 4;
+
+/// The most points of its way looked back along for an elbow: a
+/// thousand tiles of way (decided alone, 26 November 2026).
+const ELBOW_SCAN: usize = 64;
+
+/// Whether the passage is still held: found, heard or walked through
+/// within `keep` days (0: the passages off).
+fn passage_fresh(passage: &Passage, keep: u32, today: u32) -> bool {
+    keep > 0 && today.saturating_sub(passage.day) <= keep
+}
+
+/// The days a passage is kept in `world`'s calendar: the content's
+/// `passages.fade_seasons` (D09); 0 with the passages off.
+fn keep_days(world: &World, passages: &crate::content::Passages) -> u32 {
+    if passages.on() {
+        passages.fade_days(world.calendar().days_per_cycle()).max(1)
+    } else {
+        0
+    }
+}
+
+/// The elbows of a passage to `here` along `trail`, the way a body came
+/// from `home`, the nearest home first (D53, amended 26 November 2026):
+/// the first point of the last stretch of its way from which `here` lies
+/// on a clear line (no water nor rock); when that elbow is not itself on
+/// a clear line from `home`, the first point of the stretch before it
+/// from which it does, if any. Two elbows at most, three legs; the first
+/// leg is walked with the same sight as any walk. `None` when even the
+/// way's last point does not see `here`.
+fn elbows(map: &Map, home: Pos, trail: &[Pos], here: Pos) -> Option<Vec<Pos>> {
+    let back = |end: usize, to: Pos| -> Option<usize> {
+        let mut first = None;
+        for i in (end.saturating_sub(ELBOW_SCAN)..end).rev() {
+            if !clear_line(map, trail[i], to) {
+                break;
+            }
+            first = Some(i);
+        }
+        first
+    };
+    let last = back(trail.len(), here)?;
+    let elbow = trail[last];
+    if clear_line(map, home, elbow) {
+        return Some(vec![elbow]);
+    }
+    Some(match back(last, elbow) {
+        Some(i) => vec![trail[i], elbow],
+        None => vec![elbow],
+    })
 }
 
 /// The food the body carries that it should eat first: what spoils
@@ -11573,6 +12113,7 @@ mod tests {
             rumour_kj: 0,
             barred: None,
             stood: None,
+            passage: None,
         }
     }
 
@@ -12656,7 +13197,14 @@ mod tests {
         };
         mind.doing = Doing::ToGather(aim);
         mind.stopped = true;
-        stopped_short(&world, &rules, id, mind, aim, &mut Vec::new());
+        stopped_short(
+            &world,
+            &rules,
+            id,
+            mind,
+            aim,
+            (&mut Store::new(), &mut Vec::new()),
+        );
         assert_eq!(mind.doing, Doing::Nothing);
         assert_eq!(mind.out_of_reach.get(&key), Some(&today(&world)));
         assert_eq!(
@@ -12707,7 +13255,14 @@ mod tests {
         mind.stopped = true;
         mind.blocked = Some(Blockage::Water);
         let mut news = Vec::new();
-        stopped_short(&world, &rules, id, mind, aim, &mut news);
+        stopped_short(
+            &world,
+            &rules,
+            id,
+            mind,
+            aim,
+            (&mut Store::new(), &mut news),
+        );
         let day = u32::try_from(today(&world)).unwrap();
         assert_eq!(mind.places[&key].barred, Some(Mark::Draft(day)));
         assert_eq!(mind.barred_new, vec![(key, day)], "to tell at its fire");
@@ -12870,6 +13425,544 @@ mod tests {
         assert_eq!(brains.memory.refs(record), 1, "the telling's alone");
     }
 
+    /// The passages' rules (D53, amended 26 November 2026) on the sample.
+    fn passages_rules() -> Content {
+        let mut rules = rules();
+        rules.needs.passages = crate::content::Passages::placeholders();
+        rules
+    }
+
+    /// A river down x = 50 from the map's top to y = 190, a lake's end: the
+    /// camp at (40, 5) on its west, one body there. Its way out went down
+    /// the west bank, round the end, up the east bank and east to (70, 20),
+    /// a place of its notebook where it stands.
+    fn a_crossing() -> (World, BodyId, Mind, PlaceKey, Pos) {
+        let mut map = Map::filled(200, 200, Terrain::Grass);
+        for y in 0..190 {
+            map.set(Pos::new(50, y), Terrain::Water);
+        }
+        let mut world = World::empty(Calendar::new(1, 7200).unwrap(), map);
+        let id = world.spawn_body(Pos::new(40, 5));
+        let mut mind = Mind::new(Pos::new(40, 5));
+        let map = world.map().clone();
+        for y in 5..=195 {
+            mind.walked_to(&map, Pos::new(42, y));
+        }
+        for x in 42..=54 {
+            mind.walked_to(&map, Pos::new(x, 195));
+        }
+        for y in (20..=195).rev() {
+            mind.walked_to(&map, Pos::new(54, y));
+        }
+        for x in 54..=70 {
+            mind.walked_to(&map, Pos::new(x, 20));
+        }
+        let here = Pos::new(70, 20);
+        let key = place_of(here, place_side(&rules()));
+        mind.places.insert(key, Place::default());
+        (world, id, mind, key, here)
+    }
+
+    /// Walks `id` to `target` until its walk ends: where it stands, and
+    /// what barred it, if anything.
+    fn walk_to(
+        world: &mut World,
+        rules: &Content,
+        id: BodyId,
+        target: Pos,
+    ) -> (Pos, Option<Blockage>) {
+        world.queue(Intention::MoveTo { body: id, target });
+        let mut events = Vec::new();
+        for _ in 0..5000 {
+            events.clear();
+            world.step(rules, &mut events);
+            for event in &events {
+                match event {
+                    Event::BodyBlocked { body, reason, .. }
+                    | Event::MoveRefused { body, reason, .. }
+                        if *body == id =>
+                    {
+                        return (world.body(id).unwrap().pos(), Some(*reason));
+                    }
+                    Event::BodyStopped { body, .. }
+                        if *body == id && !world.body(id).unwrap().is_pausing() =>
+                    {
+                        return (world.body(id).unwrap().pos(), None);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        panic!("the walk to {target:?} never ended");
+    }
+
+    #[test]
+    fn a_crossing_is_remembered_by_the_elbows_of_the_way_it_came() {
+        let rules = passages_rules();
+        let (world, id, mut mind, key, here) = a_crossing();
+        let map = world.map();
+        let home = mind.ways.home;
+        assert!(!clear_line(map, home, here), "the river between");
+        let mut news = Vec::new();
+        stand_on(
+            &world,
+            &rules,
+            (id, here),
+            &mut mind,
+            (&mut Store::new(), &mut news),
+        );
+        let passage = mind.places[&key].passage.clone().expect("a passage kept");
+        // The elbow sees the place across nothing; it is round the lake's
+        // end, not seen from the camp, so a second elbow before it, on the
+        // west bank, sees both the camp and the first.
+        let [first, elbow] = passage.via[..] else {
+            panic!("two elbows: {:?}", passage.via);
+        };
+        assert!(first.x < 50 && elbow.x >= 50, "{:?}", passage.via);
+        assert!(clear_line(map, home, first));
+        assert!(clear_line(map, first, elbow));
+        assert!(clear_line(map, elbow, here));
+        assert!(!clear_line(map, home, elbow));
+        assert_eq!(passage.access, None, "a draft, told at the fire");
+        assert_eq!(mind.passages_new, vec![key]);
+        let steps: Vec<PassageStep> = news
+            .iter()
+            .filter_map(|n| match n {
+                News::Passage { step, .. } => Some(*step),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(steps, vec![PassageStep::Beyond, PassageStep::Found]);
+        // Standing there again the same day: nothing new.
+        let mut again = Vec::new();
+        stand_on(
+            &world,
+            &rules,
+            (id, here),
+            &mut mind,
+            (&mut Store::new(), &mut again),
+        );
+        assert!(again.is_empty(), "nothing new: {again:?}");
+        // The passages off: the place is still reached beyond the water
+        // (a measure), and no passage is kept.
+        let (world, id, mut off, key, here) = a_crossing();
+        let mut news = Vec::new();
+        stand_on(
+            &world,
+            &self::rules(),
+            (id, here),
+            &mut off,
+            (&mut Store::new(), &mut news),
+        );
+        assert_eq!(off.places[&key].passage, None);
+        assert!(matches!(
+            news[..],
+            [News::Passage {
+                step: PassageStep::Beyond,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn a_place_reached_straight_from_the_camp_makes_no_passage() {
+        let rules = passages_rules();
+        let (world, id, mut mind, _, _) = a_crossing();
+        // On the camp's side of the river, its way behind it.
+        let here = Pos::new(30, 120);
+        let key = place_of(here, place_side(&rules));
+        mind.places.insert(key, Place::default());
+        let mut news = Vec::new();
+        stand_on(
+            &world,
+            &rules,
+            (id, here),
+            &mut mind,
+            (&mut Store::new(), &mut news),
+        );
+        assert_eq!(mind.places[&key].passage, None);
+        assert!(mind.passages_new.is_empty(), "no passage to tell");
+        assert!(news.is_empty(), "not beyond the water: {news:?}");
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one telling, read top to bottom")]
+    fn a_passage_is_told_with_its_place_and_heard_by_who_knows_the_place() {
+        let rules = passages_rules();
+        let passages = &rules.needs.passages;
+        let (world, id, mut mind, key, here) = a_crossing();
+        let mut brains = Brains::new(7);
+        let mut news = Vec::new();
+        stand_on(
+            &world,
+            &rules,
+            (id, here),
+            &mut mind,
+            (&mut brains.memory, &mut news),
+        );
+        let (night, dawn) = (0, 1);
+        let told = mind.tell_passages(passages, &[], (night, dawn, 64, id), &mut brains.memory);
+        let [record] = told[..] else {
+            panic!("one passage told: {told:?}");
+        };
+        let via = mind.places[&key].passage.clone().unwrap().via;
+        assert_eq!(
+            brains.memory.get(record),
+            Some(&Record::Passage {
+                place: key,
+                day: 0,
+                witness: id,
+                via: via.clone(),
+            })
+        );
+        assert!(mind.passages_new.is_empty(), "told");
+        // Told again with the place the next night: the same record.
+        let place_told = brains
+            .memory
+            .intern(Record::Place {
+                place: key,
+                day: 1,
+                witness: id,
+                states: Vec::new(),
+            })
+            .0;
+        let again = mind.tell_passages(passages, &[place_told], (1, 2, 64, id), &mut brains.memory);
+        assert_eq!(again, vec![record], "it travels with the place");
+        // Heard: one who knows the place, marked seen, not reached, holds
+        // the way and the mark is lifted; one who does not know the place
+        // learns nothing; one who holds a passage there keeps its own.
+        let (knows, stranger, holds) = (BodyId(901), BodyId(902), BodyId(903));
+        let marked = Place {
+            barred: Some(Mark::Draft(0)),
+            ..Place::default()
+        };
+        let own = Passage {
+            via: vec![Pos::new(1, 1)],
+            day: 0,
+            access: None,
+        };
+        let home = mind.ways.home;
+        brains.minds.insert(id, mind);
+        for (other, place) in [
+            (knows, Some(marked)),
+            (stranger, None),
+            (
+                holds,
+                Some(Place {
+                    passage: Some(own.clone()),
+                    ..Place::default()
+                }),
+            ),
+        ] {
+            let mut m = Mind::new(home);
+            if let Some(p) = place {
+                m.places.insert(key, p);
+            }
+            m.barred_new.push((key, 0));
+            brains.minds.insert(other, m);
+        }
+        brains.hear_passage(
+            &[id, knows, stranger, holds],
+            (record, id),
+            (night, dawn, 0),
+        );
+        let heard = brains.minds[&knows].places[&key].clone();
+        assert_eq!(
+            heard.passage,
+            Some(Passage {
+                via,
+                day: dawn,
+                access: Some(Access {
+                    record,
+                    by: id,
+                    day: night
+                })
+            })
+        );
+        assert_eq!(heard.barred, None, "the way known, the mark lifted");
+        assert!(brains.minds[&knows].barred_new.is_empty(), "nor told");
+        assert!(brains.minds[&stranger].places.is_empty());
+        assert_eq!(brains.minds[&holds].places[&key].passage, Some(own));
+        assert!(matches!(
+            brains.news[..],
+            [News::Passage {
+                body,
+                step: PassageStep::Heard { lifted: true },
+                ..
+            }] if body == knows
+        ));
+        // Who knows a way is not barred by another's failure told.
+        let barred = brains
+            .memory
+            .intern(Record::Barred {
+                place: key,
+                day: 0,
+                witness: stranger,
+            })
+            .0;
+        brains.hear_barred(&[knows, stranger], (barred, stranger), (night, 0));
+        assert_eq!(brains.minds[&knows].places[&key].barred, None);
+        // Gone, the listener's access goes with it.
+        assert_eq!(
+            brains.memory.refs(record),
+            3,
+            "the teller's, the listener's, the telling's"
+        );
+        let mut gone = brains.minds.remove(&knows).unwrap();
+        gone.forget_all(&mut brains.memory);
+        assert_eq!(brains.memory.refs(record), 2);
+    }
+
+    #[test]
+    fn a_listener_walks_in_two_legs_through_the_passage_and_arrives() {
+        let rules = passages_rules();
+        let (mut world, id, finder, key, here) = a_crossing();
+        let side = place_side(&rules);
+        let stand = place_stand(&world, &rules, key, side).unwrap();
+        // Straight from the camp, the river bars the walk.
+        let mut straight = world.clone();
+        let (stopped, _) = walk_to(&mut straight, &rules, id, stand);
+        assert!(!at_place(stopped, key, side), "barred short: {stopped:?}");
+        // The listener holds the finder's passage, heard at the fire.
+        let mut mind = Mind::new(finder.ways.home);
+        let via = {
+            let mut f = finder;
+            stand_on(
+                &world,
+                &rules,
+                (id, here),
+                &mut f,
+                (&mut Store::new(), &mut Vec::new()),
+            );
+            f.places[&key].passage.clone().unwrap().via
+        };
+        mind.places.insert(
+            key,
+            Place {
+                passage: Some(Passage {
+                    via: via.clone(),
+                    day: today_u32(&world),
+                    access: None,
+                }),
+                ..Place::default()
+            },
+        );
+        let mut news = Vec::new();
+        let mut legs = Vec::new();
+        let mut at = world.body(id).unwrap().pos();
+        for _ in 0..4 {
+            let decision = go_for(
+                &world,
+                &rules,
+                (id, at),
+                &mut mind,
+                Goal::Place(key, stand),
+                (Why::Gather, &mut news),
+            )
+            .unwrap();
+            let Intention::MoveTo { target, .. } = decision.intention else {
+                panic!("a walk");
+            };
+            legs.push(target);
+            let (end, barred) = walk_to(&mut world, &rules, id, target);
+            assert_eq!(barred, None, "a leg barred at {end:?}, to {target:?}");
+            at = end;
+            mind.stopped = true;
+            if !elbow_reached(&mut mind, at) {
+                break;
+            }
+        }
+        assert_eq!(legs, vec![via[0], via[1], stand], "the legs");
+        assert!(at_place(at, key, side));
+        stand_on(
+            &world,
+            &rules,
+            (id, at),
+            &mut mind,
+            (&mut Store::new(), &mut news),
+        );
+        assert_eq!(mind.via, None);
+        let steps: Vec<PassageStep> = news
+            .iter()
+            .filter_map(|n| match n {
+                News::Passage { step, .. } => Some(*step),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(
+                steps[..],
+                [PassageStep::Begun, PassageStep::Arrived { milliminutes }, PassageStep::Beyond]
+                    if milliminutes > 0
+            ),
+            "{steps:?}"
+        );
+        // The passages off: straight, as before.
+        let mut off = mind.clone();
+        off.via = None;
+        let decision = go_for(
+            &world,
+            &self::rules(),
+            (id, Pos::new(40, 5)),
+            &mut off,
+            Goal::Place(key, stand),
+            (Why::Gather, &mut Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(
+            decision.intention,
+            Intention::MoveTo {
+                body: id,
+                target: stand
+            }
+        );
+        assert_eq!(off.via, None);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one passage's life, read top to bottom"
+    )]
+    fn a_passage_fades_is_told_within_its_bound_and_drops_when_it_fails() {
+        let mut rules = passages_rules();
+        rules.needs.passages.told_per_night = 1;
+        let passages = rules.needs.passages.clone();
+        let (world, id, mut mind, key, here) = a_crossing();
+        let keep = keep_days(&world, &passages);
+        assert_eq!(
+            keep,
+            world.calendar().days_per_cycle(),
+            "four seasons, a cycle"
+        );
+        let mut memory = Store::new();
+        stand_on(
+            &world,
+            &rules,
+            (id, here),
+            &mut mind,
+            (&mut memory, &mut Vec::new()),
+        );
+        // Two more found tonight: one told, the others wait.
+        let others = [(key.0 + 1, key.1), (key.0 + 2, key.1)];
+        for other in others {
+            let mut p = mind.places[&key].clone();
+            p.passage.as_mut().unwrap().access = None;
+            mind.places.insert(other, p);
+            mind.passages_new.push(other);
+        }
+        let told = mind.tell_passages(&passages, &[], (0, 1, keep, id), &mut memory);
+        assert_eq!(told.len(), 1);
+        assert_eq!(mind.passages_new, others.to_vec(), "the rest another night");
+        let told = mind.tell_passages(&passages, &[], (1, 2, keep, id), &mut memory);
+        assert_eq!(told.len(), 1);
+        assert_eq!(mind.passages_new.len(), 1);
+        // A passage not walked for `fade_seasons` is forgotten, its record
+        // released: the walk goes straight again.
+        let record = told[0];
+        let faded = 2 + keep + 1;
+        assert_eq!(memory.refs(record), 2, "the telling's and its own");
+        let none = mind.tell_passages(&passages, &[], (faded, faded, keep, id), &mut memory);
+        assert!(none.is_empty(), "nothing left to tell");
+        assert!(mind.places.values().all(|p| p.passage.is_none()));
+        assert!(mind.passages_new.is_empty(), "the waiting one faded too");
+        assert_eq!(memory.refs(record), 1, "the telling's alone");
+        assert!(!passage_fresh(
+            &Passage {
+                via: Vec::new(),
+                day: 0,
+                access: None
+            },
+            keep,
+            faded
+        ));
+        // Seeing no elbow from where it stands, it walks straight as
+        // without the passage, which stays known.
+        let (world, id, mut mind, key, here) = a_crossing();
+        stand_on(
+            &world,
+            &rules,
+            (id, here),
+            &mut mind,
+            (&mut Store::new(), &mut Vec::new()),
+        );
+        let stand = place_stand(&world, &rules, key, place_side(&rules)).unwrap();
+        // A wall of rock down x = 30: from (20, 20) neither the place nor
+        // any elbow lies on a clear line.
+        let mut map = world.map().clone();
+        for y in 0..200 {
+            map.set(Pos::new(30, y), Terrain::Rock);
+        }
+        let walled = World::empty(Calendar::new(1, 7200).unwrap(), map);
+        let blind_at = Pos::new(20, 20);
+        let via = mind.places[&key].passage.clone().unwrap().via;
+        assert!(!via.iter().any(|&e| clear_line(walled.map(), blind_at, e)));
+        let decision = go_for(
+            &walled,
+            &rules,
+            (id, blind_at),
+            &mut mind,
+            Goal::Place(key, stand),
+            (Why::Gather, &mut Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(
+            decision.intention,
+            Intention::MoveTo {
+                body: id,
+                target: stand
+            },
+            "no elbow seen: straight"
+        );
+        assert_eq!(mind.via, Some((key, VIA_STRAIGHT)));
+        mind.via = None;
+        let decision = go_for(
+            &world,
+            &rules,
+            (id, Pos::new(60, 30)),
+            &mut mind,
+            Goal::Place(key, stand),
+            (Why::Gather, &mut Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(
+            decision.intention,
+            Intention::MoveTo {
+                body: id,
+                target: stand
+            },
+            "the place seen from there: straight"
+        );
+        assert!(mind.places[&key].passage.is_some());
+        // A walk through the passage barred by water: the passage is
+        // dropped, the place marked seen, not reached.
+        let (world, id, mut mind, key, here) = a_crossing();
+        stand_on(
+            &world,
+            &rules,
+            (id, here),
+            &mut mind,
+            (&mut Store::new(), &mut Vec::new()),
+        );
+        let mut news = Vec::new();
+        bar(
+            &world,
+            (id, key, Blockage::Water),
+            &mut mind,
+            (&mut Store::new(), &mut news),
+        );
+        assert_eq!(mind.places[&key].passage, None);
+        assert!(mind.places[&key].is_barred());
+        assert!(mind.passages_new.is_empty(), "nor told");
+        assert!(news.iter().any(|n| matches!(
+            n,
+            News::Passage {
+                step: PassageStep::Failed { heard: false },
+                ..
+            }
+        )));
+    }
+
     #[test]
     fn water_or_rock_marks_the_place_for_good_and_no_way_only_for_the_day() {
         let (mut world, rules, id, mut brains) = by_a_ripe_bramble(0);
@@ -12900,7 +13993,12 @@ mod tests {
             assert!(walked(mind, cause).places[&key].is_barred());
         }
         let mut news = Vec::new();
-        bar(&world, (id, key, Blockage::Water), mind, &mut news);
+        bar(
+            &world,
+            (id, key, Blockage::Water),
+            mind,
+            (&mut Store::new(), &mut news),
+        );
         let later = world.tick().0
             + 2 * u64::from(world.calendar().days_per_cycle()) * world.calendar().ticks_per_day();
         let mut events = Vec::new();

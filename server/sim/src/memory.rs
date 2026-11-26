@@ -77,6 +77,20 @@ pub enum Record {
         /// Whose walk.
         witness: BodyId,
     },
+    /// A passage (D53, amended 26 November 2026): the point or two of its
+    /// witness's way through which it reached a place that a straight walk
+    /// from its camp could not, water or rock in the way: a ford, the end
+    /// of a lake. Told with the place it opens.
+    Passage {
+        /// The place it opens.
+        place: PlaceKey,
+        /// The day it was found.
+        day: u32,
+        /// Who walked it.
+        witness: BodyId,
+        /// The elbows, the nearest its camp first: one, or two at most.
+        via: Vec<Pos>,
+    },
     /// A place to drink found.
     Water {
         /// Its chunk.
@@ -167,6 +181,7 @@ impl Record {
         match self {
             Record::Place { day, .. }
             | Record::Barred { day, .. }
+            | Record::Passage { day, .. }
             | Record::Water { day, .. }
             | Record::Trial { day, .. }
             | Record::Deed { day, .. }
@@ -181,6 +196,7 @@ impl Record {
         match self {
             Record::Place { witness, .. }
             | Record::Barred { witness, .. }
+            | Record::Passage { witness, .. }
             | Record::Water { witness, .. } => Some(*witness),
             Record::Trial { body, .. } | Record::Deed { body, .. } => Some(*body),
             Record::Night { .. } | Record::Reputed { .. } => None,
@@ -200,6 +216,12 @@ impl Record {
                 day,
                 witness,
             } => Key::Barred(*place, *day, *witness),
+            Record::Passage {
+                place,
+                day,
+                witness,
+                ..
+            } => Key::Passage(*place, *day, *witness),
             Record::Water {
                 chunk, day, stand, ..
             } => Key::Water(*chunk, *day, *stand),
@@ -218,6 +240,7 @@ impl Record {
 enum Key {
     Place(PlaceKey, u32, Vec<(u16, Bucket)>),
     Barred(PlaceKey, u32, BodyId),
+    Passage(PlaceKey, u32, BodyId),
     Water(ChunkPos, u32, Pos),
     Trial(BodyId, u32, Way),
     Deed(BodyId, u32, Deed),
