@@ -481,16 +481,6 @@ fn piece_colour(p: u8) -> [u8; 3] {
     }
 }
 
-/// A history plate's colour (ids past the wheel, darker).
-fn plate_colour(p: u8) -> [u8; 3] {
-    let c = PLATE_COLOURS[p as usize % 16];
-    if p >= 16 {
-        mix(c, [40, 40, 40], 300)
-    } else {
-        c
-    }
-}
-
 /// An ocean floor's age colour: red at the ridge, then orange, yellow,
 /// green, blue, violet past 200 My (the usual map's scale).
 pub fn floor_colour(age: i64) -> [u8; 3] {
@@ -511,27 +501,6 @@ pub fn floor_colour(age: i64) -> [u8; 3] {
     STOPS[5].1
 }
 
-/// A boundary kind's colour on the history's maps (`Kind as u8 + 1`).
-fn kind_colour(k: u8) -> Option<[u8; 3]> {
-    let kinds = [
-        Kind::Ridge,
-        Kind::Rift,
-        Kind::Transform,
-        Kind::Trench,
-        Kind::Arc,
-        Kind::IslandArc,
-        Kind::Collision,
-    ];
-    let kind = *kinds.get(usize::from(k).checked_sub(1)?)?;
-    Some(match kind {
-        Kind::Ridge | Kind::Rift => [255, 230, 50],
-        Kind::Transform => [235, 235, 235],
-        Kind::Trench => [230, 20, 30],
-        Kind::Arc | Kind::IslandArc => [255, 120, 30],
-        Kind::Collision => [200, 60, 255],
-    })
-}
-
 /// A last mountain building's colour: today red, 100 My orange, 200
 /// yellow, older sutures (300–700 My) violet.
 fn orogeny_colour(ago: i64) -> [u8; 3] {
@@ -546,17 +515,23 @@ fn orogeny_colour(ago: i64) -> [u8; 3] {
     }
 }
 
-/// The history view: the planet at each step, `h{seed}-{step}.png`
-/// (1,024 × 512, centred as the planet view): each plate in its colour,
-/// dark at sea and light under continents, the coasts outlined, the
-/// boundaries by what they do at that step (ridge or rift yellow, trench
-/// red, arc orange, collision violet, transform white), the upwelling
-/// (orange ring) and the downwellings (blue rings); and the ocean floor's
-/// age at each step, `o{seed}-{step}.png`.
-pub fn history_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
+/// The history view: the planet at one step of its history, drawn as
+/// the planet view draws today's (same palette, same layers), at
+/// 1,024 × 512 and centred as the planet view: `h{seed}-{step}-{name}.png`
+/// for its relief, plates, continental crust, boundaries, motion, grid,
+/// ocean floor's age, and the mantle's upwelling and downwellings.
+pub fn step_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
     let (w, hgt) = (PW / 2, PH / 2);
     let lon0 = lon0_of(zoom);
     let h = &world.history;
+    let t = world.step;
+    let name = |id: &str| format!("h{}-{t:02}-{id}.png", world.seed);
+    let at = |v: planet::V3| {
+        (
+            (planet::longitude(v) - lon0 + 1800).rem_euclid(3600) * w as i64 / 3600,
+            (900 - planet::latitude(v)) * hgt as i64 / 1800,
+        )
+    };
     let mut cell = vec![0_usize; w * hgt];
     for y in 0..hgt {
         let lat = 900 - (2 * y as i64 + 1) * 1800 / (2 * hgt as i64);
@@ -565,56 +540,131 @@ pub fn history_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
             cell[y * w + x] = world.sphere.cell_of(planet::from_lat_lon(lat, lon));
         }
     }
-    let at = |v: planet::V3| {
-        (
-            (planet::longitude(v) - lon0 + 1800).rem_euclid(3600) * w as i64 / 3600,
-            (900 - planet::latitude(v)) * hgt as i64 / 1800,
-        )
-    };
-    let right = |i: usize| {
-        if (i + 1).is_multiple_of(w) {
-            i + 1 - w
-        } else {
-            i + 1
+    let right_i = |i: usize| (i / w) * w + (i % w + 1) % w;
+    let down_i = |i: usize| (i + w).min(w * hgt - 1);
+    // Relief and the sea's depth.
+    let mut l = Layer::new(w, hgt);
+    for (i, &c) in cell.iter().enumerate() {
+        let e = i64::from(world.elevation[c]);
+        let mut col = hypsometric(e);
+        if e <= 0 && world.continental[c] {
+            col = mix(col, [150, 190, 210], 350);
         }
-    };
-    let down = |i: usize| if i + w < w * hgt { i + w } else { i };
-    for t in 0..=h.last() {
-        let (plate, class, kind) = (&h.plate[t], &h.class[t], &h.kind[t]);
-        let mut l = Layer::new(w, hgt);
-        let mut o = Layer::new(w, hgt);
-        for (i, &c) in cell.iter().enumerate() {
-            let land = class[c] != history::OCEAN;
-            let base = plate_colour(plate[c]);
-            let coast = [right(i), down(i)]
-                .iter()
-                .any(|&j| (class[cell[j]] != history::OCEAN) != land);
-            l.px[i] = if coast {
-                [25, 25, 25, 255]
-            } else if let Some(k) = kind_colour(kind[c]) {
-                rgba(k, 255)
-            } else if land {
-                rgba(mix(base, [255, 250, 235], 450), 255)
-            } else {
-                rgba(mix(base, [15, 25, 60], 600), 255)
-            };
-            o.px[i] = if coast {
-                [25, 25, 25, 255]
-            } else if land {
-                [200, 195, 185, 255]
-            } else {
-                rgba(floor_colour(i64::from(h.age[t][c])), 255)
-            };
+        let land = e > 0;
+        if land != (world.elevation[cell[right_i(i)]] > 0)
+            || land != (world.elevation[cell[down_i(i)]] > 0)
+        {
+            col = [25, 25, 25];
         }
-        let (x, y) = at(h.upwelling);
-        l.ring(x, y, 12, 3, [255, 140, 20, 255]);
-        for &d in &h.downwellings {
-            let (x, y) = at(d);
-            l.ring(x, y, 12, 3, [60, 200, 255, 255]);
-        }
-        l.write(dir, &format!("h{}-{t:02}.png", world.seed));
-        o.write(dir, &format!("o{}-{t:02}.png", world.seed));
+        l.px[i] = rgba(col, 255);
     }
+    l.write(dir, &name("relief"));
+    // Plates.
+    let mut l = Layer::new(w, hgt);
+    for (i, &c) in cell.iter().enumerate() {
+        l.px[i] = rgba(PLATE_COLOURS[world.plate[c] as usize % 16], 255);
+    }
+    l.write(dir, &name("plaques"));
+    // Continental crust.
+    let mut l = Layer::new(w, hgt);
+    for (i, &c) in cell.iter().enumerate() {
+        if world.continental[c] {
+            let edge = !world.continental[cell[right_i(i)]] || !world.continental[cell[down_i(i)]];
+            l.px[i] = if edge {
+                [120, 70, 20, 255]
+            } else {
+                [240, 200, 110, 150]
+            };
+        }
+    }
+    l.write(dir, &name("croute"));
+    // Boundaries.
+    let mut l = Layer::new(w, hgt);
+    for i in 0..w * hgt {
+        let c = cell[i];
+        for j in [right_i(i), down_i(i)] {
+            let n = cell[j];
+            if world.plate[c] != world.plate[n] {
+                let col = boundary_colour(world.edge[c], world.edge[n]);
+                l.px[i] = col;
+                l.px[j] = col;
+            }
+        }
+    }
+    l.write(dir, &name("frontieres"));
+    // Plate motion.
+    let mut l = Layer::new(w, hgt);
+    for lat in (-75..=75).step_by(15) {
+        for lon in (-172..=172).step_by(15) {
+            let p = planet::from_lat_lon(lat * 10, lon * 10);
+            let k = world.plates.plate_at(p);
+            let v = world.plates.velocity(k, p);
+            let rate = v.iter().map(|&a| a * a).sum::<i64>().isqrt();
+            if rate < 3 {
+                continue;
+            }
+            let q = planet::step(p, planet::normalize(v), rate * 22);
+            let (a, b) = (at(p), at(q));
+            if (a.0 - b.0).abs() > w as i64 / 4 {
+                continue;
+            }
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let len = (dx * dx + dy * dy).isqrt().max(1);
+            let head = |c: i64, s: i64| {
+                let (ux, uy) = (-dx * 6 / len, -dy * 6 / len);
+                (
+                    b.0 + (ux * c - uy * s) / 1000,
+                    b.1 + (ux * s + uy * c) / 1000,
+                )
+            };
+            for (thick, col) in [(3, [10, 10, 10, 230]), (1, [255, 255, 255, 255])] {
+                l.segment(a, b, thick, col);
+                l.segment(b, head(906, 423), thick, col);
+                l.segment(b, head(906, -423), thick, col);
+            }
+            l.dot(a.0, a.1, 2, [10, 10, 10, 255]);
+        }
+    }
+    l.write(dir, &name("mouvement"));
+    // The grid, 40° and 50° marked.
+    let mut l = Layer::new(w, hgt);
+    for deg in (-180..=180).step_by(10) {
+        let x = (deg * 10 - lon0 + 1800).rem_euclid(3600) * w as i64 / 3600;
+        for y in 0..hgt as i64 {
+            l.put(x, y, [255, 255, 255, if deg == 0 { 170 } else { 90 }]);
+        }
+    }
+    for deg in (-80..=80).step_by(10) {
+        let y = (900 - deg * 10) * hgt as i64 / 1800;
+        let marked = matches!(deg, -50 | -40 | 40 | 50);
+        for x in 0..w as i64 {
+            if marked {
+                if x % 14 < 9 {
+                    l.put(x, y, [60, 230, 255, 255]);
+                }
+            } else {
+                l.put(x, y, [255, 255, 255, if deg == 0 { 170 } else { 90 }]);
+            }
+        }
+    }
+    l.write(dir, &name("grille"));
+    // The ocean floor's age at this step.
+    let mut l = Layer::new(w, hgt);
+    for (i, &c) in cell.iter().enumerate() {
+        if h.class[t][c] == history::OCEAN {
+            l.px[i] = rgba(floor_colour(i64::from(h.age[t][c])), 255);
+        }
+    }
+    l.write(dir, &name("fond"));
+    // The mantle: the upwelling (orange) and the downwellings (blue).
+    let mut l = Layer::new(w, hgt);
+    let (x, y) = at(h.upwelling);
+    l.ring(x, y, 12, 3, [255, 140, 20, 255]);
+    for &d in &h.downwellings {
+        let (x, y) = at(d);
+        l.ring(x, y, 12, 3, [60, 200, 255, 255]);
+    }
+    l.write(dir, &name("manteau"));
 }
 
 /// A grid of the zoom's values read at the continent view's pixels,
@@ -885,26 +935,4 @@ pub fn continent_layers(dir: &Path, seed: u64, z: &Zoom) {
         planet::ZOOM_PX_KM
     );
     std::fs::write(dir.join(format!("c{seed}-donnees.js")), js).expect("the data");
-}
-
-/// The width view: the relief and the outline of our land at one width,
-/// as `l{seed}-relief-{w}.png` and `l{seed}-contour-{w}.png`.
-pub fn width_layers(dir: &Path, seed: u64, z: &Zoom) {
-    let (l, fine) = relief(z);
-    let w = z.width_km;
-    l.write(dir, &format!("l{seed}-relief-{w}.png"));
-    let col = match w {
-        350 => [90, 200, 255, 255],
-        450 => [255, 215, 60, 255],
-        _ => [255, 70, 70, 255],
-    };
-    let mut l = Layer::new(CW, CW);
-    let ours = |i: usize| fine[i] > 0 && z.ours[under(i % CW, i / CW)];
-    for i in 0..CW * CW {
-        let (x, y) = (i % CW, i / CW);
-        if x + 1 < CW && y + 1 < CW && (ours(i) != ours(i + 1) || ours(i) != ours(i + CW)) {
-            l.dot(x as i64, y as i64, 1, col);
-        }
-    }
-    l.write(dir, &format!("l{seed}-contour-{w}.png"));
 }

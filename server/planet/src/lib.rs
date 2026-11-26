@@ -571,11 +571,16 @@ impl Layout {
         }
     }
 
-    /// Today's plates: the history's last step, each turning as it last
-    /// turned. Ids are renumbered from 0, largest plate first; the second
+    /// The plates at a step of the history (today's: the last), each
+    /// turning as it turned then. Ids are renumbered from 0, largest plate first; the second
     /// value is each cell's plate.
-    fn of_history(seed: u64, s: &Settings, sphere: &Sphere, h: &History) -> (Self, Vec<u8>) {
-        let last = h.last();
+    fn of_history(
+        seed: u64,
+        s: &Settings,
+        sphere: &Sphere,
+        h: &History,
+        last: usize,
+    ) -> (Self, Vec<u8>) {
         let raw = &h.plate[last];
         let mut area = vec![0_i64; history::MAXP];
         let mut sum = vec![[0_i64; 3]; history::MAXP];
@@ -825,21 +830,28 @@ pub struct Planet {
     pub ours: Vec<bool>,
     /// The world's settings.
     pub settings: Settings,
-    /// The plates' history that made the continents.
-    pub history: History,
+    /// The plates' history that made the continents (shared with the
+    /// planet at each of its steps).
+    pub history: std::sync::Arc<History>,
+    /// The step this planet shows (the history's last: today).
+    pub step: usize,
+    /// The older plates at each cell where the supercontinent's crust
+    /// stood, and their seams.
+    old_at: Vec<u8>,
+    old_at_edge: Vec<Option<OldKind>>,
 }
 
 /// A range the history raised at a cell, `(height m, half-width km)`:
 /// a collision's suture, today's leading edge, an accreted terrane, an
 /// older leading edge, each lower the older it is.
-fn range_of(h: &History, c: usize) -> Option<(i64, i64)> {
-    let (flags, ago) = (h.margins[c], h.orogeny_my[c]);
+fn range_of(h: &History, t: usize, now_my: u16, c: usize) -> Option<(i64, i64)> {
+    let (flags, ago) = (h.margins_at[t][c], h.orogeny_at[t][c]);
     if ago == history::NEVER
         || flags & !(history::OLD_SUTURE | history::RIFT | history::PASSIVE) == 0
     {
         return None;
     }
-    let ago = i64::from(ago);
+    let ago = i64::from(ago.saturating_sub(now_my));
     let youth = (1000 - ago * 1000 / 400).clamp(250, 1000);
     let (height, width) = if flags & history::SUTURE != 0 {
         (2_800, 320)
@@ -899,23 +911,70 @@ impl Planet {
             .map(|&k| k == Some(OldKind::Suture))
             .collect();
         // 2. The history: the supercontinent, its break-up, the drift.
-        let history = history::run(seed, settings, &sphere, &old_suture);
-        let continental: Vec<bool> = history.piece.iter().map(|&p| p != history::NONE).collect();
-        let crust = history.crust.clone();
-        let crust_cut = history.crust_cut;
+        let history = std::sync::Arc::new(history::run(seed, settings, &sphere, &old_suture));
+        let last = history.last();
+        Self::build(
+            seed,
+            settings,
+            sphere,
+            old,
+            (old_at, old_at_edge),
+            history,
+            last,
+        )
+    }
+
+    /// The planet as it stood at step `t` of its history, drawn as today's
+    /// is: its plates, their boundaries, its relief and its sea.
+    #[must_use]
+    pub fn at_step(&self, t: usize) -> Self {
+        Self::build(
+            self.seed,
+            &self.settings,
+            self.sphere.clone(),
+            self.old.clone(),
+            (self.old_at.clone(), self.old_at_edge.clone()),
+            std::sync::Arc::clone(&self.history),
+            t.min(self.history.last()),
+        )
+    }
+
+    fn build(
+        seed: u64,
+        settings: &Settings,
+        sphere: Sphere,
+        old: Layout,
+        (old_at, old_at_edge): (Vec<u8>, Vec<Option<OldKind>>),
+        history: std::sync::Arc<History>,
+        t: usize,
+    ) -> Self {
+        let h = &*history;
+        let now_my = ((h.last() - t) as i64 * settings.step_my) as u16;
+        let continental: Vec<bool> = h.class[t].iter().map(|&k| k != history::OCEAN).collect();
+        let home = &h.home_at[t];
+        let crust_cut = h.crust_cut;
+        let crust: Vec<i64> = (0..CELLS)
+            .map(|c| {
+                if continental[c] {
+                    h.field[home[c] as usize].max(crust_cut)
+                } else {
+                    crust_cut - 400
+                }
+            })
+            .collect();
         let mut old_plate = vec![0_u8; CELLS];
         let mut old_edge = vec![None; CELLS];
         for c in 0..CELLS {
             if continental[c] {
-                let home = history.home[c] as usize;
+                let home = home[c] as usize;
                 old_plate[c] = old_at[home];
                 old_edge[c] = old_at_edge[home];
             } else {
                 old_plate[c] = old.plate_at(sphere.centre[c]) as u8;
             }
         }
-        // 3. Today's plates: the history's last step.
-        let (plates, plate) = Layout::of_history(seed, settings, &sphere, &history);
+        // 3. The plates at this step (today's: the history's last).
+        let (plates, plate) = Layout::of_history(seed, settings, &sphere, h, t);
         // 4. Boundaries.
         let mut edge = vec![None; CELLS];
         for c in 0..CELLS {
@@ -962,14 +1021,14 @@ impl Planet {
         let coasts: Vec<(usize, u32)> = (0..CELLS)
             .filter(|&c| continental[c])
             .filter_map(|c| {
-                let k = history.margin[history.last()][c];
+                let k = h.margin[t][c];
                 (k == history::Margin::Passive as u8 || k == history::Margin::Active as u8)
                     .then_some((c, u32::from(k)))
             })
             .collect();
         let (_, coast_kind) = sphere.spread(&coasts, |_, b| continental[b], 700);
         let raised: Vec<(usize, u32)> = (0..CELLS)
-            .filter(|&c| continental[c] && range_of(&history, c).is_some())
+            .filter(|&c| continental[c] && range_of(h, t, now_my, c).is_some())
             .map(|c| (c, c as u32))
             .collect();
         let (range_d, range_l) = sphere.spread(&raised, |_, b| continental[b], 700);
@@ -1018,12 +1077,12 @@ impl Planet {
                     } else {
                         900
                     };
-                    let from = sphere.centre[history.home[c] as usize];
+                    let from = sphere.centre[home[c] as usize];
                     let broad = fbm3(relief_seed ^ 0xb0, from, &[(300_000, 2), (120_000, 1)]) - 500;
                     let mut range = 0;
                     if range_d[c] != u32::MAX {
                         let (height, width) =
-                            range_of(&history, range_l[c] as usize).expect("a range's source");
+                            range_of(h, t, now_my, range_l[c] as usize).expect("a range's source");
                         range = height * bump(i64::from(range_d[c]), width) / 1000;
                     }
                     -300 + inland * rise / 600 + broad / 2 + rough + range
@@ -1031,7 +1090,7 @@ impl Planet {
                     // The floor sinks as it cools: ~2,500 m at a ridge,
                     // ~350 m more per square root of a million years
                     // (Parsons and Sclater), flat past [`FLAT_FLOOR_MY`].
-                    let age = i64::from(history.age_my[c]).min(FLAT_FLOOR_MY);
+                    let age = i64::from(h.age[t][c]).min(FLAT_FLOOR_MY);
                     -2_500 - 350 * (age * 1_000_000).isqrt() / 1000 + rough
                 };
                 let (d, src) = near[c];
@@ -1111,6 +1170,9 @@ impl Planet {
             ours: vec![false; CELLS],
             settings: *settings,
             history,
+            step: t,
+            old_at,
+            old_at_edge,
         };
         planet.lands = planet.landmasses();
         planet
@@ -1187,30 +1249,99 @@ impl Planet {
             .collect()
     }
 
-    /// Our continent written into the grid: cells inside the zoom take its
-    /// height; other land within [`CLEAR_KM`] of it sinks, so it stands
-    /// alone across the ocean (the lead's option A).
-    pub fn shape(&mut self, zoom: &Zoom) {
+    /// When no piece of land qualifies for our continent (see
+    /// [`Site::candidates`]), one is cut from a larger land behind a
+    /// trench at [`SITE_LATITUDE`]: the land nearest the trench, grown
+    /// outward until it holds [`PIECE_KM2`], is parted from the rest by a
+    /// strait flooded along its narrowest neck (the cut that floods the
+    /// least land). Returns the land flooded, km² (0: nothing cut).
+    pub fn carve(&mut self) -> i64 {
+        let s = &self.sphere;
+        let reach = cos(TRENCH_REACH_KM * ONE / RADIUS_KM);
+        // (flooded km², distance from the goal area, the strait's cells)
+        let mut best: Option<(i64, i64, Vec<usize>)> = None;
         for c in 0..CELLS {
-            let p = self.sphere.centre[c];
-            let d = km_between(p, zoom.frame.centre);
-            if d > CLEAR_KM {
+            let Some(e) = self.edge[c] else { continue };
+            let p = s.centre[c];
+            let lat = latitude(p);
+            if e.kind != Kind::Trench || lat < SITE_LATITUDE.0 || lat > SITE_LATITUDE.1 {
                 continue;
             }
-            if let Some(i) = zoom.frame.pixel_of(p) {
-                self.elevation[c] = zoom.elevation[i];
-                self.ours[c] = zoom.ours[i] && zoom.elevation[i] > 0;
-                self.continental[c] = zoom.ours[i];
-            } else if self.elevation[c] > 0 || self.continental[c] {
-                self.elevation[c] = -3_200;
-                self.continental[c] = false;
+            let east = east_at(p);
+            if dot(e.normal, east) * 1000 / ONE < SITE_FACING {
+                continue;
+            }
+            // The land nearest the trench, east of it.
+            let Some((_, start)) = (0..CELLS)
+                .filter(|&l| {
+                    self.elevation[l] > 0
+                        && dot(s.centre[l], p) >= reach
+                        && dot(sub(s.centre[l], p), east) > 0
+                })
+                .map(|l| (km_between(p, s.centre[l]), l))
+                .min()
+            else {
+                continue;
+            };
+            let (dist, _) = s.spread(&[(start, 0)], |_, b| self.elevation[b] > 0, 900);
+            let mut order: Vec<(u32, usize)> = (0..CELLS)
+                .filter(|&l| dist[l] != u32::MAX)
+                .map(|l| (dist[l], l))
+                .collect();
+            order.sort_unstable();
+            let mut inside = vec![false; CELLS];
+            let mut area = 0;
+            let mut sum = [0_i64; 3];
+            for (k, &(_, l)) in order.iter().enumerate() {
+                inside[l] = true;
+                area += i64::from(s.area_km2[l]);
+                sum = add(sum, s.centre[l]);
+                if area < *PIECE_KM2.start() {
+                    continue;
+                }
+                if area > *PIECE_KM2.end() {
+                    break;
+                }
+                let mid = latitude(normalize(sum));
+                if mid < SITE_LATITUDE.0 || mid > SITE_LATITUDE.1 {
+                    continue;
+                }
+                // The strait: land outside the piece touching it.
+                let mut strait: Vec<usize> = order[..=k]
+                    .iter()
+                    .flat_map(|&(_, a)| s.links[a].iter().map(|&(n, _)| n as usize))
+                    .filter(|&n| !inside[n] && self.elevation[n] > 0)
+                    .collect();
+                strait.sort_unstable();
+                strait.dedup();
+                let flooded: i64 = strait.iter().map(|&n| i64::from(s.area_km2[n])).sum();
+                let key = (flooded, (area - PIECE_GOAL_KM2).abs());
+                if best.as_ref().is_none_or(|b| key < (b.0, b.1)) {
+                    best = Some((key.0, key.1, strait));
+                }
             }
         }
+        let Some((flooded, _, strait)) = best else {
+            return 0;
+        };
+        for c in strait {
+            self.elevation[c] = STRAIT_M;
+        }
         self.lands = self.landmasses();
+        flooded
+    }
+
+    /// Our continent marked on the grid: the cells of `site`'s piece
+    /// (nothing is reshaped, nothing sunk).
+    pub fn mark(&mut self, site: &Site) {
+        self.ours = vec![false; CELLS];
+        for &c in &self.lands[site.land].cells {
+            self.ours[c as usize] = true;
+        }
     }
 }
 
-/// How far from our continent's middle other land is sunk, km.
+/// Other land within this of our continent's middle is counted, km.
 pub const CLEAR_KM: i64 = 1_100;
 
 /// The plate across a boundary cell (the one most of its foreign
@@ -1295,22 +1426,34 @@ fn quantile(sphere: &Sphere, values: &[i64], share: i64) -> i64 {
 
 /// Our continent's length along its chain, km (the lead's ~550).
 pub const LENGTH_KM: i64 = 550;
-/// Its latitudes north, tenths of a degree (the lead's 40–50° N, north
-/// the cold side since 26 November: its middle is
-/// kept within 42.5–47.5° so its ends, 2.5° away, stay inside).
-const SITE_LATITUDE: (i64, i64) = (425, 475);
+/// Its middle's latitudes north, tenths of a degree (the lead's 40–50°
+/// N, north the cold side since 26 November).
+const SITE_LATITUDE: (i64, i64) = (400, 500);
+/// Our continent's area, km²: the lead's ~210,000, and what is accepted
+/// (a piece the history left, not drawn: 26 November, version 4.1).
+const PIECE_GOAL_KM2: i64 = 210_000;
+const PIECE_KM2: std::ops::RangeInclusive<i64> = 150_000..=300_000;
+/// A strait cut to part our continent from a larger land, m.
+const STRAIT_M: i32 = -60;
+/// Its trench lies at most this far west of its land, km.
+const TRENCH_REACH_KM: i64 = 500;
 /// How far the margin may turn from north–south: the cosine between the
 /// trench's normal and the east, per mille (45°).
 const SITE_FACING: i64 = 707;
 /// Land a site may sink around it, km² (more, and it is a last resort).
-const MOST_SUNK_KM2: i64 = 500_000;
 /// How far west the ocean is looked at, km: the westerlies' fetch.
 const FETCH_KM: i64 = 3_000;
 
-/// Where our continent stands: a trench at 40–50° with the ocean to the
-/// west, the plate across riding east of it.
+/// Where our continent stands: a piece of land the history left at
+/// 40–50° north, with a trench to its west (the ocean sinking under it).
 #[derive(Debug, Clone)]
 pub struct Site {
+    /// The piece: its index in [`Planet::lands`].
+    pub land: usize,
+    /// Its area, km².
+    pub area_km2: i64,
+    /// From its trench to its nearest land, km.
+    pub trench_km: i64,
     /// The trench cell.
     pub cell: usize,
     /// The sinking plate (west).
@@ -1340,57 +1483,78 @@ pub struct Site {
 }
 
 impl Site {
-    /// Every candidate, best first.
+    /// Every candidate, best first: each piece of land of
+    /// [`PIECE_KM2`] whose middle is at [`SITE_LATITUDE`], with a trench
+    /// within [`TRENCH_REACH_KM`] to its west, the ocean sinking east
+    /// under it.
     pub fn candidates(planet: &Planet) -> Vec<Self> {
         let s = &planet.sphere;
         let mut out = Vec::new();
-        for c in 0..CELLS {
-            let Some(e) = planet.edge[c] else { continue };
-            if e.kind != Kind::Trench {
+        for (k, land) in planet.lands.iter().enumerate() {
+            let lat = latitude(land.centre);
+            if !PIECE_KM2.contains(&land.area_km2) || lat < SITE_LATITUDE.0 || lat > SITE_LATITUDE.1
+            {
                 continue;
             }
+            let near = cos((land.span_km / 2 + TRENCH_REACH_KM) * ONE / RADIUS_KM);
+            // The trench cell nearest the piece, west of it, facing east.
+            let mut best: Option<(i64, usize, Edge, i64)> = None;
+            for c in 0..CELLS {
+                let Some(e) = planet.edge[c] else { continue };
+                let p = s.centre[c];
+                if e.kind != Kind::Trench || dot(p, land.centre) < near {
+                    continue;
+                }
+                let east = east_at(p);
+                let facing = dot(e.normal, east) * 1000 / ONE;
+                if facing < SITE_FACING || dot(sub(land.centre, p), east) <= 0 {
+                    continue;
+                }
+                let d = land
+                    .cells
+                    .iter()
+                    .map(|&l| km_between(p, s.centre[l as usize]))
+                    .min()
+                    .unwrap_or(i64::MAX);
+                if d <= TRENCH_REACH_KM && best.is_none_or(|(b, bc, _, _)| (d, c) < (b, bc)) {
+                    best = Some((d, c, e, facing));
+                }
+            }
+            let Some((trench_km, c, e, facing)) = best else {
+                continue;
+            };
             let p = s.centre[c];
-            let lat = latitude(p);
-            if lat < SITE_LATITUDE.0 || lat > SITE_LATITUDE.1 {
-                continue;
-            }
-            let east = east_at(p);
-            let facing = dot(e.normal, east) * 1000 / ONE;
-            if facing < SITE_FACING {
-                continue;
-            }
             let mut ocean = 0;
             let mut seen = 0;
             let mut x = p;
             for _ in 0..FETCH_KM / 100 {
                 x = step(x, east_at(x).map(|v| -v), 100);
-                let cell = s.cell_of(x);
                 seen += 1;
-                ocean += i64::from(planet.elevation[cell] < 0);
+                ocean += i64::from(planet.elevation[s.cell_of(x)] < 0);
             }
             let ocean_west = ocean * 1000 / seen;
-            let middle = step(p, east, 250);
+            let middle = land.centre;
             let mut land_near_km2 = 0;
             let mut old_near = (0, 0);
             let mut ends_near = 0;
-            for k in 0..CELLS {
-                let q = s.centre[k];
-                if dot(q, middle) < cos(CLEAR_KM * ONE / RADIUS_KM) {
+            for q in 0..CELLS {
+                let at = s.centre[q];
+                if dot(at, middle) < cos(CLEAR_KM * ONE / RADIUS_KM) {
                     continue;
                 }
-                let d = km_between(q, middle);
-                if d <= CLEAR_KM && planet.elevation[k] > 0 && d > 350 {
-                    land_near_km2 += i64::from(s.area_km2[k]);
+                let d = km_between(at, middle);
+                if planet.elevation[q] > 0 && !land.cells.contains(&(q as u32)) {
+                    land_near_km2 += i64::from(s.area_km2[q]);
                 }
                 if d <= 300 {
-                    match planet.old_edge[k] {
+                    match planet.old_edge[q] {
                         Some(OldKind::Suture) => old_near.0 += 1,
                         Some(OldKind::FailedRift) => old_near.1 += 1,
                         _ => {}
                     }
                 }
                 if d <= 500
-                    && planet.edge[k].is_some_and(|b| {
+                    && planet.edge[q].is_some_and(|b| {
                         matches!(b.kind, Kind::Transform | Kind::Ridge | Kind::Rift)
                     })
                 {
@@ -1402,19 +1566,18 @@ impl Site {
                 .iter()
                 .any(|h| h.track.iter().any(|&(x, _)| km_between(x, middle) < 700));
             let rate = i64::from(e.rate);
-            let score = ocean_west - land_near_km2 / 2_000
-                + 120 * i64::from((old_near.0 + old_near.1).min(3))
-                + 80 * i64::from(ends_near.min(2))
-                + if hotspot_near { 60 } else { 0 }
-                - 4 * (rate - 50).abs()
-                - (lat - 450).abs()
-                + facing / 4;
+            let score = ocean_west - (land.area_km2 - PIECE_GOAL_KM2).abs() / 500 - trench_km
+                + facing / 4
+                - (lat - 450).abs();
             out.push(Self {
+                land: k,
+                area_km2: land.area_km2,
+                trench_km,
                 cell: c,
                 sinking: planet.plate[c] as usize,
                 riding: e.other as usize,
                 origin: p,
-                lat_lon: (lat, longitude(p)),
+                lat_lon: (latitude(p), longitude(p)),
                 rate,
                 facing,
                 ocean_west,
@@ -1425,13 +1588,7 @@ impl Site {
                 score,
             });
         }
-        // A site that would sink half a continent is a last resort.
-        for x in &mut out {
-            if x.land_near_km2 > MOST_SUNK_KM2 {
-                x.score -= 5_000;
-            }
-        }
-        out.sort_by_key(|x| (Reverse(x.score), x.cell));
+        out.sort_by_key(|x| (Reverse(x.score), x.land));
         out
     }
 
@@ -1590,8 +1747,6 @@ pub struct ZoomNumbers {
 
 /// The zoom on our continent at one width.
 pub struct Zoom {
-    /// Its width across the chain, km.
-    pub width_km: i64,
     /// The frame.
     pub frame: Frame,
     /// Height above the sea, m, per pixel.
@@ -1620,9 +1775,17 @@ pub struct Zoom {
     pub numbers: ZoomNumbers,
 }
 
-/// The middle of our continent from the trench, km (fixed for every
-/// width, so the widths compare in the same frame).
-const MIDDLE_FROM_TRENCH_KM: i64 = 260;
+/// The coast's wander at the zoom's scale, `(cell, amplitude)` in
+/// [`ONE`] units (~90, 32, 10 and 3 km): the grid's 100-km cells read as
+/// a natural coast, not a staircase.
+const COAST_WARP: [(i64, i64); 4] = [
+    (120_000, 14_000),
+    (40_000, 5_000),
+    (12_000, 1_500),
+    (4_000, 500),
+];
+/// A grid cell votes for land or sea within this, km.
+const COAST_VOTE_KM: i64 = 150;
 /// Trench to west coast, km (Cascadia: ~100; Chile: 60–130).
 const COAST_KM: (i64, i64) = (55, 90);
 /// Trench to volcanic arc, km: 100 km of depth to the sinking slab over
@@ -1632,11 +1795,11 @@ const ARC_KM: (i64, i64) = (150, 230);
 const VOLCANO_SPACING_KM: (i64, i64) = (40, 85);
 
 impl Zoom {
-    /// Our continent at a width, on the riding plate of `site`.
-    pub fn new(planet: &Planet, site: &Site, width_km: i64) -> Self {
+    /// Our continent as the history left it: the land of `site`'s piece
+    /// (and any other land in the frame), read across its margin.
+    pub fn new(planet: &Planet, site: &Site) -> Self {
         let seed = hash(&[planet.seed, P_ZOOM]);
-        let east0 = east_at(site.origin);
-        let centre = step(site.origin, east0, MIDDLE_FROM_TRENCH_KM);
+        let centre = planet.lands[site.land].centre;
         let east = east_at(centre);
         let frame = Frame {
             centre,
@@ -1654,6 +1817,39 @@ impl Zoom {
             .map(|&p| planet.old.plate_at(p) as u8)
             .collect();
         let latitude: Vec<i16> = points.iter().map(|&p| latitude(p) as i16).collect();
+        // The land the history left, cell by cell, read at each pixel: the
+        // cells around vote, nearer ones more, at a gently wandering point.
+        let mut piece = vec![false; CELLS];
+        for &c in &planet.lands[site.land].cells {
+            piece[c as usize] = true;
+        }
+        let floor = cos(COAST_VOTE_KM * ONE / RADIUS_KM);
+        let coast_seed = hash(&[seed, 0xc0a5]);
+        let (land_px, ours_px): (Vec<bool>, Vec<bool>) = points
+            .iter()
+            .map(|&p| {
+                let q = warp(coast_seed, p, &COAST_WARP);
+                let c = planet.sphere.cell_of(q);
+                let (mut mine, mut other, mut sea) = (0, 0, 0);
+                let around = std::iter::once(c)
+                    .chain(planet.sphere.links[c].iter().map(|&(n, _)| n as usize));
+                for k in around {
+                    let w = (dot(q, planet.sphere.centre[k]) - floor).max(0);
+                    if piece[k] {
+                        mine += w;
+                    } else if planet.elevation[k] > 0 {
+                        other += w;
+                    } else {
+                        sea += w;
+                    }
+                }
+                let land = mine + other > sea;
+                (land, land && mine >= other)
+            })
+            .unzip();
+        let sea_px: Vec<bool> = land_px.iter().map(|&l| !l).collect();
+        let d_in = chamfer(&sea_px);
+        let d_out = chamfer(&land_px);
         let (sink, ride) = (site.sinking as u8, site.riding as u8);
         // Boundaries of today and of old, per pixel.
         let mut line = vec![Line::None; n];
@@ -1799,20 +1995,11 @@ impl Zoom {
             let n2 = |purpose: u64, cell: i64| {
                 sig(noise3(hash(&[seed, purpose]), p, cell * ONE / RADIUS_KM))
             };
-            let segment = n1(10, 120);
-            let wobble_w = (n2(11, 45) * 90 + n2(12, 16) * 30 + n2(13, 7) * 12) / 1000;
-            let wobble_e =
-                (n2(23, 70) * 140 + n2(24, 28) * 90 + n2(25, 11) * 36 + n2(28, 4) * 12) / 1000;
             let inner = (n2(26, 50) * 60 + n2(27, 15) * 25) / 1000;
-            let end_wobble = (n2(14, 60) * 160 + n2(29, 20) * 70 + n2(30, 7) * 24) / 1000;
-            let reach = half_len + end_wobble - along.abs();
-            let taper = (reach * 1000 / 140).clamp(0, 1000);
-            let west = coast_km + segment * 60 / 1000;
-            let east_coast =
-                west + width_km * taper / 1000 * (1000 + n1(15, 150) * 300 / 1000) / 1000;
-            let (dw, de, db) = (d + wobble_w, d + wobble_e, d + inner);
-            let inside =
-                d >= 0 && reach > 0 && dw >= west && de <= east_coast && east_coast > west + 8;
+            let db = d + inner;
+            let inside = land_px[i];
+            // Into the land from its coast, and out to sea from it, km.
+            let (inland, offshore) = (i64::from(d_in[i]) / 1000, i64::from(d_out[i]) / 1000);
             // Ocean floor, the trench and the arc's ridge, everywhere.
             let mut e: i64 = if d <= -1000 {
                 -4_200
@@ -1840,7 +2027,7 @@ impl Zoom {
                 Setting::Ocean
             };
             if inside {
-                let edge = (dw - west).min(east_coast - de);
+                let edge = inland;
                 let gap = n1(16, 70);
                 let mut base: i64 = 260 + rough;
                 set = Setting::BackArc;
@@ -1890,9 +2077,9 @@ impl Zoom {
                             set = Setting::OldCore;
                         }
                     }
-                    if east_coast - de < 45 && base < 350 {
+                    if inland < 45 && base < 350 {
                         set = Setting::CoastalPlain;
-                        base = base.min(4 + (east_coast - de) * 2 + rough / 12);
+                        base = base.min(4 + inland * 2 + rough / 12);
                     }
                 }
                 let sut = i64::from(d_suture[i]) / 1000;
@@ -1932,17 +2119,10 @@ impl Zoom {
                 let shore = (edge * 1000 / 12).clamp(0, 1000);
                 let land = base + (e + 3_400).max(0) * 1000 / 1000;
                 e = (land * shore + (-80) * (1000 - shore)) / 1000;
-                ours[i] = true;
-            } else if d > -1000 && reach > -200 {
-                // Just off our coasts, the shelf falls to the deep.
-                let off = if dw < west {
-                    west - dw
-                } else {
-                    de - east_coast
-                }
-                .max(0);
-                let off = if reach > 0 { off } else { off.max(-reach) };
-                e = e.max(-80 - off * 70);
+                ours[i] = ours_px[i];
+            } else if offshore < 200 {
+                // Just off the coasts, the shelf falls to the deep.
+                e = e.max(-80 - offshore * 70);
             }
             // Hotspots: islands and seamounts in the ocean, lavas on land.
             for &(hp, age) in &hotspot_points {
@@ -2013,7 +2193,6 @@ impl Zoom {
             }
         }
         let mut zoom = Self {
-            width_km,
             frame,
             elevation,
             setting,

@@ -1,6 +1,6 @@
 //! Step 0 of the new world (probe): for a few seeds, the planet's plates
-//! and continents (the `planet` crate), our continent on its margin at
-//! three widths, drawn for the project lead to judge
+//! and continents (the `planet` crate), our continent (a piece the
+//! history left on an active margin), drawn for the project lead to judge
 //! (`content/ai-reserve/review/monde-nouveau/etape-0/`). Nothing here
 //! enters the game.
 //!
@@ -11,12 +11,10 @@
 //!
 //! Writes per seed `planete-graine-N.png` (equirectangular, 1,024 × 512),
 //! `zoom-graine-N.png` (relief) and `cadre-graine-N.png` (geological
-//! settings) at [`OUR_WIDTH_KM`], `largeur-graine-N-W.png` for W = 350, 450
-//! and 550, and `graine-N.json` with the numbers. With `PLANET_LAYERS`
+//! settings), and `graine-N.json` with the numbers. With `PLANET_LAYERS`
 //! set, also each map's layers in `couches/` for the interactive page
-//! (`carte.html`): the planet's for every seed, the continent's for
-//! `PLANET_CONTINENTS` (default every seed), the widths for
-//! `PLANET_WIDTH_SEED` (default 13).
+//! (`carte.html`): the planet's and its history's for every seed, the
+//! continent's for `PLANET_CONTINENTS` (default every seed).
 
 #![allow(
     clippy::many_single_char_names,
@@ -44,12 +42,6 @@ mod png;
 #[path = "common/planet_layers.rs"]
 mod layers;
 
-/// The widths compared, km; the last is the one shown large.
-const WIDTHS: [i64; 3] = [350, 450, 550];
-/// The width setting for our continent (26 November): the lead asked
-/// ~450 km wide and ~200,000 km² of land; the setting 550 gives that land
-/// (a mean width of ~350 km, the coasts being frayed and the ends tapered).
-const OUR_WIDTH_KM: i64 = 550;
 const MAP_W: usize = 1024;
 const MAP_H: usize = 512;
 
@@ -94,24 +86,27 @@ fn main() {
             .iter()
             .map(|(k, km)| json!({"kind": format!("{k:?}"), "km": km}))
             .collect();
-        let candidates = Site::candidates(&world);
+        let mut candidates = Site::candidates(&world);
+        // No piece qualifies: one is cut from a larger land.
+        let mut cut_km2 = 0;
+        if candidates.is_empty() {
+            cut_km2 = world.carve();
+            candidates = Site::candidates(&world);
+        }
         let site = candidates.first().cloned();
-        let mut zooms = Vec::new();
-        if let Some(site) = &site {
-            for &w in &WIDTHS {
-                zooms.push(Zoom::new(&world, site, w));
-            }
+        let zoom = site.as_ref().map(|s| Zoom::new(&world, s));
+        if let Some(s) = &site {
+            world.mark(s);
         }
-        let chosen = zooms.iter().find(|z| z.width_km == OUR_WIDTH_KM);
-        if let Some(z) = chosen {
-            world.shape(z);
-        }
+        let chosen = zoom.as_ref();
         let elapsed = start.elapsed();
         if std::env::var_os("PLANET_LAYERS").is_some() {
             let dir = out.join("couches");
             std::fs::create_dir_all(&dir).expect("the layers' folder");
             layers::planet_layers(&dir, &world, chosen);
-            layers::history_layers(&dir, &world, chosen);
+            for t in 0..=world.history.last() {
+                layers::step_layers(&dir, &world.at_step(t), chosen);
+            }
             let continents = std::env::var("PLANET_CONTINENTS").ok();
             if let Some(z) = chosen
                 && continents
@@ -120,13 +115,6 @@ fn main() {
             {
                 layers::continent_layers(&dir, seed, z);
             }
-            if std::env::var("PLANET_WIDTH_SEED")
-                .map_or(seed == 13, |v| v.trim().parse() == Ok(seed))
-            {
-                for z in &zooms {
-                    layers::width_layers(&dir, seed, z);
-                }
-            }
         }
         write(
             &out.join(format!("planete-graine-{seed}.png")),
@@ -134,14 +122,6 @@ fn main() {
             MAP_H,
             &draw_planet(&world, chosen),
         );
-        for z in &zooms {
-            write(
-                &out.join(format!("largeur-graine-{seed}-{}.png", z.width_km)),
-                ZOOM_SIDE,
-                ZOOM_SIDE,
-                &draw_zoom(z, false),
-            );
-        }
         if let Some(z) = chosen {
             write(
                 &out.join(format!("zoom-graine-{seed}.png")),
@@ -175,17 +155,17 @@ fn main() {
             })
             .collect();
         let site_json = site.as_ref().map(|s| {
-            json!({"lat": s.lat_lon.0, "lon": s.lat_lon.1, "rate_mm": s.rate, "facing": s.facing,
+            json!({"land_km2": s.area_km2, "trench_km": s.trench_km, "cut_km2": cut_km2, "lat": s.lat_lon.0, "lon": s.lat_lon.1, "rate_mm": s.rate, "facing": s.facing,
                 "ocean_west": s.ocean_west, "land_near_km2": s.land_near_km2,
                 "old_sutures": s.old_near.0, "old_rifts": s.old_near.1, "ends_near": s.ends_near,
                 "hotspot_near": s.hotspot_near, "score": s.score, "candidates": candidates.len(),
                 "sinking": s.sinking, "riding": s.riding})
         });
-        let zoom_json: Vec<serde_json::Value> = zooms
+        let zoom_json: Vec<serde_json::Value> = zoom
             .iter()
             .map(|z| {
                 let m = &z.numbers;
-                json!({"width_km": z.width_km, "land_km2": m.land_km2, "islands_km2": m.islands_km2,
+                json!({"land_km2": m.land_km2, "islands_km2": m.islands_km2,
                     "length_km": m.length_km, "mean_width_km": m.mean_width_km,
                     "farthest_sea_km": m.farthest_sea_km, "far_50": m.far_50, "far_100": m.far_100,
                     "lee_km": m.lee_km, "interior_km2": m.interior_km2, "volcanoes": m.volcanoes,

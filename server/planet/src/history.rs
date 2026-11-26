@@ -301,6 +301,14 @@ pub struct History {
     pub kind: Vec<Vec<u8>>,
     /// Per step, each cell's [`Margin`].
     pub margin: Vec<Vec<u8>>,
+    /// Per step, the cell each cell's crust was at the start, or was born
+    /// at.
+    pub home_at: Vec<Vec<u32>>,
+    /// Per step, the margin flags each cell's crust has gathered.
+    pub margins_at: Vec<Vec<u8>>,
+    /// Per step, each cell's last mountain building, millions of years
+    /// before today ([`NEVER`]: none).
+    pub orogeny_at: Vec<Vec<u16>>,
     /// Per step, each plate id's motion (ids without cells turn by 0).
     pub motion: Vec<Vec<Motion>>,
     /// Per step, the continental crust's area, km².
@@ -326,6 +334,9 @@ pub struct History {
     pub margins: Vec<u8>,
     /// Today: the last mountain building, millions of years ago.
     pub orogeny_my: Vec<u16>,
+    /// The supercontinent's field at each cell at the start (its crust
+    /// where at least [`History::crust_cut`]).
+    pub field: Vec<i64>,
     /// Today: the crust's value at its home (the supercontinent's shape).
     pub crust: Vec<i64>,
     /// The threshold of the supercontinent's crust.
@@ -961,6 +972,9 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
     let mut out_kind = Vec::with_capacity(s.steps + 1);
     let mut out_margin = Vec::with_capacity(s.steps + 1);
     let mut out_motion = Vec::with_capacity(s.steps + 1);
+    let mut out_home = Vec::with_capacity(s.steps + 1);
+    let mut out_margins = Vec::with_capacity(s.steps + 1);
+    let mut out_orogeny = Vec::with_capacity(s.steps + 1);
     let mut continental_km2 = Vec::with_capacity(s.steps + 1);
     let mut shortened_km2 = vec![0];
     let mut made_km2 = vec![0];
@@ -1424,6 +1438,9 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                 .collect::<Vec<u16>>(),
         );
         out_kind.push(seen.kind);
+        out_home.push(rock.iter().map(|r| r.home).collect::<Vec<u32>>());
+        out_margins.push(rock.iter().map(|r| r.margins).collect::<Vec<u8>>());
+        out_orogeny.push(rock.iter().map(|r| r.orogeny).collect::<Vec<u16>>());
         out_margin.push(seen.margin);
         out_motion.push(
             omega
@@ -1471,6 +1488,9 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
         age: out_age,
         kind: out_kind,
         margin: out_margin,
+        home_at: out_home,
+        margins_at: out_margins,
+        orogeny_at: out_orogeny,
         motion: out_motion,
         continental_km2,
         shortened_km2,
@@ -1487,6 +1507,7 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
         margins: rock.iter().map(|r| r.margins).collect(),
         orogeny_my: rock.iter().map(|r| r.orogeny).collect(),
         crust,
+        field,
         crust_cut,
     }
 }
