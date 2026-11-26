@@ -494,6 +494,7 @@ mod tests {
             care: true,
             trips: true,
             problems: true,
+            wake_all: false,
             continents: None,
             helpers: 0,
         };

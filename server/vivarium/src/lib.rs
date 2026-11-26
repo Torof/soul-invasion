@@ -190,6 +190,11 @@ pub struct Settings {
     /// `problems` section replaced by none: nothing is remembered as a
     /// problem, and behaviour is the run's without the change.
     pub problems: bool,
+    /// Food laid at or taken from a hearth's reserve wakes everyone of
+    /// that hearth at the camp, awake or asleep (D58, amended 26 November
+    /// 2026): true is the control run of the rule before (`--wake-all`),
+    /// the content's `thought.hearth_wakes` set to true.
+    pub wake_all: bool,
     /// Where the vivarium's continent is kept between runs
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
@@ -275,6 +280,7 @@ impl Default for Settings {
             care: true,
             trips: true,
             problems: true,
+            wake_all: false,
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
             helpers: 1,
@@ -2241,6 +2247,7 @@ pub fn run_watched(
         || !settings.care
         || !settings.trips
         || !settings.problems
+        || settings.wake_all
     {
         let mut own = content.clone();
         if settings.fed {
@@ -2268,6 +2275,9 @@ pub fn run_watched(
         }
         if !settings.problems {
             own.needs.problems = sim::content::Problems::default();
+        }
+        if settings.wake_all {
+            own.needs.thought.hearth_wakes = true;
         }
         if !settings.trips {
             own.needs.trips = sim::content::Trips::default();
@@ -6855,6 +6865,7 @@ mod tests {
             care: true,
             trips: true,
             problems: true,
+            wake_all: false,
             continents: None,
             lands: None,
             helpers: 1,
