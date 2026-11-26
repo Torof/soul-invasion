@@ -39,7 +39,10 @@
 //!   it keeps nothing on itself and lays all it carries down, its arms
 //!   free to fetch the rest; its store reached, it keeps its store at most
 //!   on itself, as before.
-//! - **Eating.** Hungry at its camp, a body eats from the reserve before
+//! - **Eating: taking from the common reserve**, the hearth's own act
+//!   (named so 26 November 2026; distinct from the hands' pick-up, which
+//!   never touches a store, and from a family's own stash at home, not
+//!   built). Hungry at its camp, a body eats from the reserve before
 //!   it eats its own, what spoils first first. **The young first** (the
 //!   project lead, 25 November 2026): an older body eats there only
 //!   what the reserve holds beyond what the young of the hearth (under
@@ -405,7 +408,9 @@ fn young_ahead(world: &World, rules: &Content, reserves: &Reserves, camp: Pos, b
     })
 }
 
-/// Hungry at its camp, `id` eats from its hearth's reserve before its own,
+/// **Taking from the common reserve** (D58, the hearth's own act, never
+/// the hands' pick-up): hungry at its camp, `id` eats from its hearth's
+/// reserve before its own,
 /// the young first: walks to the heap that spoils first and eats it.
 /// `None` when it is not at its camp, the reserve holds nothing it may
 /// eat, or it could not reach it today.
@@ -1253,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn its_hands_never_take_back_what_lies_in_its_own_hearth_s_reserve() {
+    fn its_hands_never_pick_up_from_a_hearth_s_reserve() {
         use super::super::handwork::{self, Deed, HandsTurn, NOTHING};
         use crate::content::Hands;
         use crate::hands::Gesture;
@@ -1262,11 +1267,12 @@ mod tests {
         let at = Pos::new(5, 5);
         let (mut world, mut brains, ids) = field(&rules, &[(at, 30)]);
         let id = ids[0];
-        let camp = camp_of(&rules, at);
-        // It knows to take berries and carries none; its hearth's reserve
-        // holds a heap of them at its feet. It took it there and laid it
-        // again, one take every two ticks, 680 times in a row for an item
-        // of 11 g, and up to 535,000 times a tribe with heaps.
+        // It knows to pick up berries and carries none; its hearth's
+        // reserve holds a heap of them at its feet, another hearth's one
+        // beside. It took from its own and laid it back, one take every
+        // two ticks: 680 times in a row for an item of 11 g, up to 535,000
+        // times a tribe with heaps. Taking from the common reserve is the
+        // hearth's own act (eating there), never a pick-up.
         let berries = u16::try_from(
             rules
                 .materials
@@ -1275,29 +1281,27 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let heap = world.spawn_kept("berries", 2000, at);
-        brains.reserves.put(camp, at, heap);
-        let mind = brains.minds.get_mut(&id).unwrap();
-        mind.ways.hands.add(Deed {
-            gesture: Gesture::Take,
+        let own = world.spawn_kept("berries", 2000, at);
+        brains.reserves.put(camp_of(&rules, at), at, own);
+        let other = Pos::new(40, 40);
+        let theirs = world.spawn_kept("berries", 2000, Pos::new(6, 6));
+        brains
+            .reserves
+            .put(camp_of(&rules, other), Pos::new(6, 6), theirs);
+        brains.minds.get_mut(&id).unwrap().ways.hands.add(Deed {
+            gesture: Gesture::PickUp,
             on: berries,
             with: NOTHING,
         });
         let turn = |world: &World, brains: &mut Brains| {
             let mind = brains.minds.get_mut(&id).unwrap();
-            handwork::hands_turn(
-                world,
-                &rules,
-                (id, at),
-                mind,
-                (7, &mut Vec::new(), &brains.reserves.clone()),
-            )
+            handwork::hands_turn(world, &rules, (id, at), mind, (7, &mut Vec::new()))
         };
         assert!(
             matches!(turn(&world, &mut brains), HandsTurn::Free),
-            "its own reserve is not taken from"
+            "no reserve is picked up from"
         );
-        // Berries lying loose there are taken as before.
+        // Berries lying loose there are picked up as before.
         let loose = world.spawn_item("berries", 100, Pos::new(6, 5));
         assert!(matches!(
             turn(&world, &mut brains),

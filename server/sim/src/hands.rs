@@ -18,9 +18,12 @@ use crate::{BodyId, Event, GATHER_REACH_MM, Item, ItemId, Place, Refusal, Tick, 
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Gesture {
-    /// Pick up a thing lying beside (D35's act).
+    /// Pick up a thing lying beside (D35's act), never from a store: a
+    /// heap of a hearth's reserve is no thing lying about (D58, amended
+    /// 26 November 2026; taking from the common reserve is the hearth's
+    /// own act). Named « take » before.
     #[default]
-    Take,
+    PickUp,
     /// Cut a tree with what is in hand.
     Cut,
     /// Fold a thing carried.
@@ -29,13 +32,13 @@ pub enum Gesture {
 
 impl Gesture {
     /// Every gesture, in a fixed order.
-    pub const ALL: [Gesture; 3] = [Gesture::Take, Gesture::Cut, Gesture::Fold];
+    pub const ALL: [Gesture; 3] = [Gesture::PickUp, Gesture::Cut, Gesture::Fold];
 
     /// Its name, as the vivarium writes it.
     #[must_use]
     pub fn key(self) -> &'static str {
         match self {
-            Gesture::Take => "take",
+            Gesture::PickUp => "pick up",
             Gesture::Cut => "cut",
             Gesture::Fold => "fold",
         }
@@ -60,7 +63,8 @@ pub struct Making {
 impl World {
     /// The things lying within `tiles` of `pos` on each axis, stored and
     /// natural, in no order (D57): what a body sees around it to try a
-    /// gesture on. The natural ones are found tile by tile, not chunk by
+    /// gesture on; never the heaps of a hearth's reserve (D58, amended 26
+    /// November 2026). The natural ones are found tile by tile, not chunk by
     /// chunk: a few tiles cost a few tiles.
     #[must_use]
     pub fn items_near(&self, pos: Pos, tiles: i32) -> Vec<Item> {
@@ -72,15 +76,11 @@ impl World {
         let mut out = Vec::new();
         for y in low.y..=high.y {
             for x in low.x..=high.x {
+                // Food kept in a store (D58) is no item lying about: the
+                // hands never pick it up (amended 26 November 2026; taking
+                // from the common reserve is the hearth's own act).
                 out.extend(
                     self.laid_in(ChunkPos::new(x, y))
-                        .filter(|i| i.pos().is_some_and(near))
-                        .cloned(),
-                );
-                // Food kept in a store (D58) is no item lying about, but
-                // hands see it there and may take it away.
-                out.extend(
-                    self.kept_in(ChunkPos::new(x, y))
                         .filter(|i| i.pos().is_some_and(near))
                         .cloned(),
                 );
@@ -131,9 +131,8 @@ impl World {
         for y in low.y..=high.y {
             for x in low.x..=high.x {
                 let chunk = ChunkPos::new(x, y);
-                // Food kept in a store (D58) after the things lying, as
-                // `items_near` sees them.
-                for i in self.laid_in(chunk).chain(self.kept_in(chunk)) {
+                // Not the food kept in a store (D58), as `items_near`.
+                for i in self.laid_in(chunk) {
                     if let Some(p) = i.pos().filter(|&p| near(p))
                         && wanted(i.material())
                     {
@@ -314,7 +313,7 @@ impl World {
             let gave = match making.gesture {
                 Gesture::Cut => self.cut_gives(index, &making, rules, events),
                 Gesture::Fold => self.fold_gives(index, making.item, rules, events),
-                Gesture::Take => None,
+                Gesture::PickUp => None,
             };
             events.push(Event::Gestured {
                 body: self.bodies[index].id,

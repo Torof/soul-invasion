@@ -1535,8 +1535,8 @@ pub struct World {
     /// persisted, as the minds are not; the server's worlds hold none.
     #[serde(skip)]
     kept: BTreeMap<ItemId, Item>,
-    /// The records of `kept` by chunk, for the hands' sight of what lies
-    /// near ([`World::items_near`]). Derived from `kept`.
+    /// The records of `kept` by chunk, to find the heap a laid item joins
+    /// (`World::keep`). Derived from `kept`.
     #[serde(skip)]
     kept_in: BTreeMap<ChunkPos, BTreeSet<ItemId>>,
     /// How many times `kept` changed (a record laid, joined, eaten from,
@@ -6829,14 +6829,15 @@ mod tests {
                 .any(|e| matches!(e, Event::ItemAdded { .. } | Event::ItemRemoved { .. })),
             "nothing lies on the ground"
         );
-        // A record, not an item: no look reads it, the hands see it near.
+        // A record, not an item: no look reads it, nor the hands (D58,
+        // amended 26 November 2026: a store is not picked up from).
         assert!(w.item(berries).is_none());
         assert!(!w.body(BodyId(1)).unwrap().has(berries));
         assert_eq!(w.kept(berries).map(Item::pos), Some(Some(Pos::new(1, 1))));
         assert_eq!(w.items_in(ChunkPos::new(0, 0)).len(), 0);
         assert_eq!(w.laid_in(ChunkPos::new(0, 0)).count(), 0);
         assert!(
-            w.items_near(Pos::new(1, 1), 2)
+            !w.items_near(Pos::new(1, 1), 2)
                 .iter()
                 .any(|i| i.id() == berries)
         );
@@ -6958,7 +6959,7 @@ mod tests {
         let (stone, _) = lay(&mut w, "flint", 400, None);
         let (stone2, _) = lay(&mut w, "flint", 400, None);
         assert!(w.kept(stone).is_some() && w.kept(stone2).is_some());
-        assert_eq!(w.items_near(Pos::new(1, 1), 1).len(), 4);
+        assert!(w.kept(stone).is_some() && w.kept(stone2).is_some());
         // Each goes as it would have apart.
         let mut events = Vec::new();
         let left = 3001 - w.tick().0;
