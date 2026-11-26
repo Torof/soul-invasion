@@ -15027,6 +15027,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one camp's evening, the copy and its exceptions, in order"
+    )]
     fn without_the_fire_a_body_at_the_camp_copies_the_best_mates_way_losing_a_step_at_times() {
         let mut world = field(64, 40, Pos::new(5, 5));
         world.spawn_body(Pos::new(6, 5));
