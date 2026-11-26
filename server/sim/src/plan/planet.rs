@@ -1948,7 +1948,7 @@ impl Zoom {
 
 /// The water joined to the frame's edge: the open ocean, not the lakes
 /// and closed seas.
-fn open_sea(elevation: &[i32]) -> Vec<bool> {
+pub fn open_sea(elevation: &[i32]) -> Vec<bool> {
     let n = ZOOM_SIDE * ZOOM_SIDE;
     let mut seen = vec![false; n];
     let mut queue: Vec<usize> = (0..n)

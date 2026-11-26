@@ -1,4 +1,4 @@
-//! An RGB PNG encoder for the examples (`atlas`, `windows_sheet`): a
+//! An RGB(A) PNG encoder for the examples (`atlas`, `windows_sheet`, `planet`): a
 //! small deflate of one fixed-Huffman block, so the drawings add no
 //! dependency. Not part of the game.
 
@@ -8,8 +8,24 @@ pub type Rgb = [u8; 3];
 /// An RGB PNG, rows filtered by whichever of PNG's five filters makes the
 /// smallest sum, compressed by [`deflate`].
 pub fn png(width: usize, height: usize, pixels: &[Rgb]) -> Vec<u8> {
-    let stride = width * 3;
     let flat: Vec<u8> = pixels.iter().flatten().copied().collect();
+    encode(width, height, &flat, 3, 2)
+}
+
+/// A pixel with its opacity.
+#[allow(dead_code, reason = "only some examples draw transparent layers")]
+pub type Rgba = [u8; 4];
+
+/// An RGBA PNG (a layer: transparent where alpha is 0), as [`png`].
+#[allow(dead_code, reason = "only some examples draw transparent layers")]
+pub fn png_rgba(width: usize, height: usize, pixels: &[Rgba]) -> Vec<u8> {
+    let flat: Vec<u8> = pixels.iter().flatten().copied().collect();
+    encode(width, height, &flat, 4, 6)
+}
+
+/// Bytes of `bpp` per pixel, of PNG colour type `colour`.
+fn encode(width: usize, height: usize, flat: &[u8], bpp: usize, colour: u8) -> Vec<u8> {
+    let stride = width * bpp;
     let mut raw = Vec::with_capacity((stride + 1) * height);
     let zero = vec![0_u8; stride];
     for y in 0..height {
@@ -23,9 +39,9 @@ pub fn png(width: usize, height: usize, pixels: &[Rgb]) -> Vec<u8> {
         for filter in 0..5_u8 {
             let line: Vec<u8> = (0..stride)
                 .map(|k| {
-                    let a = if k >= 3 { row[k - 3] } else { 0 };
+                    let a = if k >= bpp { row[k - bpp] } else { 0 };
                     let b = up[k];
-                    let c = if k >= 3 { up[k - 3] } else { 0 };
+                    let c = if k >= bpp { up[k - bpp] } else { 0 };
                     let p = match filter {
                         0 => 0,
                         1 => a,
@@ -59,7 +75,7 @@ pub fn png(width: usize, height: usize, pixels: &[Rgb]) -> Vec<u8> {
     let mut header = Vec::new();
     header.extend_from_slice(&u32::try_from(width).expect("small").to_be_bytes());
     header.extend_from_slice(&u32::try_from(height).expect("small").to_be_bytes());
-    header.extend_from_slice(&[8, 2, 0, 0, 0]);
+    header.extend_from_slice(&[8, colour, 0, 0, 0]);
     let mut out = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     chunk(&mut out, *b"IHDR", &header);
     chunk(&mut out, *b"IDAT", &zlib);

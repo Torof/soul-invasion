@@ -12,7 +12,11 @@
 //! Writes per seed `planete-graine-N.png` (equirectangular, 1,024 × 512),
 //! `zoom-graine-N.png` (relief) and `cadre-graine-N.png` (geological
 //! settings) at 350 km wide, `largeur-graine-N-W.png` for W = 150, 250
-//! and 350, and `graine-N.json` with the numbers.
+//! and 350, and `graine-N.json` with the numbers. With `PLANET_LAYERS`
+//! set, also each map's layers in `couches/` for the interactive page
+//! (`carte.html`): the planet's for every seed, the continent's for
+//! `PLANET_CONTINENTS` (default 11,8,4), the widths for
+//! `PLANET_WIDTH_SEED` (default 11).
 
 #![allow(
     clippy::many_single_char_names,
@@ -36,6 +40,9 @@ use png::{Rgb, png};
 
 #[path = "common/png.rs"]
 mod png;
+
+#[path = "common/planet_layers.rs"]
+mod layers;
 
 /// The widths compared, km; the last is the one shown large.
 const WIDTHS: [i64; 3] = [150, 250, 350];
@@ -83,6 +90,24 @@ fn main() {
             world.shape(zooms.last().expect("three widths"));
         }
         let elapsed = start.elapsed();
+        if std::env::var_os("PLANET_LAYERS").is_some() {
+            let dir = out.join("couches");
+            std::fs::create_dir_all(&dir).expect("the layers' folder");
+            layers::planet_layers(&dir, &world, zooms.last());
+            let continents = std::env::var("PLANET_CONTINENTS").unwrap_or_else(|_| "11,8,4".into());
+            if let Some(z) = zooms.last()
+                && continents.split(',').any(|v| v.trim().parse() == Ok(seed))
+            {
+                layers::continent_layers(&dir, seed, z);
+            }
+            if std::env::var("PLANET_WIDTH_SEED")
+                .map_or(seed == 11, |v| v.trim().parse() == Ok(seed))
+            {
+                for z in &zooms {
+                    layers::width_layers(&dir, seed, z);
+                }
+            }
+        }
         write(
             &out.join(format!("planete-graine-{seed}.png")),
             MAP_W,
