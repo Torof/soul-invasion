@@ -20,6 +20,7 @@ pub mod crops;
 pub mod flora;
 pub mod geology;
 pub mod hands;
+pub mod illness;
 // `gen` is a reserved keyword in the 2024 edition: the module is `r#gen`,
 // its file `gen.rs`.
 pub(crate) mod r#gen;
@@ -46,6 +47,7 @@ pub use content::{
     Needs, Sex, Spawn,
 };
 pub use geology::{Geology, Rock};
+pub use illness::{Ailment, HearthCount, Immunity, Sickness};
 pub use life::Pregnancy;
 pub use map::{
     CHUNK_SIZE, ChunkPos, FinePos, MM_PER_TILE, Map, MapSpec, Pos, Side, Terrain, line_clear,
@@ -215,6 +217,14 @@ pub struct Condition {
     /// percent. Derived, never stored.
     #[serde(skip, default = "percent_100")]
     pub age_pace_percent: u32,
+    /// The episode of illness it is in, if any (D49, amended 26 November
+    /// 2026): slower while it lasts. Absent from a snapshot when healthy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sick: Option<Sickness>,
+    /// Until when, healed, it cannot fall ill of each ailment again.
+    /// Absent from a snapshot when never healed.
+    #[serde(default, skip_serializing_if = "Immunity::is_none")]
+    pub immune: Immunity,
 }
 
 fn permille_1000() -> u32 {
@@ -242,6 +252,8 @@ impl Condition {
             reserve_permille: 1000,
             burn_permille: 1000,
             age_pace_percent: 100,
+            sick: None,
+            immune: Immunity::default(),
         }
     }
 
@@ -288,7 +300,7 @@ impl Condition {
     }
 
     /// Its pace, walking and working, in percent of a grown body's: slower
-    /// weak, slower young or old.
+    /// weak or sick (the slower of the two), slower young or old.
     #[must_use]
     pub fn pace_percent(&self, needs: &content::Needs) -> u32 {
         let weak = if self.is_weak(needs) {
@@ -296,7 +308,11 @@ impl Condition {
         } else {
             100
         };
-        weak * self.age_pace_percent / 100
+        let sick = match (&self.sick, &needs.illness) {
+            (Some(_), Some(illness)) => illness.sick_pace_percent,
+            _ => 100,
+        };
+        weak.min(sick) * self.age_pace_percent / 100
     }
 
     /// What it can still eat today, in joules: what its reserve misses,
@@ -1382,6 +1398,31 @@ pub enum Event {
         /// The other.
         b: BodyId,
     },
+    /// A body fell ill (D49, amended 26 November 2026).
+    FellIll {
+        /// Who.
+        body: BodyId,
+        /// Of what.
+        ailment: Ailment,
+        /// Whether the draw fell on the share its hearth's sick added.
+        caught: bool,
+        /// Where it stood.
+        at: Pos,
+    },
+    /// An episode of illness ended, healed or dead (D49, amended 26
+    /// November 2026); a death comes after, as `BodyDied`.
+    IllnessEnded {
+        /// Who.
+        body: BodyId,
+        /// Of what.
+        ailment: Ailment,
+        /// Whether it killed.
+        died: bool,
+        /// Its reserve left, in percent of its whole.
+        reserve_percent: u32,
+        /// Its age, in thousandths of an age-year.
+        age_milli: u64,
+    },
     /// A body died; it is now a corpse item.
     BodyDied {
         /// Who.
@@ -1597,6 +1638,19 @@ pub struct World {
     /// amended 24 November 2026). Never persisted.
     #[serde(skip)]
     homes: BTreeMap<BodyId, Pos>,
+    /// The body-nights slept at each place, in thousandths, fading day by
+    /// day (D49, amended 26 November 2026: a camp long slept at fouls).
+    /// Only places worth a body-night are kept: never the whole map.
+    /// Absent from a snapshot when none.
+    #[serde(
+        serialize_with = "write_fouling",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    fouling: BTreeMap<(i32, i32), u64>,
+    /// The hearths as counted at dawn, for the day's draws of illness.
+    /// Never persisted: counted again.
+    #[serde(skip)]
+    hearths: illness::Hearths,
     /// The content's kinds of tree, the trees of a chunk are placed with
     /// ([`World::trees_in`]); set by [`World::take_content`]. Never
     /// persisted: the trees are placed again, the same, from the map.
@@ -1647,6 +1701,13 @@ fn read_map<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Arc<Map
     Ok(Arc::new(Map::from(spec)))
 }
 
+fn write_fouling<S: serde::Serializer>(
+    fouling: &BTreeMap<(i32, i32), u64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(fouling.iter().map(|(&(x, y), &f)| (x, y, f)))
+}
+
 fn write_items<S: serde::Serializer>(
     items: &BTreeMap<ItemId, Item>,
     serializer: S,
@@ -1672,6 +1733,9 @@ struct Stored {
     /// off (format 16).
     #[serde(default)]
     life: bool,
+    /// The places fouled (format 19); none in a world saved before.
+    #[serde(default)]
+    fouling: Vec<(i32, i32, u64)>,
     /// The natural items taken, as snapshots held them up to format 8:
     /// since, each chunk's changes hold its own, stored beside.
     #[serde(default)]
@@ -1704,6 +1768,12 @@ impl<'de> serde::Deserialize<'de> for World {
             searches: Searches::default(),
             piloted: BTreeSet::new(),
             homes: BTreeMap::new(),
+            fouling: stored
+                .fouling
+                .into_iter()
+                .map(|(x, y, f)| ((x, y), f))
+                .collect(),
+            hearths: illness::Hearths::default(),
             species: Vec::new(),
             geology: geology::Geology::default(),
             open_ground: open_ground::OpenGround::default(),
@@ -1822,6 +1892,8 @@ impl World {
             searches: Searches::default(),
             piloted: BTreeSet::new(),
             homes: BTreeMap::new(),
+            fouling: BTreeMap::new(),
+            hearths: illness::Hearths::default(),
             species: Vec::new(),
             geology: geology::Geology::default(),
             open_ground: open_ground::OpenGround::default(),

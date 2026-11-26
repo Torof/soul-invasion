@@ -62,6 +62,7 @@ clock, the only field no seed decides.
 | `meta.settings.decisions` | The decisions at the evening fire, D56 (false: `--no-decisions`); since 23 November 2026 | boolean |
 | `meta.settings.moves` | Moving home as a consequence (amended 24 November 2026); `false`: the control run, `--no-moves`, nobody is surprised nor moves home | boolean |
 | `meta.settings.passages` | The passages remembered and told (D53, amended 26 November 2026); `false`: the control run, `--no-passages`, nobody keeps, tells or walks through a passage | boolean |
+| `meta.settings.old_illness` | The control run of illness as episodes (`--old-illness`, D49, amended 26 November 2026): the old rule, a background death by age alone, the content's `illness` section replaced by none; a run without the key is of the old rule when its content had no such section | bool |
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
 | `meta.camps` | The camps' starting positions, A first | `[[x, y], …]` |
@@ -595,6 +596,22 @@ clock, the only field no seed decides.
 | `passages.gathered_kj_beyond` | Of it, what was gathered where the straight line from the gatherer's home crosses water or rock (`sim::map::line_clear`, the brain's clear line) | kJ |
 | `passages.camps[].*` | The same by home (`Mind::home`, the camp), in order of the home: `home` (`[x, y]`), `beyond_reached`, `beyond_places`, `gathers`, `gathers_beyond`, `gathered_kj`, `gathered_kj_beyond`; the land around a camp decides most of the beyond (the audit of 26 November 2026) | tiles, counts, kJ |
 | `passages.farthest_through_minutes_x10` | The farthest place reached through a passage: the straight walk from the walker's home to where it stood, at its own pace (`Mind::walk_milliminutes`); 0 when none | tenths of a game minute |
+| `illness.on` | Illness as episodes (D49, amended 26 November 2026), its own block, last: whether the content holds an `illness` section (`content/needs.ron`); `false`, and no other key, under the old rule (the section absent, or the control run `--old-illness`) | bool |
+| `illness.body_days` | The bodies counted at each dawn, summed: the body-days the sick days are taken over | body-days |
+| `illness.sick_body_days.*` | Of them, ill at dawn, by ailment: `gut`, `chest` | body-days |
+| `illness.episodes_all` | Episodes begun over the run (`Event::FellIll`) | episodes |
+| `illness.episodes_caught` | Of them, those whose draw fell on the share the hearth's sick added (contagion) | episodes |
+| `illness.episodes[].*` | Episodes begun by `ailment` (`gut` or `chest`), `season` of the day it began (`spring` … `winter`) and `age` band (`0-1`, `2-4`, `5-14`, `15-39`, `40-59`, `60+`, in age-years): `episodes`, and of them `caught` | episodes |
+| `illness.ends[].*` | Episodes ended (`Event::IllnessEnded`) by `ailment`, `age` band and `thinness` at the end (`fat`: at least `thin_percent` of its reserve left; `thin`: under it; `weak`: under `weak_percent`): `healed`, `died`. A body dead of something else while ill is in neither | episodes |
+| `illness.deaths_columns` | The columns of `illness.deaths`: `day`, `ailment`, `age`, `thinness`, `reserve_percent`, `hearth_members`, `hearth_fouling` | names |
+| `illness.deaths` | Every death of illness, in order: the day (from 1), the ailment, the age band, the thinness band, the reserve left (percent), its hearth's members and fouling (body-nights) the dawn of the day it fell ill | rows |
+| `illness.hearth_places` | The distinct hearth places of `illness.hearths` | places |
+| `illness.hearths_columns` | The columns of `illness.hearths`: `day`, `x`, `y`, `members`, `sick_gut`, `sick_chest`, `fouling` | names |
+| `illness.hearths` | Camp fouling over time: at each dawn, each hearth place with two members or more (a hearth is the square of `thought.place_tiles` its members' homes lie in, as the brains told them; a body without a home stands for its own), the day, the place's column and row (in places, not tiles), its members, its sick of the gut and of the chest at dawn, and its fouling (the body-nights slept in the place, fading `fouling_keep_permille` a dawn, whole body-nights) | rows |
+| `illness.moves_all` | Camps moved: at a dawn, the homes of some bodies told in another place than the dawn before, counted once by (place left, place reached) | moves |
+| `illness.moves_with_sick` | Of them, those whose place left had sick members at the dawn before | moves |
+| `illness.moves_columns` | The columns of `illness.moves`: `day`, `from_x`, `from_y`, `to_x`, `to_y`, `movers`, `members_before`, `sick_gut_before`, `sick_chest_before`, `fouling_left`, `fouling_reached` | names |
+| `illness.moves` | Every camp moved, in order: the dawn, the places left and reached, the bodies whose home moved so, the place left's members and sick at the dawn before, and the fouling of both places then (body-nights): to read, later, whether those who leave a fouled camp fare better | rows |
 
 ## Beside the data: the lab's series file
 

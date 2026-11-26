@@ -732,6 +732,7 @@ mod tests {
             problems: true,
             wake_all: false,
             old_wakes: false,
+            old_illness: false,
             passages: true,
             continents: None,
             helpers: 0,

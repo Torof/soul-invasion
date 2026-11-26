@@ -524,6 +524,9 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
         | Event::PregnancyLost { .. }
         | Event::Coupled { .. }
         | Event::Parted { .. }
+        // Illness is the vivarium's too (D49, amended 26 November 2026).
+        | Event::FellIll { .. }
+        | Event::IllnessEnded { .. }
         // The gestures of the hands are the brains' alone for now (D57):
         // what they give goes as an inventory changed, told already.
         | Event::Gestured { .. }

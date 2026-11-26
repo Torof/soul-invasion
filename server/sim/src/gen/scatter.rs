@@ -145,6 +145,12 @@ pub(crate) mod purpose {
     pub(crate) const LIFE_CHILDBIRTH: u64 = 0x11fe_b147;
     /// See `LIFE_HOUR`.
     pub(crate) const LIFE_DEATH: u64 = 0x11fe_dea7;
+    /// Illness as episodes (D49, amended 26 November 2026), salted apart
+    /// from the life rule's draws: whether a body falls ill today, and
+    /// whether an episode ending kills it.
+    pub(crate) const ILLNESS_FALL: u64 = 0x11fe_1111;
+    /// See `ILLNESS_FALL`.
+    pub(crate) const ILLNESS_DEATH: u64 = 0x11fe_1dea;
 
     /// The brains' trials (D50), salted apart too: a body's will at
     /// adoption, whether it starts a trial today, which way it moves and

@@ -172,6 +172,7 @@ impl World {
             return;
         }
         if tick_of_day == 0 {
+            self.illness_dawn(rules);
             self.part(rules, events);
             self.wed_at_hearths(rules, events);
             self.court(rules, events);
@@ -313,6 +314,9 @@ impl World {
         let day = u64::try_from(self.today()).unwrap_or(0);
         let days_per_age_year = self.calendar.days_per_age_year();
         let mut died = Vec::new();
+        if rules.needs.illness.is_some() {
+            self.hearths_for_today(rules);
+        }
         for index in 0..self.bodies.len() {
             let id = self.bodies[index].id;
             if self.own_hour(id) != tick_of_day {
@@ -322,14 +326,27 @@ impl World {
                 self.couple(index, rules, events);
             }
             let age = self.age_milli(&self.bodies[index]);
+            let old = age / 1000 >= u64::from(life.old_age_from_years);
             let ppm = life.death_ppm_per_day(age, days_per_age_year);
-            if scatter::roll(seed, purpose::LIFE_DEATH, &[u64::from(id.0), day]) % 1_000_000 < ppm {
-                let cause = if age / 1000 >= u64::from(life.old_age_from_years) {
-                    Death::OldAge
-                } else {
-                    Death::Illness
-                };
-                died.push((id, cause));
+            let Some(illness) = &rules.needs.illness else {
+                // The old rule: a background death by age alone.
+                if scatter::roll(seed, purpose::LIFE_DEATH, &[u64::from(id.0), day]) % 1_000_000
+                    < ppm
+                {
+                    died.push((id, if old { Death::OldAge } else { Death::Illness }));
+                }
+                continue;
+            };
+            // Illness as episodes (D49, amended 26 November 2026): the old
+            // die by the curve as before; every body may fall ill, and an
+            // episode kills under the old age.
+            if old
+                && scatter::roll(seed, purpose::LIFE_DEATH, &[u64::from(id.0), day]) % 1_000_000
+                    < ppm
+            {
+                died.push((id, Death::OldAge));
+            } else if self.illness_day(index, (rules, illness), age, events) {
+                died.push((id, Death::Illness));
             }
         }
         for (id, cause) in died {
@@ -667,6 +684,9 @@ mod tests {
         rules.needs.thirst_per_day = 0;
         rules.needs.cold_per_day_at_night = 0;
         rules.needs.hunger_per_day = 0;
+        // The old rule, a death by age alone: these tests are its; illness
+        // as episodes has its own (`crate::illness`).
+        rules.needs.illness = None;
         rules
     }
 
