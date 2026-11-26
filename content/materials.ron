@@ -264,16 +264,15 @@
     // Birch bark (D57, the project lead, 24 November 2026: "C'est
     // parfait"): cut from a birch with something sharp in hand; supple, it
     // folds. Folded, it keeps loose food together. Placeholder values.
-    // Folded, it lasts a cycle, four seasons (64 days in calendar v1; the
-    // project lead's principle E, 25 November 2026: a thing lasts at least
-    // as long as what it serves, and the nuts it carries keep four
-    // seasons; it tore in 16 days).
+    // Folded, it lasts two seasons (32 days in calendar v1; the project
+    // lead, 26 November 2026: a cycle was too long, a box remade more often
+    // is practised more; it tore in one season, then lasted four).
     (id: "birch_bark", name: "Birch bark",
      description: "A sheet of bark cut from a birch, supple and waterproof. It folds without breaking.",
      kind: plant, mass_kg: 0.2, hardness: 1, folds_into: Some("folded_birch_bark"),
      flammable: true, food: None, look: (colour: "#e8e2d0")),
     (id: "folded_birch_bark", name: "Folded birch bark",
-     description: "A sheet of birch bark folded on itself. What is put in it stays together; it tears after four seasons.",
-     kind: plant, mass_kg: 0.2, hardness: 1, holds_g: 4000, wears_seasons: 4,
+     description: "A sheet of birch bark folded on itself. What is put in it stays together; it tears after two seasons.",
+     kind: plant, mass_kg: 0.2, hardness: 1, holds_g: 4000, wears_seasons: 2,
      flammable: true, food: None, look: (colour: "#d8cfb4")),
 ]
