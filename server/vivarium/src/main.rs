@@ -82,6 +82,9 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            from a hearth's reserve wakes everyone of that
                            hearth at the camp, asleep or not, as before
                            (thought.hearth_wakes true)
+  --old-wakes              the control run of the audit of wakes (26
+                           November 2026): every switch of its steps at the
+                           rule before (thought.wake_on_interrupt true, ...)
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
@@ -194,6 +197,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-trips" => settings.trips = false,
             "--no-problems" => settings.problems = false,
             "--wake-all" => settings.wake_all = true,
+            "--old-wakes" => settings.old_wakes = true,
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,
             "--prepare-land" => prepare = true,

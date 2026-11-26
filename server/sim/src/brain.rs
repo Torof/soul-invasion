@@ -97,6 +97,8 @@ use crate::{Blockage, Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, W
 mod handwork;
 mod pooling;
 mod problems;
+#[cfg(test)]
+mod wake_tests;
 pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
 pub use problems::{Problem, ProblemAim, ProblemStep};
 
@@ -4682,7 +4684,7 @@ impl Brains {
         rules: &Content,
         events: &[Event],
     ) -> Vec<(BodyId, Decision)> {
-        self.notice(events, world);
+        self.notice(events, world, rules);
         self.hearth_events(events, world, rules);
         self.count_gathers(events, world, rules);
         self.live_problems(events, world, rules);
@@ -7177,7 +7179,8 @@ impl Brains {
     }
 
     /// Marks the minds the tick's events concern.
-    fn notice(&mut self, events: &[Event], world: &World) {
+    fn notice(&mut self, events: &[Event], world: &World, rules: &Content) {
+        let thought = &rules.needs.thought;
         for event in events {
             let body = match event {
                 Event::DayStarted { .. } | Event::NightFell { .. } => {
@@ -7213,6 +7216,20 @@ impl Brains {
                 // itself. Not a stop, and nothing to think about: read as
                 // one, each trunk on a far walk sent it back to its camp
                 // (22 November 2026).
+                continue;
+            }
+            if !thought.wake_on_interrupt
+                && matches!(
+                    event,
+                    Event::WorkStopped {
+                        why: crate::WorkEnd::Interrupted,
+                        ..
+                    }
+                )
+            {
+                // The echo of an order (the audit of wakes, step 1): its
+                // own new intention, or its falling asleep, stopped the
+                // gather. It has just decided; sleep has its threshold.
                 continue;
             }
             if let Some(mind) = self.minds.get_mut(&body) {
@@ -11757,7 +11774,7 @@ mod tests {
             gives: "blackberries".to_owned(),
             reason: Refusal::NothingRipe,
         };
-        brains.notice(&[refused], &world);
+        brains.notice(&[refused], &world, &rules);
         let mind = brains.mind(id).unwrap();
         assert!(mind.left_alone[&key] > world.tick().0);
         // A few are held at most: the soonest free forgotten first.

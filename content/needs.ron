@@ -405,6 +405,14 @@
     //                    that hearth at the camp, as before (the
     //                    vivarium's --wake-all); 48 % of all thoughts came
     //                    from it, 90 % of them changing nothing.
+    // wake_on_interrupt: false — a gather stopped by the body's own new
+    //                    intention (to eat, to drink, to go home), or by
+    //                    its falling asleep, does not make it think again:
+    //                    it has just decided, and falling asleep has its
+    //                    own threshold (the audit of wakes, 26 November
+    //                    2026, step 1: 4.4 thoughts a person-journée, 99 %
+    //                    changing nothing). true, or absent: the rule
+    //                    before (the vivarium's --old-wakes).
     thought: (
         plant_sight_tiles: 30,
         fed_under: 30,
@@ -413,6 +421,7 @@
         places_remembered: 48,
         patch_tiles: 4,
         hearth_wakes: false,
+        wake_on_interrupt: false,
     ),
     // The evening fire and the common memory (D55, lot 4 of the
     // simulation, decided by the project lead on 22 November 2026). Every

@@ -1738,10 +1738,23 @@ pub struct Thought {
     /// before (the vivarium's `--wake-all`).
     #[serde(default)]
     pub hearth_wakes: bool,
+    /// Whether a gather the body's own new intention stopped, or its
+    /// falling asleep (`WorkEnd::Interrupted`), makes it think again
+    /// (the audit of wakes, 26 November 2026, step 1: the echo of an
+    /// order). True, or absent: it does, the rule before. False: it does
+    /// not; it has just decided, and falling asleep has its own threshold.
+    #[serde(default = "yes")]
+    pub wake_on_interrupt: bool,
+}
+
+/// True: a switch whose absence keeps the rule before.
+fn yes() -> bool {
+    true
 }
 
 impl Default for Thought {
-    /// The placeholders of `content/needs.ron`.
+    /// The placeholders of `content/needs.ron`, but the switches of the
+    /// audit of wakes (26 November 2026) at the rule before.
     fn default() -> Self {
         Self {
             plant_sight_tiles: 30,
@@ -1751,6 +1764,7 @@ impl Default for Thought {
             places_remembered: 48,
             patch_tiles: 4,
             hearth_wakes: false,
+            wake_on_interrupt: true,
         }
     }
 }

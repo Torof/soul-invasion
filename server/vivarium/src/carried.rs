@@ -731,6 +731,7 @@ mod tests {
             trips: true,
             problems: true,
             wake_all: false,
+            old_wakes: false,
             continents: None,
             helpers: 0,
         };
