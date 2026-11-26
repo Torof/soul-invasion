@@ -144,6 +144,19 @@ pub fn tile_of(id: ItemId) -> Option<Pos> {
 /// whose roll fails.
 #[must_use]
 pub fn natural_item(map: &Map, spawns: &[Spawn], seed: u64, id: ItemId) -> Option<Item> {
+    let (tile, spawn) = natural_lies(map, spawns, seed, id)?;
+    Some(Item::natural(id, spawn, tile))
+}
+
+/// Where the natural item `id` lies and the rule that drops it, if the
+/// ground drops it: [`natural_item`] without making the item (its
+/// material's text is not copied). `None` as for [`natural_item`].
+pub(crate) fn natural_lies<'s>(
+    map: &Map,
+    spawns: &'s [Spawn],
+    seed: u64,
+    id: ItemId,
+) -> Option<(Pos, &'s Spawn)> {
     if !is_natural(id) {
         return None;
     }
@@ -158,7 +171,7 @@ pub fn natural_item(map: &Map, spawns: &[Spawn], seed: u64, id: ItemId) -> Optio
     {
         return None;
     }
-    Some(Item::natural(id, spawn, tile))
+    Some((tile, spawn))
 }
 
 impl Item {
