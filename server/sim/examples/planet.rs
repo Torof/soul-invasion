@@ -11,12 +11,12 @@
 //!
 //! Writes per seed `planete-graine-N.png` (equirectangular, 1,024 × 512),
 //! `zoom-graine-N.png` (relief) and `cadre-graine-N.png` (geological
-//! settings) at 350 km wide, `largeur-graine-N-W.png` for W = 150, 250
-//! and 350, and `graine-N.json` with the numbers. With `PLANET_LAYERS`
+//! settings) at [`OUR_WIDTH_KM`], `largeur-graine-N-W.png` for W = 350, 450
+//! and 550, and `graine-N.json` with the numbers. With `PLANET_LAYERS`
 //! set, also each map's layers in `couches/` for the interactive page
 //! (`carte.html`): the planet's for every seed, the continent's for
-//! `PLANET_CONTINENTS` (default 11,8,4), the widths for
-//! `PLANET_WIDTH_SEED` (default 11).
+//! `PLANET_CONTINENTS` (default every seed), the widths for
+//! `PLANET_WIDTH_SEED` (default 13).
 
 #![allow(
     clippy::many_single_char_names,
@@ -45,7 +45,11 @@ mod png;
 mod layers;
 
 /// The widths compared, km; the last is the one shown large.
-const WIDTHS: [i64; 3] = [150, 250, 350];
+const WIDTHS: [i64; 3] = [350, 450, 550];
+/// The width setting for our continent (26 November): the lead asked
+/// ~450 km wide and ~200,000 km² of land; the setting 550 gives that land
+/// (a mean width of ~350 km, the coasts being frayed and the ends tapered).
+const OUR_WIDTH_KM: i64 = 550;
 const MAP_W: usize = 1024;
 const MAP_H: usize = 512;
 
@@ -87,21 +91,26 @@ fn main() {
             for &w in &WIDTHS {
                 zooms.push(Zoom::new(&world, site, w));
             }
-            world.shape(zooms.last().expect("three widths"));
+        }
+        let chosen = zooms.iter().find(|z| z.width_km == OUR_WIDTH_KM);
+        if let Some(z) = chosen {
+            world.shape(z);
         }
         let elapsed = start.elapsed();
         if std::env::var_os("PLANET_LAYERS").is_some() {
             let dir = out.join("couches");
             std::fs::create_dir_all(&dir).expect("the layers' folder");
-            layers::planet_layers(&dir, &world, zooms.last());
-            let continents = std::env::var("PLANET_CONTINENTS").unwrap_or_else(|_| "11,8,4".into());
-            if let Some(z) = zooms.last()
-                && continents.split(',').any(|v| v.trim().parse() == Ok(seed))
+            layers::planet_layers(&dir, &world, chosen);
+            let continents = std::env::var("PLANET_CONTINENTS").ok();
+            if let Some(z) = chosen
+                && continents
+                    .as_deref()
+                    .is_none_or(|c| c.split(',').any(|v| v.trim().parse() == Ok(seed)))
             {
                 layers::continent_layers(&dir, seed, z);
             }
             if std::env::var("PLANET_WIDTH_SEED")
-                .map_or(seed == 11, |v| v.trim().parse() == Ok(seed))
+                .map_or(seed == 13, |v| v.trim().parse() == Ok(seed))
             {
                 for z in &zooms {
                     layers::width_layers(&dir, seed, z);
@@ -112,7 +121,7 @@ fn main() {
             &out.join(format!("planete-graine-{seed}.png")),
             MAP_W,
             MAP_H,
-            &draw_planet(&world, zooms.last()),
+            &draw_planet(&world, chosen),
         );
         for z in &zooms {
             write(
@@ -122,7 +131,7 @@ fn main() {
                 &draw_zoom(z, false),
             );
         }
-        if let Some(z) = zooms.last() {
+        if let Some(z) = chosen {
             write(
                 &out.join(format!("zoom-graine-{seed}.png")),
                 ZOOM_SIDE,
@@ -193,6 +202,12 @@ fn main() {
                 "span_km": l.span_km, "lat": planet::latitude(l.centre),
                 "lon": planet::longitude(l.centre),
                 "ours": l.cells.iter().any(|&c| world.ours[c as usize])})).collect::<Vec<_>>(),
+            "land_total_km2": world.lands.iter().map(|l| l.area_km2).sum::<i64>(),
+            "land_beyond_60_km2": (0..CELLS)
+                .filter(|&c| world.elevation[c] > 0
+                    && planet::latitude(world.sphere.centre[c]).abs() > 600)
+                .map(|c| i64::from(world.sphere.area_km2[c]))
+                .sum::<i64>(),
             "land_count_over_1M": world.lands.iter().filter(|l| l.area_km2 > 1_000_000).count(),
             "ours_on_grid_km2": ours.map(|l| l.area_km2),
             "site": site_json,

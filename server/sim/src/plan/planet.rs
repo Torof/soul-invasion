@@ -9,9 +9,11 @@
 //!
 //! What it tells, in order, each step reading only the ones before:
 //!
-//! 1. **Crust.** Continental crust is a warped noise cut so 40 % of the
-//!    surface carries it, pulled toward one hemisphere so a great ocean
-//!    is left (the Earth's crust covers ~41 % with its shelves).
+//! 1. **Crust.** Continental crust is a set of separate continents
+//!    (version 2, the lead's 26 November): warped caps of drawn sizes,
+//!    kept apart so no two large ones fuse into a supercontinent, large
+//!    and middling ones kept below ~60° of latitude, their coasts frayed
+//!    by noise. About a fifth of the surface carries crust.
 //! 2. **Plates.** A warped, weighted Voronoi on the sphere, each plate
 //!    turning about its own pole; plates carrying much continent move
 //!    slower, as on the Earth.
@@ -25,9 +27,9 @@
 //! 5. **Hotspots.** Fixed plumes under moving plates leave chains, older
 //!    the farther they run in the plate's direction of motion.
 //! 6. **Height and the sea.** A height from these, and a sea level that
-//!    leaves 30 % of the surface dry.
+//!    leaves [`LAND_PER_MILLE`] of the surface dry (17.5 %).
 //! 7. **Our continent** ([`Site`], [`Zoom`]): a subduction margin at
-//!    40–50° of latitude with the ocean to the west is chosen, and a
+//!    40–50° north with the ocean to the west is chosen, and a
 //!    continent of [`LENGTH_KM`] is shaped on its overriding side, read
 //!    across the margin: trench, coast range, forearc basin, volcanic
 //!    arc, back-arc, as on the real margins of Cascadia and Chile.
@@ -479,7 +481,7 @@ fn random_unit(seed: u64, purpose: u64, k: u64) -> V3 {
 /// Draw purposes.
 const P_CRUST: u64 = 0x0c50_0001;
 const P_CRUST_WARP: u64 = 0x0c50_0002;
-const P_HEMISPHERE: u64 = 0x0c50_0003;
+const P_CONTINENTS: u64 = 0x0c50_0003;
 const P_PLATES: u64 = 0x0c50_0010;
 const P_OLD: u64 = 0x0c50_0020;
 const P_HOTSPOTS: u64 = 0x0c50_0030;
@@ -504,16 +506,39 @@ const PLATE_WARP: [(i64, i64); 4] = [
     (70_000, 22_000),
     (25_000, 7_000),
 ];
-/// Share of the surface carried by continental crust, per mille.
-const CONTINENTAL_PER_MILLE: i64 = 400;
-/// The crust's noise, `(cell, weight)`: continents thousands of km wide.
+/// A tier of [`CONTINENT_TIERS`].
+type Tier = ((i64, i64), (i64, i64), i64, i64);
+/// The continents, by tier, largest first: `(count, radius km, gap km,
+/// farthest latitude its cap may reach, tenths of a degree)`. Each
+/// continent is a few overlapping lobes inside its cap, so it is long,
+/// bent or lobed rather than round. Large and
+/// middling ones stay below ~62° so the cold north and south are not
+/// millions of km² of ice; small ones and islets may go farther. The gap
+/// keeps two caps apart, so the largest land stays near one cap's size
+/// (the lead's ceiling: ~10–15 M km², 26 November).
+const CONTINENT_TIERS: [Tier; 4] = [
+    ((4, 6), (1_900, 2_350), 600, 620),
+    ((4, 7), (1_300, 1_900), 500, 620),
+    ((8, 12), (550, 1_000), 400, 680),
+    ((10, 16), (150, 350), 250, 780),
+];
+/// Tries to place a cap before it is given up.
+const CONTINENT_TRIES: u64 = 400;
+/// The crust's noise, `(cell, weight)`: frays each cap's coast by about a
+/// quarter of its radius, in or out.
 const CRUST_OCTAVES: [(i64, i64); 4] = [(900_000, 5), (450_000, 4), (200_000, 2), (80_000, 1)];
-const CRUST_WARP: [(i64, i64); 2] = [(500_000, 180_000), (150_000, 50_000)];
-/// How strongly the continents gather in one hemisphere, in the noise's
-/// units at the hemisphere's pole: a great ocean is left on the other side.
-const HEMISPHERE_PULL: i64 = 110;
-/// Share of the surface left dry by the sea level, per mille.
-const LAND_PER_MILLE: i64 = 300;
+const CRUST_WARP: [(i64, i64); 2] = [(500_000, 90_000), (150_000, 30_000)];
+/// Share of the surface carried by continental crust, per mille: the
+/// lobes swell or shrink a little to it, whatever caps were placed.
+const CONTINENTAL_PER_MILLE: i64 = 220;
+/// Satellite lobes per continent, and their radius and the main lobe's,
+/// per mille of the cap's.
+const LOBES: (i64, i64) = (2, 4);
+const LOBE_RADIUS: (i64, i64) = (300, 520);
+const MAIN_RADIUS: (i64, i64) = (550, 720);
+/// Share of the surface left dry by the sea level, per mille (the lead's
+/// 15–20 %, 26 November; the Earth: 29 %).
+pub const LAND_PER_MILLE: i64 = 175;
 
 /// A plate: a seed point with a weight, turning about a pole.
 #[derive(Debug, Clone)]
@@ -737,6 +762,55 @@ pub struct Planet {
     pub ours: Vec<bool>,
 }
 
+/// The continents' lobes, `(centre, radius km)`: caps placed tier by
+/// tier, each clear of those before it by both radii and the larger gap,
+/// each filled with a main lobe and a few satellites touching its rim.
+fn continents(seed: u64) -> Vec<(V3, i64)> {
+    let mut caps: Vec<(V3, i64, i64)> = Vec::new();
+    for (t, &((lo, hi), (r_lo, r_hi), gap, reach)) in CONTINENT_TIERS.iter().enumerate() {
+        let t = t as u64;
+        let count = draw(seed, P_CONTINENTS, t, lo, hi) as u64;
+        for k in 0..count {
+            let r = draw(seed, P_CONTINENTS, 100 + t * 100 + k, r_lo, r_hi);
+            let r_tenths = r * 18_000 / (PI * RADIUS_KM / 100_000);
+            for attempt in 0..CONTINENT_TRIES {
+                let c = random_unit(
+                    seed,
+                    P_CONTINENTS + 1,
+                    (t * 100 + k) * CONTINENT_TRIES + attempt,
+                );
+                if latitude(c).abs() + r_tenths > reach {
+                    continue;
+                }
+                if caps
+                    .iter()
+                    .all(|&(o, ro, go)| km_between(c, o) >= r + ro + gap.max(go))
+                {
+                    caps.push((c, r, gap));
+                    break;
+                }
+            }
+        }
+    }
+    let mut lobes = Vec::new();
+    for (k, &(c, r, _)) in caps.iter().enumerate() {
+        let k = 1000 * k as u64;
+        let (east, north) = (east_at(c), north_at(c, east_at(c)));
+        let toward = |j: u64| {
+            let a = draw(seed, P_CONTINENTS + 2, k + j, 0, TAU);
+            normalize(add(scale(east, cos(a)), scale(north, sin(a))))
+        };
+        let main = draw(seed, P_CONTINENTS + 3, k, MAIN_RADIUS.0, MAIN_RADIUS.1);
+        let off = draw(seed, P_CONTINENTS + 4, k, 0, 1000 - main);
+        lobes.push((step(c, toward(0), r * off / 1000), r * main / 1000));
+        for j in 1..=draw(seed, P_CONTINENTS + 5, k, LOBES.0, LOBES.1) as u64 {
+            let lr = r * draw(seed, P_CONTINENTS + 6, k + j, LOBE_RADIUS.0, LOBE_RADIUS.1) / 1000;
+            lobes.push((step(c, toward(j), r - lr), lr));
+        }
+    }
+    lobes
+}
+
 /// Hotspots: 14 to 20 (the Earth has ~40 listed, ~15 strong).
 const HOTSPOTS: (i64, i64) = (14, 20);
 /// How far back a hotspot's chain is followed, millions of years.
@@ -749,14 +823,22 @@ impl Planet {
     pub fn new(seed: u64) -> Self {
         let sphere = Sphere::new();
         // 1. Crust.
-        let hemi = random_unit(seed, P_HEMISPHERE, 0);
+        let caps = continents(seed);
         let crust: Vec<i64> = sphere
             .centre
             .iter()
             .map(|&p| {
                 let q = warp(hash(&[seed, P_CRUST_WARP]), p, &CRUST_WARP);
-                fbm3(hash(&[seed, P_CRUST]), q, &CRUST_OCTAVES)
-                    + dot(p, hemi) * HEMISPHERE_PULL / ONE
+                // How far inside the nearest cap, per mille of its radius.
+                let mut inside = -1000;
+                for &(c, r) in &caps {
+                    if dot(q, c) < cos((r + 200) * ONE / RADIUS_KM) {
+                        continue;
+                    }
+                    inside = inside.max((r - km_between(q, c)) * 1000 / r);
+                }
+                let fray = fbm3(hash(&[seed, P_CRUST]), q, &CRUST_OCTAVES) - 500;
+                500 + (inside.max(-1000) + fray * 3 / 2) / 4
             })
             .collect();
         let crust_cut = quantile(&sphere, &crust, 1000 - CONTINENTAL_PER_MILLE);
@@ -1148,7 +1230,8 @@ fn quantile(sphere: &Sphere, values: &[i64], share: i64) -> i64 {
 
 /// Our continent's length along its chain, km (the lead's ~550).
 pub const LENGTH_KM: i64 = 550;
-/// Its latitudes, tenths of a degree (the lead's 40–50°: its middle is
+/// Its latitudes north, tenths of a degree (the lead's 40–50° N, north
+/// the cold side since 26 November: its middle is
 /// kept within 42.5–47.5° so its ends, 2.5° away, stay inside).
 const SITE_LATITUDE: (i64, i64) = (425, 475);
 /// How far the margin may turn from north–south: the cosine between the
@@ -1203,7 +1286,7 @@ impl Site {
             }
             let p = s.centre[c];
             let lat = latitude(p);
-            if lat.abs() < SITE_LATITUDE.0 || lat.abs() > SITE_LATITUDE.1 {
+            if lat < SITE_LATITUDE.0 || lat > SITE_LATITUDE.1 {
                 continue;
             }
             let east = east_at(p);
@@ -1259,7 +1342,7 @@ impl Site {
                 + 80 * i64::from(ends_near.min(2))
                 + if hotspot_near { 60 } else { 0 }
                 - 4 * (rate - 50).abs()
-                - (lat.abs() - 450).abs()
+                - (lat - 450).abs()
                 + facing / 4;
             out.push(Self {
                 cell: c,
@@ -2078,5 +2161,27 @@ mod tests {
             (land * 1000 / 510_000_000 - LAND_PER_MILLE).abs() < 20,
             "{land}"
         );
+    }
+
+    #[test]
+    fn lands_are_several_continents_and_the_cold_stays_open() {
+        for seed in [5, 13] {
+            let world = Planet::new(seed);
+            let biggest = world.lands[0].area_km2;
+            assert!(biggest <= 15_000_000, "seed {seed}: {biggest} km²");
+            let large = world
+                .lands
+                .iter()
+                .filter(|l| l.area_km2 > 1_000_000)
+                .count();
+            assert!(large >= 8, "seed {seed}: {large} lands over 1 M km²");
+            let cold: i64 = world
+                .lands
+                .iter()
+                .filter(|l| l.area_km2 > 1_000_000 && latitude(l.centre).abs() > 600)
+                .map(|l| l.area_km2)
+                .sum();
+            assert_eq!(cold, 0, "seed {seed}");
+        }
     }
 }

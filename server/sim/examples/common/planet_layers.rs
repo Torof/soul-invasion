@@ -134,22 +134,32 @@ fn lat_y(lat_tenths: i64) -> i64 {
     (900 - lat_tenths) * PH as i64 / 1800
 }
 
-fn lon_x(lon_tenths: i64) -> i64 {
-    (lon_tenths + 1800) * PW as i64 / 3600
+/// The map's x of a longitude, the map centred on `lon0` (tenths).
+fn lon_x(lon_tenths: i64, lon0: i64) -> i64 {
+    (lon_tenths - lon0 + 1800).rem_euclid(3600) * PW as i64 / 3600
 }
 
-fn map_xy(v: planet::V3) -> (i64, i64) {
-    (lon_x(planet::longitude(v)), lat_y(planet::latitude(v)))
+fn map_xy(v: planet::V3, lon0: i64) -> (i64, i64) {
+    (
+        lon_x(planet::longitude(v), lon0),
+        lat_y(planet::latitude(v)),
+    )
 }
 
-/// The planet view's layers for one seed, as `p{seed}-{name}.png`.
+/// The planet view's layers for one seed, as `p{seed}-{name}.png`,
+/// centred on our continent's longitude (a whole degree), and
+/// `p{seed}-donnees.js` for the cursor readout.
 pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
     let seed = world.seed;
+    let lon0 = zoom.map_or(0, |z| {
+        (planet::longitude(z.frame.centre) + 5).div_euclid(10) * 10
+    });
+    let map_xy = |v: planet::V3| map_xy(v, lon0);
     let mut cell = vec![0_usize; PW * PH];
     for y in 0..PH {
         let lat = 900 - (2 * y as i64 + 1) * 1800 / (2 * PH as i64);
         for x in 0..PW {
-            let lon = -1800 + (2 * x as i64 + 1) * 3600 / (2 * PW as i64);
+            let lon = lon0 - 1800 + (2 * x as i64 + 1) * 3600 / (2 * PW as i64);
             cell[y * PW + x] = world.sphere.cell_of(planet::from_lat_lon(lat, lon));
         }
     }
@@ -285,7 +295,7 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
     // The grid, 40° and 50° marked.
     let mut l = Layer::new(PW, PH);
     for deg in (-180..=180).step_by(10) {
-        let x = lon_x(deg * 10).min(PW as i64 - 1);
+        let x = lon_x(deg * 10, lon0);
         for y in 0..PH as i64 {
             l.put(x, y, [255, 255, 255, if deg == 0 { 170 } else { 90 }]);
         }
@@ -305,25 +315,84 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         }
     }
     l.write(dir, &format!("p{seed}-grille.png"));
-    // Our continent's site: a ring and the continent view's frame.
+    // Our continent: its land filled and outlined in a strong colour, a
+    // wide ring around it, and the continent view's frame.
     let mut l = Layer::new(PW, PH);
+    let mut site = None;
     if let Some(z) = zoom {
-        let side = SIDE;
-        for t in 0..side {
+        let mut ours = vec![false; PW * PH];
+        for i in 0..ZOOM_SIDE * ZOOM_SIDE {
+            if z.ours[i] && z.elevation[i] > 0 {
+                let (x, y) = map_xy(z.frame.point(i));
+                ours[(y.clamp(0, PH as i64 - 1) as usize) * PW + x as usize % PW] = true;
+            }
+        }
+        for i in 0..PW * PH {
+            if !ours[i] {
+                continue;
+            }
+            let (x, y) = ((i % PW) as i64, (i / PW) as i64);
+            let rim = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dy)| {
+                let (u, v) = (x + dx, y + dy);
+                !(0..PW as i64).contains(&u)
+                    || !(0..PH as i64).contains(&v)
+                    || !ours[v as usize * PW + u as usize]
+            });
+            if !rim {
+                l.put(x, y, [255, 40, 200, 150]);
+            }
+        }
+        for i in 0..PW * PH {
+            let (x, y) = ((i % PW) as i64, (i / PW) as i64);
+            if ours[i]
+                && [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dy)| {
+                    let (u, v) = (x + dx, y + dy);
+                    (0..PW as i64).contains(&u)
+                        && (0..PH as i64).contains(&v)
+                        && !ours[v as usize * PW + u as usize]
+                })
+            {
+                l.dot(x, y, 1, [255, 0, 170, 255]);
+            }
+        }
+        for t in (0..SIDE).step_by(2) {
             for (px, py) in [
                 (CROP + t, CROP),
-                (CROP + t, CROP + side - 1),
+                (CROP + t, CROP + SIDE - 1),
                 (CROP, CROP + t),
-                (CROP + side - 1, CROP + t),
+                (CROP + SIDE - 1, CROP + t),
             ] {
                 let (x, y) = map_xy(z.frame.point(py * ZOOM_SIDE + px));
-                l.dot(x, y, 1, [255, 0, 255, 255]);
+                l.put(x, y, [255, 255, 255, 230]);
             }
         }
         let (cx, cy) = map_xy(z.frame.centre);
-        l.ring(cx, cy, 30, 3, [255, 0, 255, 255]);
+        l.ring(cx, cy, 70, 4, [10, 10, 10, 200]);
+        l.ring(cx, cy, 69, 2, [255, 0, 170, 255]);
+        site = Some((cx, cy));
     }
     l.write(dir, &format!("p{seed}-site.png"));
+    // Data for the readout, on a 512 × 256 grid: a letter per cell for its
+    // plate (upper case on land, lower case at sea), and its height in
+    // hundreds of metres as one character from U+00A1.
+    let (gw, gh) = (PW / 4, PH / 4);
+    let mut cells = String::with_capacity(gw * gh);
+    let mut heights = String::with_capacity(gw * gh * 2);
+    for y in 0..gh {
+        for x in 0..gw {
+            let c = cell[(4 * y + 2) * PW + 4 * x + 2];
+            let e = i64::from(world.elevation[c]);
+            let k = (world.plate[c] % 26) + b'a';
+            cells.push(char::from(if e > 0 { k.to_ascii_uppercase() } else { k }));
+            let h = (e.div_euclid(100) + 110).clamp(0, 200) as u32;
+            heights.push(char::from_u32(0xa1 + h).expect("a Latin character"));
+        }
+    }
+    let site = site.map_or_else(|| "null".to_string(), |(x, y)| format!("[{x},{y}]"));
+    let js = format!(
+        "window.DONNEES=window.DONNEES||{{}};window.DONNEES[\"p{seed}\"]={{lon0:{lon0},w:{gw},h:{gh},site:{site},plaques:\"{cells}\",alt:\"{heights}\"}};\n"
+    );
+    std::fs::write(dir.join(format!("p{seed}-donnees.js")), js).expect("the data");
 }
 
 /// A grid of the zoom's values read at the continent view's pixels,
@@ -603,8 +672,8 @@ pub fn width_layers(dir: &Path, seed: u64, z: &Zoom) {
     let w = z.width_km;
     l.write(dir, &format!("l{seed}-relief-{w}.png"));
     let col = match w {
-        150 => [90, 200, 255, 255],
-        250 => [255, 215, 60, 255],
+        350 => [90, 200, 255, 255],
+        450 => [255, 215, 60, 255],
         _ => [255, 70, 70, 255],
     };
     let mut l = Layer::new(CW, CW);
