@@ -87,8 +87,9 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            rule before (thought.wake_on_interrupt and
                            thought.wake_asleep true,
                            decisions.behind_glance false,
-                           pooling.hearth_look and
-                           pooling.young_seen,
+                           pooling.hearth_look,
+                           pooling.young_seen and
+                           pooling.giver_care,
                            temperance.kin_seen false)
   --no-passages            the control run of the passages: nobody keeps,
                            tells or walks through a passage (the content's

@@ -597,6 +597,26 @@ pub struct Pooling {
     /// anywhere, the rule before.
     #[serde(default)]
     pub young_seen: bool,
+    /// Whether a short giver gives only as its care says (the project
+    /// lead, 26 November 2026: "an old man who goes without for his
+    /// grandchildren is a story; an old man who ruins himself for any
+    /// child of the camp is a defect"): a body hungry, or under
+    /// `giver_short_fat_percent` of its fat reserve, feeds a young one
+    /// of its hearth on the journées its care draws it to, its care for
+    /// a child or grandchild of its own (`own_care_percent`), its care
+    /// for any other; under `giver_kin_only_fat_percent`, its own only.
+    /// False, or absent: the hunger bar decides for the giver as for its
+    /// own meal, the rule before.
+    #[serde(default)]
+    pub giver_care: bool,
+    /// Under this per cent of its fat reserve left, a giver is short
+    /// (`giver_care`), as it is when hungry.
+    #[serde(default)]
+    pub giver_short_fat_percent: u32,
+    /// Under this per cent of its fat reserve left, a short giver feeds
+    /// its own young only (`giver_care`).
+    #[serde(default)]
+    pub giver_kin_only_fat_percent: u32,
 }
 
 /// The default width of a heap of the hearth's reserve: one journée.
@@ -633,6 +653,9 @@ impl Pooling {
             // The switches of the audit of wakes at the rule before.
             hearth_look: false,
             young_seen: false,
+            giver_care: false,
+            giver_short_fat_percent: 50,
+            giver_kin_only_fat_percent: 25,
         }
     }
 
@@ -704,6 +727,13 @@ impl Pooling {
         if self.own_care_percent > 1000 || self.fed_until_years > 100 || self.care_days > 100 {
             return Err(ContentError::Needs(
                 "pooling: own_care_percent 1000, fed_until_years and care_days 100 at most",
+            ));
+        }
+        if self.giver_short_fat_percent > 100
+            || self.giver_kin_only_fat_percent > self.giver_short_fat_percent
+        {
+            return Err(ContentError::Needs(
+                "pooling: giver_kin_only_fat_percent at most giver_short_fat_percent, at most 100",
             ));
         }
         if self.on()

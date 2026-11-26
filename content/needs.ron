@@ -879,6 +879,25 @@
     //                        false, or absent: nobody feeds another, the
     //                        young's stomach read from anywhere, the rule
     //                        before (--old-wakes).
+    // giver_care: true — a short giver gives as its care says (the project
+    //                        lead, 26 November 2026: "an old man who goes
+    //                        without for his grandchildren is a story; an
+    //                        old man who ruins himself for any child of the
+    //                        camp is a defect"): hungry, or thin, a body
+    //                        feeds a young one of its hearth on the
+    //                        journées its care draws it to (drawn once a
+    //                        journée for the two of them): its care
+    //                        (care_percent) for any young, its care for
+    //                        its own (own_care_percent, at most certain)
+    //                        for its child or grandchild. The hunger bar
+    //                        no longer decides for the giver. false, or
+    //                        absent: the hunger bar decides, as for its
+    //                        own meal, the rule before.
+    // giver_short_fat_percent:    50 — under half its fat reserve left, a
+    //                        giver is short, as it is when hungry;
+    // giver_kin_only_fat_percent: 25 — under a quarter, it feeds its own
+    //                        young only: nobody starves for a stranger's
+    //                        child.
     pooling: (
         fed_until_years: 8,
         young_first_until_years: 12,
@@ -891,6 +910,9 @@
         heap_days: 1,
         hearth_look: true,
         young_seen: true,
+        giver_care: true,
+        giver_short_fat_percent: 50,
+        giver_kin_only_fat_percent: 25,
     ),
     // The gestures of the hands (D57; the project lead, 24 November 2026:
     // "C'est parfait"): pick up, cut with what is in hand, fold. No

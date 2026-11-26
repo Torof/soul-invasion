@@ -5357,6 +5357,7 @@ fn old_wakes(needs: &mut sim::content::Needs) {
     needs.decisions.behind_glance = false;
     needs.pooling.hearth_look = false;
     needs.pooling.young_seen = false;
+    needs.pooling.giver_care = false;
     needs.temperance.kin_seen = false;
 }
 
