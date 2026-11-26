@@ -389,12 +389,12 @@ clock, the only field no seed decides.
 | `hands.made` | Containers made | count |
 | `hands.remakes` | Of them, by a body whose own container had torn before | count |
 | `hands.makers` | The bodies that made one | count |
-| `hands.told[]` | Each telling at a fire of a kept trial of the hands or of a novelty of the hands (D57, 25 November 2026), in order: `day`, `record`, `teller`, `tribe`, `what` (`kept trial`, or the novelty's deed: `take flint`, `cut birch with flint`, `fold birch_bark`), `heard` (who believed it that night), `missed` (its tribe's living past infancy not at that fire) | list |
+| `hands.told[]` | Each telling at a fire of a kept trial of the hands or of a novelty of the hands (D57, 25 November 2026), in order: `day`, `record`, `teller`, `tribe`, `what` (`kept trial`, or the novelty's deed: `pick up flint`, `cut birch with flint`, `fold birch_bark`), `heard` (who believed it that night), `missed` (its tribe's living past infancy not at that fire) | list |
 | `hands.heard` | Bodies that heard a deed of the hands told | count |
 | `hands.heard_never_tried` | Of them, those that never began a trial of the deeds heard | count |
 | `hands.heard_across_tribes` | Hearings by a listener of the other tribe than its teller (0 while camps do not visit) | count |
 | `hands.gestures.*` | By gesture (`cut`, `fold`): `done` (ended), `gave` (something came of it); a pick-up is D35's act and not counted here | `{done, gave}` |
-| `hands.known.*` | By deed (`take flint`, `cut birch with flint`, `fold birch_bark`, ...): the living past infancy who know it at the run's end | count |
+| `hands.known.*` | By deed (`pick up flint`, `cut birch with flint`, `fold birch_bark`, ...): the living past infancy who know it at the run's end | count |
 | `hands.cuts_with.*` | By the material of the tool (`flint`, `pebble`, `branch`, ...): the cuts `done` and those that `gave` something | `{done, gave}` |
 | `hands.barks_dropped` | Cuts whose bark fell at the cutter's feet, its load too full to take it (D57, amended 25 November 2026: a body no longer cuts what it cannot carry, so only a load filled during the gesture counts here) | count |
 | `hands.tribes[]` | One per tribe | list |

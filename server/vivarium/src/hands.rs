@@ -524,7 +524,7 @@ impl HandsProbe {
 }
 
 /// A deed's name: its gesture, what it is done on, and what it cuts with
-/// (`cut birch with flint`, `take flint`, `fold birch_bark`).
+/// (`cut birch with flint`, `pick up flint`, `fold birch_bark`).
 fn deed_name(content: &Content, deed: Deed) -> String {
     let material = |m: u16| {
         content

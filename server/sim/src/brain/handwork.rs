@@ -343,7 +343,7 @@ pub fn container_deeds(rules: &Content) -> Deeds {
         if holds {
             for deed in [
                 Deed {
-                    gesture: Gesture::Take,
+                    gesture: Gesture::PickUp,
                     on: sharp,
                     with: NOTHING,
                 },
@@ -388,7 +388,7 @@ fn folds_into(rules: &Content, material: u16) -> Option<u16> {
 /// folded into.
 fn product(rules: &Content, deed: Deed) -> Option<u16> {
     match deed.gesture {
-        Gesture::Take => Some(deed.on),
+        Gesture::PickUp => Some(deed.on),
         Gesture::Cut => {
             let bark = rules.species.get(usize::from(deed.on))?.bark.as_deref()?;
             material_index(rules, bark)
@@ -763,7 +763,7 @@ fn draw(
     let open: Vec<Gesture> = Gesture::ALL
         .into_iter()
         .filter(|g| match g {
-            Gesture::Take => !things.is_empty(),
+            Gesture::PickUp => !things.is_empty(),
             Gesture::Cut => !trees.is_empty(),
             Gesture::Fold => !folding.is_empty(),
         })
@@ -772,7 +772,7 @@ fn draw(
     let gesture = open[usize::try_from(r % n).unwrap_or(0)];
     let deed = |on, with| Deed { gesture, on, with };
     match gesture {
-        Gesture::Take => {
+        Gesture::PickUp => {
             let &(thing, pos, material) = things.get(pick(things.len(), 0))?;
             let on = material_index(rules, material)?;
             Some((HandTarget::Item(thing, pos), deed(on, NOTHING)))
@@ -827,7 +827,7 @@ fn needed(
                     .iter()
                     .filter_map(|d| match d.gesture {
                         Gesture::Cut => Some(d.with),
-                        Gesture::Take => Some(d.on),
+                        Gesture::PickUp => Some(d.on),
                         Gesture::Fold => None,
                     })
                     .collect();
@@ -839,7 +839,7 @@ fn needed(
             .find(|n| n.0 == m)
             .map(|&(_, item, pos)| (item, pos))
     };
-    for gesture in [Gesture::Fold, Gesture::Cut, Gesture::Take] {
+    for gesture in [Gesture::Fold, Gesture::Cut, Gesture::PickUp] {
         for deed in deeds.iter().filter(|d| d.gesture == gesture) {
             if !lacks(deed) {
                 continue;
@@ -865,7 +865,7 @@ fn needed(
                         // there, never a goal set.
                         if let Some((tool, pos)) = lying(deed.with) {
                             let take = Deed {
-                                gesture: Gesture::Take,
+                                gesture: Gesture::PickUp,
                                 on: deed.with,
                                 with: NOTHING,
                             };
@@ -891,7 +891,7 @@ fn needed(
                         ));
                     }
                 }
-                Gesture::Take => {
+                Gesture::PickUp => {
                     if let Some((thing, pos)) = lying(deed.on) {
                         return Some(((HandTarget::Item(thing, pos), deed), false));
                     }
@@ -1059,15 +1059,15 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
     // Not done yet (the act waits for the next tick): it stays pending,
     // until done or another deed is begun.
     let worked = match deed.gesture {
-        Gesture::Take if body.has(item) => true,
-        Gesture::Take => return None,
+        Gesture::PickUp if body.has(item) => true,
+        Gesture::PickUp => return None,
         Gesture::Cut | Gesture::Fold => mind.handwork.done.take()?,
     };
     mind.handwork.pending = None;
     if !worked {
         return None;
     }
-    let tool = (deed.gesture == Gesture::Take && mind.handwork.fetch == Some(item)).then(|| {
+    let tool = (deed.gesture == Gesture::PickUp && mind.handwork.fetch == Some(item)).then(|| {
         mind.handwork.fetch = None;
         deed.on
     });
@@ -1166,7 +1166,7 @@ mod tests {
                 with: NOTHING,
             },
             Deed {
-                gesture: Gesture::Take,
+                gesture: Gesture::PickUp,
                 on: flint,
                 with: NOTHING,
             },
@@ -1191,7 +1191,7 @@ mod tests {
     #[test]
     fn deeds_are_a_set() {
         let deed = |on| Deed {
-            gesture: Gesture::Take,
+            gesture: Gesture::PickUp,
             on,
             with: NOTHING,
         };
@@ -1438,7 +1438,7 @@ mod tests {
         let day = today(&world);
         let mind = brains.minds.get_mut(&id).unwrap();
         assert!(mind.ways.hands.add(Deed {
-            gesture: Gesture::Take,
+            gesture: Gesture::PickUp,
             on: flint_m,
             with: NOTHING,
         }));
@@ -1506,7 +1506,7 @@ mod tests {
         let day = today(&world);
         let mind = brains.minds.get_mut(&id).unwrap();
         let heard = Deed {
-            gesture: Gesture::Take,
+            gesture: Gesture::PickUp,
             on: material(&rules, "folded_birch_bark"),
             with: NOTHING,
         };
@@ -1601,7 +1601,7 @@ mod tests {
         let (rules, mut world, mut brains, id, _) = by_a_birch();
         let flint = laid(&mut world, &rules, id, "flint");
         let take = Deed {
-            gesture: Gesture::Take,
+            gesture: Gesture::PickUp,
             on: material(&rules, "flint"),
             with: NOTHING,
         };
@@ -1625,7 +1625,7 @@ mod tests {
         let (rules, mut world, mut brains, id, _) = by_a_birch();
         let flint = picked(&mut world, &rules, id, "flint");
         let take = Deed {
-            gesture: Gesture::Take,
+            gesture: Gesture::PickUp,
             on: material(&rules, "flint"),
             with: NOTHING,
         };

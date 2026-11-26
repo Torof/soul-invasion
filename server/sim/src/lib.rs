@@ -1312,9 +1312,14 @@ pub enum Event {
     Kept {
         /// Which.
         item: ItemId,
+        /// The record that holds it now: itself, or the heap of the same
+        /// food spoiling the same day at that tile that it joined (D58,
+        /// amended 26 November 2026: the ledger keeps heaps).
+        into: ItemId,
         /// Content id of its material.
         material: String,
-        /// Its mass now, in grams.
+        /// Its mass, in grams: what was laid, or what is left after a
+        /// meal.
         mass_g: u32,
         /// The tile it is kept at.
         at: Pos,
@@ -1530,10 +1535,22 @@ pub struct World {
     /// persisted, as the minds are not; the server's worlds hold none.
     #[serde(skip)]
     kept: BTreeMap<ItemId, Item>,
-    /// The records of `kept` by chunk, for the hands' sight of what lies
-    /// near ([`World::items_near`]). Derived from `kept`.
+    /// The records of `kept` by chunk, to find the heap a laid item joins
+    /// (`World::keep`). Derived from `kept`.
     #[serde(skip)]
     kept_in: BTreeMap<ChunkPos, BTreeSet<ItemId>>,
+    /// How many times `kept` changed (a record laid, joined, eaten from,
+    /// taken away, spoiled): a brain's reading of its stores holds while
+    /// this does not move ([`World::kept_changes`]). Never persisted, as
+    /// `kept` is not.
+    #[serde(skip)]
+    kept_changes: u64,
+    /// How many items each record of `kept` was laid as (D58, amended
+    /// 26 November 2026: « une fois 125 noisettes », a heap knows its
+    /// count): a bite from a heap is one of them at most, as a bite from
+    /// the item laid was. Derived from `kept`'s changes, never persisted.
+    #[serde(skip)]
+    kept_parts: BTreeMap<ItemId, u32>,
     /// The content's spawn rules the natural items follow, set with the
     /// kinds of tree ([`World::take_content`]). Never persisted.
     #[serde(skip)]
@@ -1662,6 +1679,8 @@ impl<'de> serde::Deserialize<'de> for World {
             ground: BTreeMap::new(),
             kept: BTreeMap::new(),
             kept_in: BTreeMap::new(),
+            kept_changes: 0,
+            kept_parts: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
             grow_due: true,
@@ -1778,6 +1797,8 @@ impl World {
             ground: BTreeMap::new(),
             kept: BTreeMap::new(),
             kept_in: BTreeMap::new(),
+            kept_changes: 0,
+            kept_parts: BTreeMap::new(),
             spawns: Vec::new(),
             pending: Vec::new(),
             grow_due: true,
@@ -2370,6 +2391,14 @@ impl World {
         self.kept.get(&id)
     }
 
+    /// How many times the records kept in stores changed since the world
+    /// was made or read back (D58): what a brain reads of its stores holds
+    /// while this does not move, but for the food that spoils meanwhile.
+    #[must_use]
+    pub fn kept_changes(&self) -> u64 {
+        self.kept_changes
+    }
+
     /// An item of the world, or a record kept in a store.
     fn item_or_kept(&self, id: ItemId) -> Option<&Item> {
         self.items.get(&id).or_else(|| self.kept.get(&id))
@@ -2379,6 +2408,8 @@ impl World {
     /// note of it.
     fn unkeep(&mut self, id: ItemId) -> Option<Item> {
         let record = self.kept.remove(&id)?;
+        self.kept_changes += 1;
+        self.kept_parts.remove(&id);
         if let Some(pos) = record.pos()
             && let Some(ids) = self.kept_in.get_mut(&pos.chunk())
         {
@@ -2479,6 +2510,29 @@ impl World {
             },
         );
         self.lay(id, pos.chunk());
+        id
+    }
+
+    /// A record of `mass_g` grams of `material` kept in a store at `pos`,
+    /// as a body lays one ([`Intention::Keep`], D58), made now: for the
+    /// tests.
+    #[cfg(test)]
+    pub(crate) fn spawn_kept(&mut self, material: &str, mass_g: u32, pos: Pos) -> ItemId {
+        let id = ItemId(self.next_item);
+        self.next_item += 1;
+        self.kept.insert(
+            id,
+            Item {
+                id,
+                material: material.to_owned(),
+                mass_g: mass_g.max(1),
+                made: self.tick,
+                place: Place::Ground { pos },
+            },
+        );
+        self.kept_in.entry(pos.chunk()).or_default().insert(id);
+        self.kept_changes += 1;
+        self.kept_parts.insert(id, 1);
         id
     }
 
@@ -3698,18 +3752,37 @@ impl World {
     /// (D57); anything else never. Keeping and wear written in seasons
     /// follow this world's cycle (D09).
     fn spoiled(&self, item: &Item, rules: &Content) -> bool {
-        let Some(material) = rules.material(&item.material) else {
-            return false;
-        };
+        self.spoils_at(item, rules)
+            .is_some_and(|at| self.tick.0 >= at)
+    }
+
+    /// The tick from which `item` is spoiled (D16, D45), `None` for what
+    /// never spoils nor wears. A record kept in a store spoils by the
+    /// journée (D58, amended 26 November 2026): good until the start of
+    /// the journée its heap goes (by the content's `heap_days`), all of it
+    /// then.
+    #[must_use]
+    pub fn spoils_at(&self, item: &Item, rules: &Content) -> Option<u64> {
+        if self.kept.contains_key(&item.id) {
+            let day = self.heap_goes_on(item, rules)?;
+            return Some(day * self.calendar.ticks_per_day());
+        }
+        self.spoils_loose_at(item, rules)
+    }
+
+    /// The tick from which `item` is spoiled, kept or not: its keeping
+    /// (or wear) after it was made.
+    fn spoils_loose_at(&self, item: &Item, rules: &Content) -> Option<u64> {
+        let material = rules.material(&item.material)?;
         let per_cycle = self.calendar.days_per_cycle();
         let days = match material.food {
             Some(food) => food.days_kept(per_cycle),
             None => match material.days_worn(per_cycle) {
-                0 => return false,
+                0 => return None,
                 worn => worn,
             },
         };
-        self.tick.0.saturating_sub(item.made.0) >= u64::from(days) * self.calendar.ticks_per_day()
+        Some(item.made.0 + u64::from(days) * self.calendar.ticks_per_day())
     }
 
     /// Takes away the food that has spoiled, wherever it is (D45): on the
@@ -3807,7 +3880,8 @@ impl World {
             self.bodies[index].condition.room_j(needs) / u64::from(food.energy_kj_per_kg).max(1);
         let grams = mass_g
             .min(needs.meal_g)
-            .min(u32::try_from(room_g).unwrap_or(u32::MAX));
+            .min(u32::try_from(room_g).unwrap_or(u32::MAX))
+            .min(self.part_g(item));
         if grams == 0 {
             return Self::refuse(events, id, ItemAct::Eat, item, Refusal::Sated);
         }
@@ -3895,16 +3969,48 @@ impl World {
             .item_or_kept(item)
             .and_then(|i| rules.material(&i.material))
             .is_some_and(|m| m.food.is_some());
-        if self.bodies[index].load_g.saturating_add(mass)
-            > self.bodies[index].capacity_g(&rules.movement)
-            || (food && mass > self.bodies[index].food_room_g(&rules.movement))
-        {
+        let body = &self.bodies[index];
+        let room = if food {
+            body.food_room_g(&rules.movement)
+        } else {
+            body.capacity_g(&rules.movement).saturating_sub(body.load_g)
+        };
+        // A heap of a store is taken by the handful (D58, amended 26
+        // November 2026): what the arms and the load allow, the rest left.
+        let take = if self.kept.contains_key(&item) {
+            mass.min(room)
+        } else {
+            mass
+        };
+        if take > room || (take == 0 && mass > 0) {
             return Self::refuse(events, id, ItemAct::PickUp, item, Refusal::TooHeavy);
         }
         self.wake(index, events);
         // Taken away from a store (D58): the record is an item again, the
-        // same, carried; nothing lay on the ground.
+        // same, carried; nothing lay on the ground. Taken in part, the
+        // part taken is the item, and the rest stays kept, a record of its
+        // own (`Event::Kept` names it).
+        let parts = self.kept_parts.get(&item).copied();
         let from_store = if let Some(mut record) = self.unkeep(item) {
+            let rest_id = ItemId(self.next_item);
+            if let Some(rest) = record.split(rest_id, mass - take) {
+                // The rest keeps its share of the heap's count.
+                let left = u64::from(parts.unwrap_or(1)) * u64::from(rest.mass_g) / u64::from(mass);
+                self.kept_parts
+                    .insert(rest_id, u32::try_from(left).unwrap_or(u32::MAX).max(1));
+                self.next_item += 1;
+                if let Place::Ground { pos: at } = rest.place {
+                    events.push(Event::Kept {
+                        item,
+                        into: rest_id,
+                        material: rest.material.clone(),
+                        mass_g: rest.mass_g,
+                        at,
+                    });
+                    self.kept_in.entry(at.chunk()).or_default().insert(rest_id);
+                }
+                self.kept.insert(rest_id, rest);
+            }
             record.place = Place::Carried { body: id };
             self.items.insert(item, record);
             true
@@ -3977,6 +4083,11 @@ impl World {
     /// it are eaten (D58): lighter, or gone; nothing lay on the ground, no
     /// chunk changes.
     fn eaten_kept(&mut self, item: ItemId, grams: u32, events: &mut Vec<Event>) {
+        if grams >= self.part_g(item)
+            && let Some(parts) = self.kept_parts.get_mut(&item)
+        {
+            *parts = parts.saturating_sub(1).max(1);
+        }
         let Some(left) = self.kept.get_mut(&item) else {
             return;
         };
@@ -3986,9 +4097,11 @@ impl World {
         }
         left.mass_g -= grams;
         let (material, mass_g, place) = (left.material.clone(), left.mass_g, left.place);
+        self.kept_changes += 1;
         if let Place::Ground { pos } = place {
             events.push(Event::Kept {
                 item,
+                into: item,
                 material,
                 mass_g,
                 at: pos,
@@ -3996,9 +4109,48 @@ impl World {
         }
     }
 
+    /// What one of the items a record kept in a store was laid as weighs,
+    /// on average, rounded up (D58, amended 26 November 2026): a bite
+    /// from it is that at most. Anything else: no bound.
+    fn part_g(&self, item: ItemId) -> u32 {
+        match (self.kept.get(&item), self.kept_parts.get(&item)) {
+            (Some(record), Some(&parts)) => record.mass_g.div_ceil(parts.max(1)),
+            _ => u32::MAX,
+        }
+    }
+
+    /// The journée at whose start a heap kept in a store holding `item`
+    /// goes spoiled, by its number (D58, amended 26 November 2026): the
+    /// journée whose start would take `item` away loose (D45: spoiled food
+    /// goes as each journée starts), brought down to the first of its
+    /// band of the content's `heap_days` journées (1: that very journée).
+    /// `None` for what never spoils nor wears.
+    fn heap_goes_on(&self, item: &Item, rules: &Content) -> Option<u64> {
+        let per_day = self.calendar.ticks_per_day().max(1);
+        let day = self.spoils_loose_at(item, rules)?.div_ceil(per_day);
+        let band = u64::from(rules.needs.pooling.heap_days.max(1));
+        Some(day / band * band)
+    }
+
+    /// The record kept at `at` that `record` would join (D58, amended 26
+    /// November 2026): of the same food, its heap going spoiled at the
+    /// start of the same journée.
+    fn heap_for(&self, record: &Item, at: Pos, rules: &Content) -> Option<ItemId> {
+        let day = self.heap_goes_on(record, rules)?;
+        self.kept_in(at.chunk())
+            .filter(|heap| heap.pos() == Some(at) && heap.material == record.material)
+            .find(|heap| self.heap_goes_on(heap, rules) == Some(day))
+            .map(Item::id)
+    }
+
     /// Lays a carried item in a store a brain keeps ([`Intention::Keep`],
     /// D58): refused as a drop is; the item leaves the world's items for a
-    /// record kept at the body's tile, off the ground.
+    /// record kept at the body's tile, off the ground. **Heaps** (the
+    /// project lead, 26 November 2026: « 125 noisettes, ce n'est pas 125
+    /// fois une noisette mais une fois 125 noisettes »): a record of the
+    /// same food whose heap goes spoiled at the start of the same journée
+    /// ([`World::heap_goes_on`]) kept at that tile takes it in, dated as
+    /// the older of the two ([`Item::merge`]); the item laid is no more.
     fn keep(&mut self, id: BodyId, item: ItemId, rules: &Content, events: &mut Vec<Event>) {
         let Some(index) = self.index_of(id) else {
             return Self::refuse(events, id, ItemAct::Drop, item, Refusal::Unknown);
@@ -4015,14 +4167,36 @@ impl World {
             return;
         };
         record.place = Place::Ground { pos: at };
+        let (material, mass_g) = (record.material.clone(), record.mass_g);
+        let mut into = item;
+        let heap = self
+            .heap_for(&record, at, rules)
+            .and_then(|heap| Some((heap, self.kept.get_mut(&heap)?)));
+        let left = match heap {
+            Some((heap, held)) => match held.merge(record) {
+                Ok(()) => {
+                    into = heap;
+                    None
+                }
+                Err(record) => Some(record),
+            },
+            None => Some(record),
+        };
+        if let Some(record) = left {
+            self.kept.insert(item, record);
+            self.kept_in.entry(at.chunk()).or_default().insert(item);
+            self.kept_parts.insert(item, 1);
+        } else if let Some(parts) = self.kept_parts.get_mut(&into) {
+            *parts = parts.saturating_add(1);
+        }
+        self.kept_changes += 1;
         events.push(Event::Kept {
             item,
-            material: record.material.clone(),
-            mass_g: record.mass_g,
+            into,
+            material,
+            mass_g,
             at,
         });
-        self.kept.insert(item, record);
-        self.kept_in.entry(at.chunk()).or_default().insert(item);
         self.inventory_changed(index, rules, events);
         if was_held {
             events.push(Event::BodyHolds {
@@ -6644,6 +6818,7 @@ mod tests {
         let (mut w, berries, events, version) = kept_berries(100);
         assert!(events.contains(&Event::Kept {
             item: berries,
+            into: berries,
             material: "berries".to_owned(),
             mass_g: 100,
             at: Pos::new(1, 1),
@@ -6654,14 +6829,15 @@ mod tests {
                 .any(|e| matches!(e, Event::ItemAdded { .. } | Event::ItemRemoved { .. })),
             "nothing lies on the ground"
         );
-        // A record, not an item: no look reads it, the hands see it near.
+        // A record, not an item: no look reads it, nor the hands (D58,
+        // amended 26 November 2026: a store is not picked up from).
         assert!(w.item(berries).is_none());
         assert!(!w.body(BodyId(1)).unwrap().has(berries));
         assert_eq!(w.kept(berries).map(Item::pos), Some(Some(Pos::new(1, 1))));
         assert_eq!(w.items_in(ChunkPos::new(0, 0)).len(), 0);
         assert_eq!(w.laid_in(ChunkPos::new(0, 0)).count(), 0);
         assert!(
-            w.items_near(Pos::new(1, 1), 2)
+            !w.items_near(Pos::new(1, 1), 2)
                 .iter()
                 .any(|i| i.id() == berries)
         );
@@ -6723,11 +6899,148 @@ mod tests {
         assert!(eaten > 0 && eaten < 400);
         assert!(events.contains(&Event::Kept {
             item: berries,
+            into: berries,
             material: "berries".to_owned(),
             mass_g: 400 - eaten,
             at: Pos::new(1, 1),
         }));
         assert_eq!(w.kept(berries).map(Item::mass_g), Some(400 - eaten));
+    }
+
+    /// Carried by the body of [`kept_berries`] and kept at its tile:
+    /// `grams` of `material`, made at `made` (now when `None`).
+    fn lay(w: &mut World, material: &str, grams: u32, made: Option<Tick>) -> (ItemId, Vec<Event>) {
+        let item = w.spawn_item(material, grams, Pos::new(1, 1));
+        if let Some(made) = made {
+            w.items.get_mut(&item).unwrap().made = made;
+        }
+        let mut events = Vec::new();
+        w.queue(Intention::PickUp {
+            body: BodyId(1),
+            item,
+        });
+        w.step(&rules(), &mut events);
+        events.clear();
+        w.queue(Intention::Keep {
+            body: BodyId(1),
+            item,
+        });
+        w.step(&rules(), &mut events);
+        (item, events)
+    }
+
+    #[test]
+    fn food_laid_in_a_store_joins_the_heap_of_the_same_food_spoiling_the_same_day() {
+        // Berries made at tick ~500 keep three days: taken away spoiled
+        // as day 4 starts (tick 4000).
+        let (mut w, berries, _, _) = kept_berries(100);
+        let made = w.kept(berries).unwrap().made();
+        // More of the same day: one heap of both, dated as the older.
+        let (more, events) = lay(&mut w, "berries", 50, None);
+        assert!(events.contains(&Event::Kept {
+            item: more,
+            into: berries,
+            material: "berries".to_owned(),
+            mass_g: 50,
+            at: Pos::new(1, 1),
+        }));
+        assert!(w.kept(more).is_none() && w.item(more).is_none());
+        assert_eq!(
+            w.kept(berries).map(|h| (h.mass_g(), h.made())),
+            Some((150, made))
+        );
+        // Made at the start of day 0, taken away as day 3 starts: a heap
+        // of its own. A stone never spoils: never joined either.
+        let (older, events) = lay(&mut w, "berries", 20, Some(Tick(0)));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::Kept { item, into, .. } if *item == older && *into == older
+        )));
+        let (stone, _) = lay(&mut w, "flint", 400, None);
+        let (stone2, _) = lay(&mut w, "flint", 400, None);
+        assert!(w.kept(stone).is_some() && w.kept(stone2).is_some());
+        assert!(w.kept(stone).is_some() && w.kept(stone2).is_some());
+        // Each goes as it would have apart.
+        let mut events = Vec::new();
+        let left = 3001 - w.tick().0;
+        w.advance(left, &rules(), &mut events);
+        assert!(w.kept(older).is_none() && w.kept(berries).is_some());
+        // Kept, a heap spoils by the journée: good until its journée's
+        // start, where loose berries made at ~500 spoil at ~3500.
+        w.advance(3990 - w.tick().0, &rules(), &mut events);
+        assert!(!w.is_spoiled(berries, &rules()));
+        w.advance(1000, &rules(), &mut events);
+        assert!(events.contains(&Event::Spoiled {
+            item: berries,
+            material: "berries".to_owned(),
+            grams: 150,
+            holder: None,
+        }));
+        assert!(w.kept(berries).is_none());
+    }
+
+    #[test]
+    fn a_bite_from_a_heap_is_one_of_the_items_it_was_laid_as_at_most() {
+        // 100 g and 50 g laid: one heap of two, a bite 75 g at most.
+        let (mut w, berries, _, _) = kept_berries(100);
+        lay(&mut w, "berries", 50, None);
+        assert_eq!(w.part_g(berries), 75);
+        let mut events = Vec::new();
+        w.queue(Intention::Eat {
+            body: BodyId(1),
+            item: berries,
+        });
+        w.step(&rules(), &mut events);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::BodyAte { item, grams: 75, .. } if *item == berries
+        )));
+        // One item eaten: the rest is one.
+        assert_eq!(w.part_g(berries), 75);
+        assert_eq!(w.kept_parts.get(&berries), Some(&1));
+    }
+
+    #[test]
+    fn a_heap_too_heavy_for_the_arms_is_taken_by_the_handful() {
+        let mut w = fed_world();
+        let heap = w.spawn_kept("berries", 50_000, Pos::new(1, 1));
+        let room = w.body(BodyId(1)).unwrap().food_room_g(&rules().movement);
+        assert!(room > 0 && room < 50_000);
+        let mut events = Vec::new();
+        w.queue(Intention::PickUp {
+            body: BodyId(1),
+            item: heap,
+        });
+        w.step(&rules(), &mut events);
+        // The part taken is the item, carried; the rest stays kept.
+        let taken = w.item(heap).unwrap();
+        assert_eq!(taken.place(), Place::Carried { body: BodyId(1) });
+        assert_eq!(taken.mass_g(), room);
+        let rest = events
+            .iter()
+            .find_map(|e| match e {
+                Event::Kept {
+                    item, into, mass_g, ..
+                } if *item == heap => Some((*into, *mass_g)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(rest.1, 50_000 - room);
+        assert_eq!(w.kept(rest.0).map(Item::mass_g), Some(50_000 - room));
+        assert!(w.kept(heap).is_none());
+        // Its arms full, nothing more: refused.
+        events.clear();
+        w.queue(Intention::PickUp {
+            body: BodyId(1),
+            item: rest.0,
+        });
+        w.step(&rules(), &mut events);
+        assert!(events.contains(&Event::ActRefused {
+            body: BodyId(1),
+            act: ItemAct::PickUp,
+            item: rest.0,
+            reason: Refusal::TooHeavy,
+        }));
     }
 
     #[test]

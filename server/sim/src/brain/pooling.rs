@@ -10,8 +10,15 @@
 //! record the world keeps off the ground ([`Intention::Keep`],
 //! [`World::kept`]), which no look reads; it spoils there as food does
 //! anywhere (D45); eaten, it feeds the body with no item made; taken
-//! away (the hands may), it is an item again. The brain remembers which
-//! records are the hearth's (giving outside the hearth is not built).
+//! away (the hands may), it is an item again. **Heaps** (amended 26
+//! November 2026: « 125 noisettes, ce n'est pas 125 fois une noisette
+//! mais une fois 125 noisettes »): what is laid joins the record of the
+//! same food there that spoils the same journée, so a reserve holds one
+//! record a kind of food and journée; it spoils whole at its journée's
+//! start, a bite is one of the items it was laid as, and a hand takes a
+//! handful of it. The brain remembers which records are
+//! the hearth's (giving outside the hearth is not built), and what they
+//! hold while the world's records do not change.
 //!
 //! - **Carrying for its own.** While a body owes its hearth (what it set
 //!   out at dawn to gather for it, below), of each gather its own's share,
@@ -32,7 +39,10 @@
 //!   it keeps nothing on itself and lays all it carries down, its arms
 //!   free to fetch the rest; its store reached, it keeps its store at most
 //!   on itself, as before.
-//! - **Eating.** Hungry at its camp, a body eats from the reserve before
+//! - **Eating: taking from the common reserve**, the hearth's own act
+//!   (named so 26 November 2026; distinct from the hands' pick-up, which
+//!   never touches a store, and from a family's own stash at home, not
+//!   built). Hungry at its camp, a body eats from the reserve before
 //!   it eats its own, what spoils first first. **The young first** (the
 //!   project lead, 25 November 2026): an older body eats there only
 //!   what the reserve holds beyond what the young of the hearth (under
@@ -70,7 +80,8 @@
 //! Every number is content (`needs.ron`, `pooling`, D30). It rides on the
 //! evening circle: without the fire there is no hearth, nothing pooled.
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     Brains, Content, Decision, Doing, HOME_TILES, HUNGRY, Intention, Mind, News, need_kj_per_day,
@@ -126,9 +137,46 @@ pub(super) fn camp_of(rules: &Content, home: Pos) -> Pos {
 pub(super) struct Reserve {
     /// The tile it lies at: the home of the first who put food there.
     tile: Pos,
-    /// The heaps put there, in the order put: records the world keeps
-    /// ([`World::kept`]), read by their ids, never by a scan.
-    items: Vec<ItemId>,
+    /// Its heaps: records the world keeps ([`World::kept`]), one by kind
+    /// of food and day it spoils (the world joins what is laid to the
+    /// heap it matches), read by their ids, never by a scan; each once,
+    /// however often taken and laid again.
+    items: BTreeSet<ItemId>,
+    /// Its heaps as last read, while the world's stores did not change.
+    read: Option<Read>,
+}
+
+/// A reserve's heaps as read ([`Reserve::read`]): kept while the world's
+/// records ([`World::kept_changes`]) do not change, so that knowing what
+/// a reserve holds costs nothing; the heaps that spoil meanwhile, the
+/// first of the list, are left out at each look.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Read {
+    /// [`World::kept_changes`] when read.
+    changes: u64,
+    /// The heaps lying in the reserve, not spoiled when read, what
+    /// spoils first first (then by id).
+    heaps: Vec<Heap>,
+    /// Their kilojoules in all.
+    kj: u64,
+}
+
+impl Reserve {
+    /// Reads the heaps of the reserve from the world's records.
+    fn read(&self, world: &World, rules: &Content) -> Read {
+        let mut heaps: Vec<Heap> = self
+            .items
+            .iter()
+            .filter_map(|&item| kept_heap(world, rules, item))
+            .filter(|h| h.at.is_some_and(|at| near(at, self.tile)))
+            .collect();
+        heaps.sort_by_key(|h| (h.ends, h.item));
+        Read {
+            changes: world.kept_changes(),
+            kj: heaps.iter().map(|h| h.kj).sum(),
+            heaps,
+        }
+    }
 }
 
 /// Every hearth's reserve, and the young each hearth saw at dawn.
@@ -146,14 +194,11 @@ pub(super) struct Reserves {
     /// How many lay down in each hearth's circle at dawn: who eats from
     /// its reserve, the divisor of a body's share of it.
     eaters: BTreeMap<Pos, u64>,
-    /// What each reserve held, read once a tick: the tick and kilojoules
-    /// (a reading kept, not a state; a heap put down forgets it).
-    read: BTreeMap<Pos, (u64, u64)>,
 }
 
 /// A heap of a reserve, or carried: its id, where it lies, its energy and
 /// the tick it spoils at.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Heap {
     item: ItemId,
     at: Option<Pos>,
@@ -166,26 +211,27 @@ fn heap(world: &World, rules: &Content, item: ItemId) -> Option<Heap> {
     heap_of(world, rules, world.item(item)?)
 }
 
-/// The heap `item` of a reserve: kept in its ledger, or, the rare one a
-/// body took away and let fall there again (its death), lying on the
-/// ground.
+/// The heap `item` of a reserve, kept in its ledger. One taken away is
+/// no longer the reserve's, even let fall there again (amended 26
+/// November 2026; laid down again, it is).
 fn kept_heap(world: &World, rules: &Content, item: ItemId) -> Option<Heap> {
-    heap_of(world, rules, world.kept(item).or_else(|| world.item(item))?)
+    heap_of(world, rules, world.kept(item)?)
 }
 
 /// [`heap`] of an item or a record found.
 fn heap_of(world: &World, rules: &Content, found: &crate::Item) -> Option<Heap> {
     let food = rules.material(found.material())?.food?;
-    let keeps = food.ticks_kept(world.calendar());
-    // Spoiled as the world says it (D45), read from the item at hand.
-    if world.tick().0.saturating_sub(found.made().0) >= keeps {
+    // Spoiled as the world says it (D45; a heap of a store by the
+    // journée, D58), read from the item at hand.
+    let ends = world.spoils_at(found, rules)?;
+    if world.tick().0 >= ends {
         return None;
     }
     Some(Heap {
         item: found.id(),
         at: found.pos(),
         kj: u64::from(food.energy_kj(found.mass_g())),
-        ends: found.made().0 + keeps,
+        ends,
     })
 }
 
@@ -194,22 +240,49 @@ fn near(a: Pos, b: Pos) -> bool {
 }
 
 impl Reserves {
-    /// The heaps lying in the reserve of `camp`, not spoiled.
-    fn heaps(&self, world: &World, rules: &Content, camp: Pos) -> Vec<Heap> {
+    /// The heaps lying in the reserve of `camp`, not spoiled, what spoils
+    /// first first (then by id), and their kilojoules in all: from its
+    /// last reading while the world's records did not change
+    /// ([`Reserves::refresh`]), else read again.
+    fn heaps(&self, world: &World, rules: &Content, camp: Pos) -> (Cow<'_, [Heap]>, u64) {
         let Some(reserve) = self.by_camp.get(&camp) else {
-            return Vec::new();
+            return (Cow::Borrowed(&[]), 0);
         };
-        reserve
-            .items
-            .iter()
-            .filter_map(|&item| kept_heap(world, rules, item))
-            .filter(|h| h.at.is_some_and(|at| near(at, reserve.tile)))
-            .collect()
+        let now = world.tick().0;
+        let fresh = |read: &Read| {
+            let gone = read.heaps.partition_point(|h| h.ends <= now);
+            let lost: u64 = read.heaps[..gone].iter().map(|h| h.kj).sum();
+            (gone, read.kj - lost)
+        };
+        match &reserve.read {
+            Some(read) if read.changes == world.kept_changes() => {
+                let (gone, kj) = fresh(read);
+                (Cow::Borrowed(&read.heaps[gone..]), kj)
+            }
+            _ => {
+                let mut read = reserve.read(world, rules);
+                let (gone, kj) = fresh(&read);
+                read.heaps.drain(..gone);
+                (Cow::Owned(read.heaps), kj)
+            }
+        }
+    }
+
+    /// Reads again the reserves whose reading the world's records no
+    /// longer match: once after each tick, so that every look of the
+    /// turn costs nothing.
+    fn refresh(&mut self, world: &World, rules: &Content) {
+        let changes = world.kept_changes();
+        for reserve in self.by_camp.values_mut() {
+            if reserve.read.as_ref().is_none_or(|r| r.changes != changes) {
+                reserve.read = Some(reserve.read(world, rules));
+            }
+        }
     }
 
     /// What the reserve of `camp` holds, in kilojoules.
     pub(super) fn kj(&self, world: &World, rules: &Content, camp: Pos) -> u64 {
-        self.heaps(world, rules, camp).iter().map(|h| h.kj).sum()
+        self.heaps(world, rules, camp).1
     }
 
     /// The camp whose reserve holds `item`, if one does.
@@ -217,8 +290,8 @@ impl Reserves {
         self.camp_of.get(&item).copied()
     }
 
-    /// Lets go of the heaps gone (eaten whole, spoiled) or no longer
-    /// lying at their reserve, and of the reserves left empty.
+    /// Lets go of the heaps gone (eaten whole, spoiled, taken away) or no
+    /// longer lying at their reserve, and of the reserves left empty.
     fn prune(&mut self, world: &World) {
         let camp_of = &mut self.camp_of;
         self.by_camp.retain(|_, reserve| {
@@ -226,7 +299,6 @@ impl Reserves {
             reserve.items.retain(|&item| {
                 let lies = world
                     .kept(item)
-                    .or_else(|| world.item(item))
                     .and_then(crate::Item::pos)
                     .is_some_and(|at| near(at, tile));
                 if !lies {
@@ -249,7 +321,7 @@ impl Reserves {
     /// the hearth of `home` holds, divided by those who lay down in its
     /// circle at dawn; nothing without pooling, or before a dawn saw that
     /// circle.
-    pub(super) fn share_kj(&mut self, world: &World, rules: &Content, home: Pos) -> u64 {
+    pub(super) fn share_kj(&self, world: &World, rules: &Content, home: Pos) -> u64 {
         if !on(rules) {
             return 0;
         }
@@ -257,29 +329,44 @@ impl Reserves {
         let Some(&eaters) = self.eaters.get(&camp) else {
             return 0;
         };
-        let tick = world.tick().0;
-        let kj = match self.read.get(&camp) {
-            Some(&(at, kj)) if at == tick => kj,
-            _ => {
-                let kj = self.kj(world, rules, camp);
-                self.read.insert(camp, (tick, kj));
-                kj
-            }
-        };
-        kj / eaters.max(1)
+        self.kj(world, rules, camp) / eaters.max(1)
     }
 
     fn put(&mut self, camp: Pos, tile: Pos, item: ItemId) {
-        self.read.remove(&camp);
         self.by_camp
             .entry(camp)
             .or_insert_with(|| Reserve {
                 tile,
-                items: Vec::new(),
+                items: BTreeSet::new(),
+                read: None,
             })
             .items
-            .push(item);
+            .insert(item);
         self.camp_of.insert(item, camp);
+    }
+
+    /// The record of `item` at a reserve is now held by `into` there
+    /// ([`crate::Event::Kept`]): laid, `item` joined the heap `into`, and
+    /// the reserve holds the heap, not it; or a hand took a part of the
+    /// heap `item` (`taken`), and the rest left is `into`, the reserve's
+    /// too (the part taken is followed as a heap taken whole is, till
+    /// dawn). A heap another hearth holds stays that hearth's.
+    fn joined(&mut self, item: ItemId, into: ItemId, taken: bool) {
+        let Some(&camp) = self.camp_of.get(&item) else {
+            return;
+        };
+        if !taken {
+            self.camp_of.remove(&item);
+        }
+        if let Some(reserve) = self.by_camp.get_mut(&camp) {
+            if !taken {
+                reserve.items.remove(&item);
+            }
+            if let std::collections::btree_map::Entry::Vacant(heap) = self.camp_of.entry(into) {
+                heap.insert(camp);
+                reserve.items.insert(into);
+            }
+        }
     }
 
     /// The camps and what each reserve holds, in kilojoules (a measure).
@@ -321,7 +408,9 @@ fn young_ahead(world: &World, rules: &Content, reserves: &Reserves, camp: Pos, b
     })
 }
 
-/// Hungry at its camp, `id` eats from its hearth's reserve before its own,
+/// **Taking from the common reserve** (D58, the hearth's own act, never
+/// the hands' pick-up): hungry at its camp, `id` eats from its hearth's
+/// reserve before its own,
 /// the young first: walks to the heap that spoils first and eats it.
 /// `None` when it is not at its camp, the reserve holds nothing it may
 /// eat, or it could not reach it today.
@@ -344,8 +433,7 @@ pub(super) fn eat_at_hearth(
         return None;
     }
     let camp = camp_of(rules, mind.ways.home);
-    let heaps = reserves.heaps(world, rules, camp);
-    let holds: u64 = heaps.iter().map(|h| h.kj).sum();
+    let (heaps, holds) = reserves.heaps(world, rules, camp);
     if holds == 0 {
         return None;
     }
@@ -355,7 +443,8 @@ pub(super) fn eat_at_hearth(
     } else {
         None
     };
-    let first = heaps.iter().min_by_key(|h| (h.ends, h.item))?;
+    // The heaps come what spoils first first.
+    let first = heaps.first()?;
     let at = first.at?;
     let decision = |intention| {
         Some(Decision {
@@ -613,9 +702,9 @@ impl Brains {
         }
         let pooling = &rules.needs.pooling;
         self.reserves.prune(world);
+        self.reserves.refresh(world, rules);
         self.reserves.young.clear();
         self.reserves.eaters.clear();
-        self.reserves.read.clear();
         self.reserves.dawned = true;
         for mind in self.minds.values_mut() {
             mind.hearth_extra_kj = 0;
@@ -733,6 +822,16 @@ impl Brains {
         }
         let at = world.tick().0;
         for event in events {
+            if let crate::Event::Kept { item, into, .. } = event
+                && item != into
+            {
+                // Laid and joined to a heap there, or a part of a heap
+                // taken: the due below is the heap's hearth's.
+                self.reserves
+                    .joined(*item, *into, world.item(*item).is_some());
+            }
+        }
+        for event in events {
             match event {
                 crate::Event::BodyAte {
                     body,
@@ -775,12 +874,12 @@ impl Brains {
                         self.news.push(News::SpoiledAtHearth { camp, kj, at });
                     }
                 }
-                crate::Event::Kept { item, .. } | crate::Event::ItemAdded { item, .. } => {
-                    // Food laid at a reserve (kept in its ledger, or what
-                    // is left of a heap after a meal; lying on the ground
-                    // only when one taken away was let fall there again):
-                    // who lives at that hearth
-                    // and stands at the camp sees it, and thinks again
+                crate::Event::Kept { into: item, .. } | crate::Event::ItemAdded { item, .. } => {
+                    // Food laid at a reserve (kept in its ledger, joined to
+                    // a heap there, or what is left of a heap after a
+                    // meal; lying on the ground, one taken away let fall
+                    // there): who lives at that hearth and stands at the
+                    // camp sees it, and thinks again
                     // (a hungry child waiting there, its gauges unmoved,
                     // would not, and starved beside a full reserve in the
                     // first trial).
@@ -815,6 +914,8 @@ impl Brains {
                 _ => {}
             }
         }
+        // What the world did to the stores, read once for the whole turn.
+        self.reserves.refresh(world, rules);
     }
 }
 
@@ -961,7 +1062,7 @@ mod tests {
         world.step(&rules, &mut Vec::new());
         assert!(world.body(id).unwrap().inventory().any(|i| i == own));
         let camp = camp_of(&rules, Pos::new(5, 5));
-        let pooled = world.spawn_item("berries", 200, Pos::new(7, 5));
+        let pooled = world.spawn_kept("berries", 200, Pos::new(7, 5));
         brains.reserves.put(camp, Pos::new(7, 5), pooled);
         hungry(&mut world, &rules, id, 70);
         let decision = think(&world, &rules, &mut brains, id).unwrap();
@@ -996,7 +1097,7 @@ mod tests {
         let (grown, child) = (ids[0], ids[1]);
         let camp = camp_of(&rules, at);
         // 100 g of berries, 250 kJ: less than the hungry child can eat.
-        let pooled = world.spawn_item("berries", 100, at);
+        let pooled = world.spawn_kept("berries", 100, at);
         brains.reserves.put(camp, at, pooled);
         brains.reserves.young.insert(camp, vec![(child, true)]);
         hungry(&mut world, &rules, grown, 70);
@@ -1087,6 +1188,130 @@ mod tests {
         );
     }
 
+    #[test]
+    fn what_it_lays_down_joins_its_heap_and_a_heap_laid_again_counts_once() {
+        let rules = pooled();
+        let at = Pos::new(5, 5);
+        let (mut world, mut brains, ids) = field(&rules, &[(at, 30)]);
+        let id = ids[0];
+        let camp = camp_of(&rules, at);
+        // Two handfuls of the same berries, all for its hearth.
+        let items: Vec<ItemId> = (0..2)
+            .map(|_| {
+                let item = world.spawn_item("berries", 300, at);
+                world.queue(Intention::PickUp { body: id, item });
+                world.step(&rules, &mut Vec::new());
+                item
+            })
+            .collect();
+        brains.minds.get_mut(&id).unwrap().ways.stock_kj = 0;
+        brains.minds.get_mut(&id).unwrap().hearth_extra_kj = 1500;
+        brains.minds.get_mut(&id).unwrap().hearth_carried_kj = 1500;
+        let lay = |world: &mut World, brains: &mut Brains| {
+            brains.minds.get_mut(&id).unwrap().doing = Doing::Home;
+            let decision = think(world, &rules, brains, id).unwrap();
+            assert!(matches!(decision.intention, Intention::Keep { .. }));
+            let mut events = Vec::new();
+            world.queue(decision.intention);
+            world.step(&rules, &mut events);
+            brains.hearth_events(&events, world, &rules);
+        };
+        lay(&mut world, &mut brains);
+        lay(&mut world, &mut brains);
+        // One heap of the two (the world joins them), the reserve's.
+        let heap = items[0];
+        assert_eq!(world.kept(heap).map(crate::Item::mass_g), Some(600));
+        assert!(world.kept(items[1]).is_none());
+        assert_eq!(brains.reserves.by_camp[&camp].items.len(), 1);
+        assert_eq!(brains.reserves.camp_holding(heap), Some(camp));
+        assert_eq!(brains.reserves.camp_holding(items[1]), None);
+        assert_eq!(brains.reserves.kj(&world, &rules, camp), 1500);
+        // Taken away, it is no longer there; laid again before dawn, it
+        // counts once (twice in the ledger of 25 November 2026).
+        let mut events = Vec::new();
+        world.queue(Intention::PickUp {
+            body: id,
+            item: heap,
+        });
+        world.step(&rules, &mut events);
+        brains.hearth_events(&events, &world, &rules);
+        assert_eq!(brains.reserves.kj(&world, &rules, camp), 0);
+        lay(&mut world, &mut brains);
+        assert_eq!(brains.reserves.kj(&world, &rules, camp), 1500);
+        assert_eq!(brains.reserves.by_camp[&camp].items.len(), 1);
+        // A heap too heavy for the arms: a hand takes a part of it, the
+        // rest stays the reserve's.
+        let big = world.spawn_kept("berries", 40_000, at);
+        brains.reserves.put(camp, at, big);
+        let mut events = Vec::new();
+        world.queue(Intention::PickUp {
+            body: id,
+            item: big,
+        });
+        world.step(&rules, &mut events);
+        brains.hearth_events(&events, &world, &rules);
+        let taken = world.item(big).map_or(0, crate::Item::mass_g);
+        assert!(taken > 0 && taken < 40_000);
+        let rest_kj = u64::from(40_000 - taken) * 2500 / 1000;
+        assert_eq!(brains.reserves.kj(&world, &rules, camp), 1500 + rest_kj);
+        assert_eq!(brains.reserves.camp_holding(big), Some(camp));
+    }
+
+    #[test]
+    fn its_hands_never_pick_up_from_a_hearth_s_reserve() {
+        use super::super::handwork::{self, Deed, HandsTurn, NOTHING};
+        use crate::content::Hands;
+        use crate::hands::Gesture;
+        let mut rules = pooled();
+        rules.needs.hands = Hands::placeholders();
+        let at = Pos::new(5, 5);
+        let (mut world, mut brains, ids) = field(&rules, &[(at, 30)]);
+        let id = ids[0];
+        // It knows to pick up berries and carries none; its hearth's
+        // reserve holds a heap of them at its feet, another hearth's one
+        // beside. It took from its own and laid it back, one take every
+        // two ticks: 680 times in a row for an item of 11 g, up to 535,000
+        // times a tribe with heaps. Taking from the common reserve is the
+        // hearth's own act (eating there), never a pick-up.
+        let berries = u16::try_from(
+            rules
+                .materials
+                .iter()
+                .position(|m| m.id == "berries")
+                .unwrap(),
+        )
+        .unwrap();
+        let own = world.spawn_kept("berries", 2000, at);
+        brains.reserves.put(camp_of(&rules, at), at, own);
+        let other = Pos::new(40, 40);
+        let theirs = world.spawn_kept("berries", 2000, Pos::new(6, 6));
+        brains
+            .reserves
+            .put(camp_of(&rules, other), Pos::new(6, 6), theirs);
+        brains.minds.get_mut(&id).unwrap().ways.hands.add(Deed {
+            gesture: Gesture::PickUp,
+            on: berries,
+            with: NOTHING,
+        });
+        let turn = |world: &World, brains: &mut Brains| {
+            let mind = brains.minds.get_mut(&id).unwrap();
+            handwork::hands_turn(world, &rules, (id, at), mind, (7, &mut Vec::new()))
+        };
+        assert!(
+            matches!(turn(&world, &mut brains), HandsTurn::Free),
+            "no reserve is picked up from"
+        );
+        // Berries lying loose there are picked up as before.
+        let loose = world.spawn_item("berries", 100, Pos::new(6, 5));
+        assert!(matches!(
+            turn(&world, &mut brains),
+            HandsTurn::Decide(Some(Decision {
+                intention: Intention::PickUp { item, .. },
+                ..
+            })) if item == loose
+        ));
+    }
+
     /// The valley at midday of day 28, blackberries ripe, a fed grown
     /// body born beside a bramble, piloted, `stock` its store; its camp's
     /// circle at dawn held it and `others` more, its hearth's reserve
@@ -1116,7 +1341,7 @@ mod tests {
             present.push(other);
         }
         if reserve_g > 0 {
-            let heap = world.spawn_item("berries", reserve_g, home);
+            let heap = world.spawn_kept("berries", reserve_g, home);
             brains.reserves.put(camp, home, heap);
         }
         brains.see_hearths(&world, &rules, &[(camp, present)]);
@@ -1326,7 +1551,7 @@ mod tests {
             }
             brains.minds.get_mut(&mother).unwrap().care = 50;
             let camp = camp_of(&rules, at);
-            let pooled = world.spawn_item("berries", 400, at);
+            let pooled = world.spawn_kept("berries", 400, at);
             brains.reserves.put(camp, at, pooled);
             brains.see_hearths(&world, &rules, &[(camp, vec![mother, child])]);
             let need = |id| need_kj_per_day(&rules, world.body(id).unwrap());
@@ -1375,7 +1600,7 @@ mod tests {
         );
         // A short reserve, the eleven-year-old hungry: the one of 13 leaves
         // it to it as the grown do; the eleven-year-old eats.
-        let pooled = world.spawn_item("berries", 100, at);
+        let pooled = world.spawn_kept("berries", 100, at);
         brains.reserves.put(camp, at, pooled);
         for id in [grown, eleven, thirteen] {
             hungry(&mut world, &rules, id, 70);
@@ -1534,7 +1759,7 @@ mod tests {
         let (mut world, mut brains, ids) = field(rules, &[(at, 30), (at, 5)]);
         let (grown, child) = (ids[0], ids[1]);
         let camp = camp_of(rules, at);
-        let pooled = world.spawn_item("berries", 100, at);
+        let pooled = world.spawn_kept("berries", 100, at);
         brains.reserves.put(camp, at, pooled);
         brains.reserves.young.insert(camp, vec![(child, true)]);
         hungry(&mut world, rules, child, 70);
