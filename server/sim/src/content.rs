@@ -815,8 +815,9 @@ impl Trips {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Passages {
     /// A passage neither found, heard nor walked through for this many
-    /// game days is forgotten. 0: nobody keeps a passage (off).
-    pub fade_days: u32,
+    /// seasons (a quarter of the calendar's cycle, D09) is forgotten. 0:
+    /// nobody keeps a passage (off).
+    pub fade_seasons: u32,
     /// The passages a body tells at a fire at most, apart from the
     /// places' slots like a mark of seen, not reached.
     pub told_per_night: u32,
@@ -827,7 +828,7 @@ impl Passages {
     #[must_use]
     pub fn placeholders() -> Self {
         Self {
-            fade_days: 64,
+            fade_seasons: 4,
             told_per_night: 2,
         }
     }
@@ -835,13 +836,20 @@ impl Passages {
     /// Whether anybody keeps a passage.
     #[must_use]
     pub fn on(&self) -> bool {
-        self.fade_days > 0
+        self.fade_seasons > 0
+    }
+
+    /// The days a passage is kept in a cycle of `days_per_cycle` days: its
+    /// `fade_seasons` in whole days.
+    #[must_use]
+    pub fn fade_days(&self, days_per_cycle: u32) -> u32 {
+        season_days(self.fade_seasons, days_per_cycle)
     }
 
     fn validate(&self) -> Result<(), ContentError> {
-        if self.fade_days > 100_000 || self.told_per_night > 64 {
+        if self.fade_seasons > 400 || self.told_per_night > 64 {
             return Err(ContentError::Needs(
-                "passages: fade_days at most 100000, told_per_night at most 64",
+                "passages: fade_seasons at most 400, told_per_night at most 64",
             ));
         }
         Ok(())

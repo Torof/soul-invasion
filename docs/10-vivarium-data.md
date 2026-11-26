@@ -589,6 +589,11 @@ clock, the only field no seed decides.
 | `passages.walks.arrived` | Of them, those that stood on the place at the end | walks |
 | `passages.walks.dropped` | Passages dropped, a walk there barred by water or rock (the place then marked seen, not reached) | passages |
 | `passages.beyond_reached` | Places of their notebooks the bodies stood on, the first time a day, that a straight walk from their camp could not reach, water or rock in the way, whether through a passage or not | body-place-days |
+| `passages.dropped_heard` | Of `walks.dropped`, the passages heard from another, not found | passages |
+| `passages.probe.hard.*` | A probe (26 November 2026): the walks to a place set off straight while the place was not on a clear line from where the body stood, by how they ended: `arrived` (at the place), `water`, `rock` (barred), `short` (stopped, nothing barring), `night` and `home` (gone home at night or by day), `drink`, `eat`, `look`, `switched` (to another place), `gather` (a plant elsewhere), `night_out` (still at night), `other` (anything else: stopped wanting, fed or full, its hands) | walks |
+| `passages.probe.via.*` | The same, the walks through a passage set off seeing an elbow on a clear line | walks |
+| `passages.probe.via_blind.*` | The same, those set off seeing none: walking to the first elbow to look for the passage | walks |
+| `passages.probe.via_legs[]` | The walks through a passage by the leg they ended on: `blind`, `leg` (from 0; 0 also when the passage walk was over), `end`, `n` | walks |
 | `passages.farthest_through_minutes_x10` | The farthest place reached through a passage: the straight walk from the walker's home to where it stood, at its own pace (`Mind::walk_milliminutes`); 0 when none | tenths of a game minute |
 
 ## Beside the data: the lab's series file

@@ -17,8 +17,10 @@
 //! water, the marks and the places beyond can be non-zero. It only reads
 //! the news: a run gives the same world with it as without it.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
-use sim::brain::{News, PassageStep};
+use sim::brain::{END_NAMES, News, PassageStep, WALK_HARD, WALK_VIA, WALK_VIA_BLIND};
 
 /// The run's passage counters.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -48,6 +50,14 @@ pub struct PassageProbe {
     /// The farthest place reached through a passage, in thousandths of a
     /// game minute of the walker's walk from its home.
     pub farthest_milliminutes: u64,
+    /// Passages dropped that were heard, not found.
+    pub dropped_heard: u64,
+    /// A probe: the walks to a place watched, by how they set off and how
+    /// they ended (`END_NAMES`), and those through a passage by leg.
+    pub walks: BTreeMap<(u8, u8), u64>,
+    /// The walks through a passage by how they set off, (seen or blind,
+    /// leg, end).
+    pub legs: BTreeMap<(u8, u8, u8), u64>,
 }
 
 impl PassageProbe {
@@ -70,7 +80,16 @@ impl PassageProbe {
                     self.arrived += 1;
                     self.farthest_milliminutes = self.farthest_milliminutes.max(milliminutes);
                 }
-                PassageStep::Failed => self.dropped += 1,
+                PassageStep::Failed { heard } => {
+                    self.dropped += 1;
+                    self.dropped_heard += u64::from(heard);
+                }
+                PassageStep::Walk { kind, end, leg, .. } => {
+                    *self.walks.entry((kind, end)).or_default() += 1;
+                    if kind != WALK_HARD {
+                        *self.legs.entry((kind, leg, end)).or_default() += 1;
+                    }
+                }
             },
             _ => {}
         }
@@ -92,6 +111,42 @@ impl PassageProbe {
             "walks": {"begun": self.begun, "arrived": self.arrived, "dropped": self.dropped},
             "beyond_reached": self.beyond,
             "farthest_through_minutes_x10": self.farthest_milliminutes / 100,
+            "dropped_heard": self.dropped_heard,
+            "probe": self.probe_json(),
+        })
+    }
+
+    /// The probe's walks: `hard` (straight to a place not on a clear line
+    /// from where the body set off) and `via` (through a passage), each by
+    /// how it ended; `via_legs` the walks through a passage by the leg
+    /// they ended on, `blind` when set off seeing no elbow.
+    fn probe_json(&self) -> Value {
+        let ends = |kind: u8| -> Value {
+            let mut map = serde_json::Map::new();
+            for (&(k, end), &n) in &self.walks {
+                if k == kind {
+                    let name = END_NAMES.get(usize::from(end)).copied().unwrap_or("?");
+                    map.insert(name.to_owned(), json!(n));
+                }
+            }
+            Value::Object(map)
+        };
+        json!({
+            "hard": ends(WALK_HARD),
+            "via": ends(WALK_VIA),
+            "via_blind": ends(WALK_VIA_BLIND),
+            "via_legs": self
+                .legs
+                .iter()
+                .map(|(&(kind, leg, end), &n)| {
+                    json!({
+                        "blind": kind == WALK_VIA_BLIND,
+                        "leg": leg,
+                        "end": END_NAMES.get(usize::from(end)).copied().unwrap_or("?"),
+                        "n": n,
+                    })
+                })
+                .collect::<Vec<_>>(),
         })
     }
 }

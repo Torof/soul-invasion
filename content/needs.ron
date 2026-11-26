@@ -937,15 +937,15 @@
     // first to the elbow, then to the place, with the same sight as any
     // walk. Absent: nobody keeps a passage, as before. Every value is a D30
     // placeholder.
-    // fade_days: 64 — a passage neither found, heard nor walked through for
-    //                 a cycle (64 game days in calendar v1) is forgotten;
-    //                 one walked through and barred is dropped at once, the
+    // fade_seasons: 4 — a passage neither found, heard nor walked through
+    //                 for a cycle (four seasons, D09) is forgotten; one
+    //                 walked through and barred is dropped at once, the
     //                 place marked seen, not reached;
     // told_per_night: 2 — the passages a body tells at a fire at most, apart
     //                 from the places' slots, its new ones first, then those
     //                 of the places it tells tonight.
     passages: (
-        fade_days: 64,
+        fade_seasons: 4,
         told_per_night: 2,
     ),
 )
