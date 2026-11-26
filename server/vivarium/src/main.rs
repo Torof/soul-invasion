@@ -90,6 +90,9 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            pooling.hearth_look and
                            pooling.young_seen,
                            temperance.kin_seen false)
+  --no-passages            the control run of the passages: nobody keeps,
+                           tells or walks through a passage (the content's
+                           passages section replaced by none)
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
@@ -203,6 +206,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-problems" => settings.problems = false,
             "--wake-all" => settings.wake_all = true,
             "--old-wakes" => settings.old_wakes = true,
+            "--no-passages" => settings.passages = false,
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,
             "--prepare-land" => prepare = true,
