@@ -2769,6 +2769,7 @@ pub fn run_watched(
                 placer.as_ref().map_or(0, sim::ahead::Placer::placed),
                 world.map().land_made()[0]
             );
+            eprintln!("PROBE {year} {}", sim::brain::probe::dump());
         }
         // The age-year whose ticks are elapsing, from 1 (D57's measures).
         let age_year = (tick - 1) / ticks_per_age_year + 1;

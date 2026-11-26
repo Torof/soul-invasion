@@ -592,6 +592,7 @@ pub(super) fn feed_young(
             // back (no event of its own follows a meal it gives: without
             // this it stood a mouthful later, the handful in its arms).
             mind.doing = Doing::Nothing;
+            super::probe::cause_current(super::probe::REDO);
             mind.due = true;
             reserves.handed.insert(young);
             return decision(Intention::Feed {
@@ -620,6 +621,7 @@ pub(super) fn feed_young(
                     .saturating_sub(first.kj * take / u64::from(mass.max(1)));
             }
             mind.doing = Doing::ToFeed(young);
+            super::probe::cause_current(super::probe::REDO);
             mind.due = true;
             return decision(Intention::PickUp {
                 body: id,
@@ -834,7 +836,8 @@ pub(super) fn put_down(
         }
         mind.hearth_carried_kj = mind.hearth_carried_kj.saturating_sub(spare.kj);
         mind.doing = Doing::Nothing;
-        mind.due = true;
+        super::probe::cause_current(super::probe::REDO);
+            mind.due = true;
         news.push(News::PutDown {
             body: id,
             item: spare.item,

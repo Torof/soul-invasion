@@ -96,6 +96,7 @@ use crate::{Blockage, Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, W
 
 mod handwork;
 mod pooling;
+pub mod probe;
 mod problems;
 #[cfg(test)]
 mod wake_tests;
@@ -4851,8 +4852,23 @@ impl Brains {
             if past != mind.past {
                 // A gauge past a threshold: in its own tick too, as the
                 // dawn (a tribe born at once grows hungry at once).
+                let old = mind.past;
+                let probe_label = if old.3 != past.3 {
+                    if past.3 { "asleep_on" } else { "asleep_off" }
+                } else if old.4 != past.4 {
+                    if past.4 { "collapsed_on" } else { "collapsed_off" }
+                } else if old.1 != past.1 {
+                    if past.1 { "parched_on" } else { "parched_off" }
+                } else if old.0 != past.0 {
+                    if past.0 { "thirsty_on" } else { "thirsty_off" }
+                } else if past.2 {
+                    "hungry_on"
+                } else {
+                    "hungry_off"
+                };
                 mind.past = past;
                 if wake_asleep || !(past.3 && (!past.1 || past.4)) {
+                    probe::wake(id, probe::NEED, u64::from(id.0) % spread == 0, Some(probe_label));
                     mind.wake(id, now, spread);
                 } else {
                     // Falling asleep, or a gauge moving in its sleep: no
@@ -4864,6 +4880,7 @@ impl Brains {
                 }
             }
             if mind.wake_at.is_some_and(|tick| now >= tick) {
+                probe::timer_fired(id);
                 mind.due = true;
             }
             // Its point of no return may have come (amended 25 November
@@ -4875,7 +4892,10 @@ impl Brains {
                 let (here, home) = (body.pos(), mind.ways.home);
                 if !world.is_night(rules) && !body.condition().asleep {
                     match turn_due(world, rules, body, (here, home)) {
-                        Ok(()) => mind.due = true,
+                        Ok(()) => {
+                            probe::cause(id, probe::TRIP_TURN);
+                            mind.due = true;
+                        }
                         Err(next) => mind.turn_at = Some(next),
                     }
                 }
@@ -4941,6 +4961,36 @@ impl Brains {
         self.waiting = 0;
         let mut lay_down = Vec::new();
         let mut pending = Vec::new();
+        probe::ticks_per_day(world.calendar().ticks_per_day());
+        for (id, mind) in &self.minds {
+            if let Some(body) = world.body(*id) {
+                let class = if world.is_infant(body, rules) {
+                    "infant"
+                } else if world.age_milli(body)
+                    < u64::from(rules.needs.decisions.follows_mother_years) * 1000
+                {
+                    "child"
+                } else {
+                    "grown"
+                };
+                probe::body_tick(class, probe_group_state(world, rules, land.groups, *id, mind));
+            }
+        }
+        for (&leader, g) in land.groups.iter() {
+            let inside = g.members.iter().any(|m| {
+                self.minds.get(m).is_some_and(|mind| {
+                    probe_group_state(world, rules, land.groups, *m, mind).0 != "none"
+                })
+            });
+            probe::group_tick(
+                leader,
+                g.dawn,
+                now,
+                !g.home && g.ended.is_none(),
+                inside,
+                g.started,
+            );
+        }
         for (i, &id) in due.iter().enumerate() {
             if used >= allowance {
                 self.next = Some(id);
@@ -4954,12 +5004,70 @@ impl Brains {
             mind.wake_at = None;
             mind.glance = None;
             mind.thoughts += 1;
+            let probe_cause = probe::take_cause(id);
+            let probe_doing = mind.doing;
+            let probe_last = probe::last(id);
+            let probe_pre = if world.is_infant(body, rules) {
+                "infant"
+            } else if body.condition().asleep {
+                "asleep"
+            } else if body.work().is_some() {
+                "at_work"
+            } else if body.making().is_some() {
+                "at_gesture"
+            } else {
+                "other"
+            };
+            let probe_state = probe_group_state(world, rules, land.groups, id, mind);
+            let probe_child = world.age_milli(body)
+                < u64::from(rules.needs.decisions.follows_mother_years) * 1000;
             land.food.refresh(world, rules);
             used += 1 + look(world, rules, id, body.pos(), mind, &mut land);
             if !mind.unseen.is_empty() {
                 pending.push(id);
             }
-            if let Some(decision) = decide(world, rules, &mut land, id, mind, self.seed) {
+            probe::set_current(Some(id));
+            let probe_decided = decide(world, rules, &mut land, id, mind, self.seed);
+            probe::set_current(None);
+            {
+                let waits = mind.wake_at.is_some() || mind.glance.is_some();
+                let (kind, same) = match &probe_decided {
+                    Some(d) => {
+                        let variant = format!("{:?}", d.intention);
+                        let variant: String =
+                            variant.chars().take_while(char::is_ascii_alphanumeric).collect();
+                        let same = probe_last.as_ref() == Some(d) && mind.doing == probe_doing;
+                        probe::set_last(id, d.clone());
+                        (format!("{:?}/{variant}", d.why), same)
+                    }
+                    None => {
+                        let pre = if waits && probe_pre == "other" { "wait" } else { probe_pre };
+                        (format!("None/{pre}"), mind.doing == probe_doing)
+                    }
+                };
+                let after = probe_group_state(world, rules, land.groups, id, mind);
+                let left = probe_state.0 != "none" && after.0 == "none";
+                let role = match (probe_state.0, probe_child) {
+                    ("follower", true) => "follower_child",
+                    (r, _) => r,
+                };
+                probe::thought((role, probe_state.1), probe_cause, kind, same, left);
+                if waits {
+                    probe::set_timer_label(
+                        id,
+                        match after {
+                            ("caller", "dawn") => "caller_dawn",
+                            ("caller", "way") => "caller_way",
+                            ("caller", _) => "caller_other",
+                            ("follower", "dawn") => "follower_dawn",
+                            ("follower", "there") => "follower_there",
+                            ("follower", _) => "follower_other",
+                            _ => "other",
+                        },
+                    );
+                }
+            }
+            if let Some(decision) = probe_decided {
                 if decision.why == Why::Night
                     && matches!(decision.intention, Intention::Sleep { .. })
                 {
@@ -5063,6 +5171,22 @@ impl Brains {
     /// The day's groups end at nightfall (D56), each told.
     fn end_groups(&mut self, now: u64, ticks_per_second: u64) {
         let groups = std::mem::take(&mut self.groups);
+        for (&leader, g) in &groups {
+            let end = g.ended.unwrap_or(if g.home { GroupEnd::Home } else { GroupEnd::Night });
+            probe::group_end(
+                leader,
+                u32::try_from(g.members.len()).unwrap_or(0),
+                g.moves.is_some(),
+                match end {
+                    GroupEnd::Home => 0,
+                    GroupEnd::Bare => 1,
+                    GroupEnd::Blocked => 2,
+                    GroupEnd::Night => 3,
+                },
+                g.dawn,
+                now,
+            );
+        }
         let together = TOGETHER_SECONDS * ticks_per_second;
         self.news.extend(
             groups
@@ -7519,6 +7643,7 @@ impl Brains {
                         {
                             continue;
                         }
+                        probe::wake(*id, probe::CLOCK, u64::from(id.0) % spread == 0, None);
                         mind.wake(*id, now, spread);
                     }
                     continue;
@@ -7558,6 +7683,18 @@ impl Brains {
                         .body(body)
                         .is_some_and(|b| sleeps_on(b, rules, mind.past.2));
                 if heard {
+                    probe::cause(
+                        body,
+                        match event {
+                            Event::BodyStopped { .. } => probe::ARRIVED,
+                            Event::BodyBlocked { .. } | Event::MoveRefused { .. } => probe::BLOCKED,
+                            Event::BodyDrank { .. } | Event::BodyAte { .. } => probe::ATE_DRANK,
+                            Event::WorkStopped { .. } => probe::WORK_STOPPED,
+                            Event::Gestured { .. } => probe::GESTURED,
+                            Event::Spoiled { .. } => probe::SPOILED,
+                            _ => probe::REFUSED,
+                        },
+                    );
                     mind.due = true;
                 } else {
                     // Asleep, it hears nothing (step 2): fallen asleep
@@ -8268,6 +8405,7 @@ fn decide(
                     // Stopped short of it from its camp: forget it, look
                     // again.
                     mind.water.retain(|_, p| *p != place);
+                    probe::cause_current(probe::REDO);
                     mind.due = true;
                     return None;
                 }
@@ -8375,6 +8513,7 @@ fn decide(
             }
             if mind.doing == Doing::ToEat(item, pos) && mind.stopped {
                 mind.food.remove(&item);
+                probe::cause_current(probe::REDO);
                 mind.due = true;
                 return None;
             }
@@ -8608,6 +8747,55 @@ enum Goal<'a> {
     Plant(Target<'a>),
     Place(PlaceKey, Pos),
 }
+/// The probe's reading of a body's place in a group of the day: its role
+/// ("none", "caller", "follower") and its phase ("dawn" before the caller
+/// set off, "way", "there", "home" walking back, "move").
+fn probe_group_state(
+    world: &World,
+    rules: &Content,
+    groups: &BTreeMap<BodyId, Group>,
+    id: BodyId,
+    mind: &Mind,
+) -> (&'static str, &'static str) {
+    const NONE: (&str, &str) = ("none", "-");
+    let day = u32::try_from(today(world)).unwrap_or(u32::MAX);
+    let Some(plan) = mind.plan.filter(|p| p.day == day) else {
+        return NONE;
+    };
+    if !matches!(plan.act, Act::Called | Act::Joined | Act::Moves) {
+        return NONE;
+    }
+    let Some(leader) = plan.leader else {
+        return NONE;
+    };
+    let Some(g) = groups.get(&leader) else {
+        return NONE;
+    };
+    if g.day != day || !g.members.contains(&id) || g.left.contains(&id) || g.ended.is_some() {
+        return NONE;
+    }
+    let role = if leader == id { "caller" } else { "follower" };
+    let phase = if g.home {
+        let (here, camp) = (world.body(id).map_or(mind.ways.home, Body::pos), mind.ways.home);
+        let _ = rules;
+        if (here.x - camp.x).abs() <= HOME_TILES && (here.y - camp.y).abs() <= HOME_TILES {
+            return NONE;
+        }
+        "home"
+    } else if plan.done {
+        return NONE;
+    } else if g.moves.is_some() {
+        "move"
+    } else if !g.started {
+        "dawn"
+    } else if !g.arrived.contains_key(&id) {
+        "way"
+    } else {
+        "there"
+    };
+    (role, phase)
+}
+
 /// The day of the world, counted from its first.
 fn today(world: &World) -> u64 {
     world.tick().0 / world.calendar().ticks_per_day().max(1)
@@ -9695,6 +9883,14 @@ fn glance(
         }
     };
     if wake {
+        probe::glanced(
+            id,
+            match watch {
+                Glance::Behind(_) => "behind",
+                Glance::Members => "members",
+                Glance::Caller(_) => "caller",
+            },
+        );
         mind.glance = None;
         mind.due = true;
     }
