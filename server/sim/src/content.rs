@@ -577,6 +577,26 @@ pub struct Pooling {
     /// heaps, food spoiling up to `heap_days - 1` journées early.
     #[serde(default = "one_day")]
     pub heap_days: u32,
+    /// Whether a body knows its hearth's reserve by what it saw of it
+    /// (the project lead, 26 November 2026: "no telepathy: a person
+    /// knows what is at the camp when she sees it"; the audit of wakes,
+    /// step 4): what the reserve held and how many lay in its circle the
+    /// last time it saw it, awake at its camp, at the dawn circle, or
+    /// laying a heap there itself. False, or absent: its share read from
+    /// anywhere, as it is now, the rule before.
+    #[serde(default)]
+    pub hearth_look: bool,
+    /// Whether the young are seen, not their stomach (the project lead,
+    /// 26 November 2026; the audit of wakes, step 5): an awake grown body,
+    /// or a child past `fed_until_years`, who sees a young one of its
+    /// hearth hungry near it feeds it, from what it carries or from the
+    /// reserve, and what the reserve keeps for the young counts the
+    /// stomach of those it sees at the camp only, a day of need, less
+    /// what was seen eaten at the camp, for the others. False, or absent:
+    /// nobody feeds another, and the young's stomach is read from
+    /// anywhere, the rule before.
+    #[serde(default)]
+    pub young_seen: bool,
 }
 
 /// The default width of a heap of the hearth's reserve: one journée.
@@ -610,6 +630,9 @@ impl Pooling {
             starving_fat_percent: 25,
             keep_percent_by_will: vec![(0, 10), (100, 90)],
             heap_days: 1,
+            // The switches of the audit of wakes at the rule before.
+            hearth_look: false,
+            young_seen: false,
         }
     }
 
@@ -1357,6 +1380,16 @@ pub struct Decisions {
     /// absent: the review as decided.
     #[serde(default = "review_parts_all")]
     pub review_parts: Vec<String>,
+    /// Whether the caller of a group glances behind without a thought
+    /// (the audit of wakes, 26 November 2026, step 3): walking to the
+    /// group's place it looks behind every few seconds and thinks only
+    /// when it sees a member to wait for; waiting at dawn for its members,
+    /// it thinks when the last it waits for wakes and comes within reach
+    /// (or its hour of waiting is up), and a member waiting by its caller
+    /// when the caller sets off. False, or absent: a thought every few
+    /// seconds, the rule before.
+    #[serde(default)]
+    pub behind_glance: bool,
 }
 
 /// The parts of the review a caller may hold to ([`Decisions::review_parts`]).
@@ -1387,6 +1420,7 @@ impl Default for Decisions {
             review_bad: 0,
             near_camp_minutes: 0,
             review_parts: review_parts_all(),
+            behind_glance: false,
         }
     }
 }
@@ -1518,6 +1552,13 @@ pub struct Temperance {
     /// the last held beyond. Empty: every success weighs the same.
     #[serde(default)]
     pub streak_percent: Vec<(u32, u32)>,
+    /// Whether a parent judges its day at the camp (`stay`) only by the
+    /// children it sees (the audit of wakes, 26 November 2026, step 6):
+    /// those at its camp at nightfall, with it; a child away is not
+    /// judged. False, or absent: the hunger of all its children, wherever
+    /// they are, the rule before.
+    #[serde(default)]
+    pub kin_seen: bool,
 }
 
 impl Default for Temperance {
@@ -1532,6 +1573,7 @@ impl Default for Temperance {
             activities: Vec::new(),
             bold_will: 40,
             streak_percent: Vec::new(),
+            kin_seen: false,
         }
     }
 }
@@ -1557,6 +1599,8 @@ impl Temperance {
             ],
             bold_will: 40,
             streak_percent: vec![(0, 100), (4, 200)],
+            // The switch of the audit of wakes at the rule before.
+            kin_seen: false,
         }
     }
 
@@ -1797,10 +1841,30 @@ pub struct Thought {
     /// before (the vivarium's `--wake-all`).
     #[serde(default)]
     pub hearth_wakes: bool,
+    /// Whether a gather the body's own new intention stopped, or its
+    /// falling asleep (`WorkEnd::Interrupted`), makes it think again
+    /// (the audit of wakes, 26 November 2026, step 1: the echo of an
+    /// order). True, or absent: it does, the rule before. False: it does
+    /// not; it has just decided, and falling asleep has its own threshold.
+    #[serde(default = "yes")]
+    pub wake_on_interrupt: bool,
+    /// Whether a sleeper thinks when it falls asleep, at dawn and dusk,
+    /// and at a gauge past a threshold or an event while it sleeps on
+    /// (the audit of wakes, step 2). True, or absent: it does, the rule
+    /// before. False: it does not; it thinks when it wakes, or when it is
+    /// parched and not collapsed (it gets up to drink, D45).
+    #[serde(default = "yes")]
+    pub wake_asleep: bool,
+}
+
+/// True: a switch whose absence keeps the rule before.
+fn yes() -> bool {
+    true
 }
 
 impl Default for Thought {
-    /// The placeholders of `content/needs.ron`.
+    /// The placeholders of `content/needs.ron`, but the switches of the
+    /// audit of wakes (26 November 2026) at the rule before.
     fn default() -> Self {
         Self {
             plant_sight_tiles: 30,
@@ -1810,6 +1874,8 @@ impl Default for Thought {
             places_remembered: 48,
             patch_tiles: 4,
             hearth_wakes: false,
+            wake_on_interrupt: true,
+            wake_asleep: true,
         }
     }
 }

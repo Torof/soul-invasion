@@ -1303,7 +1303,7 @@ mod tests {
         let mut events = Vec::new();
         world.queue(decision.intention);
         world.advance(12, &rules, &mut events);
-        brains.notice(&events, &world);
+        brains.notice(&events, &world, &rules);
         let mind = brains.minds.get_mut(&id).unwrap();
         // The bark carried: it folds it.
         let HandsTurn::Decide(Some(decision)) =
@@ -1318,7 +1318,7 @@ mod tests {
         events.clear();
         world.queue(decision.intention);
         world.advance(12, &rules, &mut events);
-        brains.notice(&events, &world);
+        brains.notice(&events, &world, &rules);
         let mind = brains.minds.get_mut(&id).unwrap();
         // A container carried: nothing more to do with its hands.
         assert_eq!(

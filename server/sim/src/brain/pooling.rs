@@ -194,6 +194,12 @@ pub(super) struct Reserves {
     /// How many lay down in each hearth's circle at dawn: who eats from
     /// its reserve, the divisor of a body's share of it.
     eaters: BTreeMap<Pos, u64>,
+    /// The young handed food this turn (step 5): their meal wakes none
+    /// of them.
+    handed: BTreeSet<BodyId>,
+    /// What each young of a hearth was seen eating at its camp since dawn,
+    /// in kilojoules (step 5).
+    young_ate: BTreeMap<BodyId, u64>,
 }
 
 /// A heap of a reserve, or carried: its id, where it lies, its energy and
@@ -240,6 +246,11 @@ fn near(a: Pos, b: Pos) -> bool {
 }
 
 impl Reserves {
+    /// The young handed food since the last call (step 5).
+    pub(super) fn take_handed(&mut self) -> BTreeSet<BodyId> {
+        std::mem::take(&mut self.handed)
+    }
+
     /// The heaps lying in the reserve of `camp`, not spoiled, what spoils
     /// first first (then by id), and their kilojoules in all: from its
     /// last reading while the world's records did not change
@@ -378,9 +389,65 @@ impl Reserves {
     }
 }
 
+/// What a body saw of its hearth's reserve the last time it saw it (D58,
+/// the audit of wakes, step 4; the project lead, 26 November 2026: "no
+/// telepathy: a person knows what is at the camp when she sees it").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HearthSeen {
+    /// What the reserve held, in kilojoules.
+    kj: u64,
+    /// How many lay down in its circle at dawn, if a dawn saw it.
+    eaters: Option<u64>,
+    /// When it saw it, the tick.
+    at: u64,
+}
+
+/// A body's share of its hearth's reserve as it knows it (D58): with
+/// `pooling.hearth_look`, what it saw the last time it saw the reserve,
+/// divided by the circle it saw then; believed as seen, nothing projected
+/// (spoiled, eaten, laid since). Without, its share now, read from
+/// anywhere, the rule before ([`Reserves::share_kj`]).
+pub(super) fn known_share_kj(
+    world: &World,
+    rules: &Content,
+    reserves: &Reserves,
+    mind: &Mind,
+) -> u64 {
+    if !rules.needs.pooling.hearth_look {
+        return reserves.share_kj(world, rules, mind.ways.home);
+    }
+    if !on(rules) {
+        return 0;
+    }
+    mind.hearth_seen
+        .and_then(|seen| seen.eaters.map(|e| seen.kj / e.max(1)))
+        .unwrap_or(0)
+}
+
+/// A body awake at `here` sees its hearth's reserve when it stands at its
+/// camp ([`at_camp`]: within six tiles of its home, or on its home's
+/// place), with `pooling.hearth_look` (step 4 of the audit of wakes).
+pub(super) fn see_reserve(
+    world: &World,
+    rules: &Content,
+    reserves: &Reserves,
+    here: Pos,
+    mind: &mut Mind,
+) {
+    if !rules.needs.pooling.hearth_look || !on(rules) || !at_camp(rules, here, mind) {
+        return;
+    }
+    let camp = camp_of(rules, mind.ways.home);
+    mind.hearth_seen = Some(HearthSeen {
+        kj: reserves.kj(world, rules, camp),
+        eaters: reserves.eaters.get(&camp).copied(),
+        at: world.tick().0,
+    });
+}
+
 /// Whether a body standing at `here` is at its camp: near its home, or
 /// on its home's place.
-fn at_camp(rules: &Content, here: Pos, mind: &Mind) -> bool {
+pub(super) fn at_camp(rules: &Content, here: Pos, mind: &Mind) -> bool {
     let home = mind.ways.home;
     let side = place_side(rules);
     ((here.x - home.x).abs() <= HOME_TILES && (here.y - home.y).abs() <= HOME_TILES)
@@ -391,21 +458,168 @@ fn at_camp(rules: &Content, here: Pos, mind: &Mind) -> bool {
 /// kilojoules: for a body past `young_first_until_years` every young one
 /// of the hearth; for a young one past `fed_until_years`, the younger fed
 /// by the hearth; for those, nobody.
-fn young_ahead(world: &World, rules: &Content, reserves: &Reserves, camp: Pos, body: &Body) -> u64 {
+///
+/// With `pooling.young_seen` (step 5 of the audit of wakes), the stomach
+/// of the young it sees at its camp only; for the others, a day of their
+/// need less what was seen eaten at the camp since dawn.
+fn young_ahead(
+    world: &World,
+    rules: &Content,
+    reserves: &Reserves,
+    (camp, body, mind): (Pos, &Body, &Mind),
+) -> u64 {
     let age = world.age_milli(body);
     if rules.needs.pooling.fed(age) {
         return 0;
     }
     let grown = !rules.needs.pooling.young_first(age);
+    let seen = rules.needs.pooling.young_seen;
     reserves.young.get(&camp).map_or(0, |young| {
         young
             .iter()
             .filter(|&&(y, fed)| y != body.id() && (grown || fed))
             .filter_map(|&(y, _)| world.body(y))
             .filter(|y| y.condition().vitality.points() > 0)
-            .map(|y| y.condition().room_j(&rules.needs) / 1000)
+            .map(|y| {
+                if !seen || at_camp(rules, y.pos(), mind) {
+                    y.condition().room_j(&rules.needs) / 1000
+                } else {
+                    let ate = reserves.young_ate.get(&y.id()).copied().unwrap_or(0);
+                    need_kj_per_day(rules, y).saturating_sub(ate)
+                }
+            })
             .sum()
     })
+}
+
+/// A young one of its hearth `id` sees hungry near it, awake (D58, the
+/// audit of wakes, step 5: the project lead, "the young are seen, not
+/// their stomach"): one its circle saw at dawn, fed by the hearth, not an
+/// infant (nursed), within six tiles, with room to eat (one full refuses
+/// food); the nearest.
+fn hungry_young_seen(
+    world: &World,
+    rules: &Content,
+    reserves: &Reserves,
+    (id, here, camp): (BodyId, Pos, Pos),
+) -> Option<(BodyId, Pos)> {
+    reserves
+        .young
+        .get(&camp)?
+        .iter()
+        .filter(|&&(y, fed)| fed && y != id)
+        .filter_map(|&(y, _)| world.body(y))
+        .filter(|y| {
+            let c = y.condition();
+            c.vitality.points() > 0
+                && !c.asleep
+                && c.hunger.points() >= HUNGRY
+                && c.room_j(&rules.needs) > 0
+                && !world.is_infant(y, rules)
+                && (y.pos().x - here.x).abs() <= HOME_TILES
+                && (y.pos().y - here.y).abs() <= HOME_TILES
+        })
+        .min_by_key(|y| (super::far(y.pos(), here), y.id()))
+        .map(|y| (y.id(), y.pos()))
+}
+
+/// **Feeding the young** (D58, the audit of wakes, step 5, the project
+/// lead's own point on 26 November 2026): awake, grown or past
+/// `fed_until_years`, `id` sees a young one of its hearth hungry near it
+/// and feeds it: from what it carries, walking to it first; or, at its
+/// camp with nothing in hand, it takes a handful from its hearth's
+/// reserve for it (the hearth's food, laid back when the young is fed).
+/// A perception of the giver, never a wake of the young: the young eats
+/// what it is given without a thought of its own. `None`: no young seen
+/// hungry, `pooling.young_seen` off, or its own hunger gives way (the
+/// hunger bar, [`gives_way`]): then it eats first.
+pub(super) fn feed_young(
+    world: &World,
+    rules: &Content,
+    reserves: &mut Reserves,
+    (id, body, here): (BodyId, &Body, Pos),
+    mind: &mut Mind,
+    seed: u64,
+) -> Option<Decision> {
+    let pooling = &rules.needs.pooling;
+    if !pooling.young_seen
+        || !on(rules)
+        || body.condition().asleep
+        || pooling.fed(world.age_milli(body))
+        || world.is_infant(body, rules)
+    {
+        return None;
+    }
+    // The hunger bar holds for the giver too (D58, amended 25 November
+    // 2026): hungry, and its hunger giving way, it eats; it gives nothing.
+    if body.condition().hunger.points() >= HUNGRY
+        && gives_way(world, rules, body, mind, seed).is_some()
+    {
+        return None;
+    }
+    let camp = camp_of(rules, mind.ways.home);
+    let Some((young, at)) = hungry_young_seen(world, rules, reserves, (id, here, camp)) else {
+        if matches!(mind.doing, Doing::ToFeed(_)) {
+            mind.doing = Doing::Nothing;
+        }
+        return None;
+    };
+    let decision = |intention| {
+        Some(Decision {
+            intention,
+            why: super::Why::Hunger,
+        })
+    };
+    let target = if let Some(item) = super::carried_food(world, rules, id) {
+        if near(at, here) {
+            // A mouthful at a time: it looks again at once whether the
+            // young is still hungry, and gives another, or lays the rest
+            // back (no event of its own follows a meal it gives: without
+            // this it stood a mouthful later, the handful in its arms).
+            mind.doing = Doing::Nothing;
+            mind.due = true;
+            reserves.handed.insert(young);
+            return decision(Intention::Feed {
+                body: id,
+                young,
+                item,
+            });
+        }
+        at
+    } else {
+        if !at_camp(rules, here, mind) {
+            return None;
+        }
+        let (heaps, _) = reserves.heaps(world, rules, camp);
+        let first = heaps.first()?;
+        let heap_at = first.at?;
+        if near(heap_at, here) {
+            // A handful for the young, the hearth's: it thinks again at
+            // once, the handful in hand.
+            let mass = world.kept(first.item).map_or(0, crate::Item::mass_g);
+            let take = u64::from(mass.min(body.food_room_g(&rules.movement)));
+            mind.hearth_carried_kj += first.kj * take / u64::from(mass.max(1));
+            if let Some(seen) = mind.hearth_seen.as_mut() {
+                seen.kj = seen
+                    .kj
+                    .saturating_sub(first.kj * take / u64::from(mass.max(1)));
+            }
+            mind.doing = Doing::ToFeed(young);
+            mind.due = true;
+            return decision(Intention::PickUp {
+                body: id,
+                item: first.item,
+            });
+        }
+        heap_at
+    };
+    if mind.doing == Doing::ToFeed(young) && mind.stopped {
+        // Stopped short: not now.
+        mind.doing = Doing::Nothing;
+        return None;
+    }
+    mind.doing = Doing::ToFeed(young);
+    decision(Intention::MoveTo { body: id, target })
 }
 
 /// **Taking from the common reserve** (D58, the hearth's own act, never
@@ -438,7 +652,7 @@ pub(super) fn eat_at_hearth(
         return None;
     }
     // The young first, unless its hunger gives way.
-    let despite = if holds <= young_ahead(world, rules, reserves, camp, body) {
+    let despite = if holds <= young_ahead(world, rules, reserves, (camp, body, mind)) {
         Some(gives_way(world, rules, body, mind, seed)?)
     } else {
         None
@@ -537,6 +751,10 @@ pub(super) fn put_down(
     if near(tile, here) {
         reserves.put(camp, tile, spare.item);
         mind.hearth_put_kj += spare.kj;
+        if let Some(seen) = mind.hearth_seen.as_mut() {
+            // It knows what it laid itself (step 4).
+            seen.kj += spare.kj;
+        }
         mind.hearth_carried_kj = mind.hearth_carried_kj.saturating_sub(spare.kj);
         mind.doing = Doing::Nothing;
         mind.due = true;
@@ -583,7 +801,7 @@ pub(super) fn store_short(
 ) -> bool {
     on(rules)
         && !fed_by_hearth(world, rules, reserves, body)
-        && super::carried_kj(world, rules, id) + reserves.share_kj(world, rules, mind.ways.home)
+        && super::carried_kj(world, rules, id) + known_share_kj(world, rules, reserves, mind)
             < mind.ways.stock_kj + mind.hearth_owed()
 }
 
@@ -704,6 +922,7 @@ impl Brains {
         self.reserves.prune(world);
         self.reserves.refresh(world, rules);
         self.reserves.young.clear();
+        self.reserves.young_ate.clear();
         self.reserves.eaters.clear();
         self.reserves.dawned = true;
         for mind in self.minds.values_mut() {
@@ -715,9 +934,20 @@ impl Brains {
             let camp = *camp;
             let reserve_kj = self.reserves.kj(world, rules, camp);
             let bodies: Vec<&Body> = present.iter().filter_map(|&b| world.body(b)).collect();
-            self.reserves
-                .eaters
-                .insert(camp, u64::try_from(bodies.len()).unwrap_or(u64::MAX));
+            let eaters = u64::try_from(bodies.len()).unwrap_or(u64::MAX);
+            self.reserves.eaters.insert(camp, eaters);
+            if pooling.hearth_look {
+                // The circle sees its reserve (step 4).
+                for body in &bodies {
+                    if let Some(mind) = self.minds.get_mut(&body.id()) {
+                        mind.hearth_seen = Some(HearthSeen {
+                            kj: reserve_kj,
+                            eaters: Some(eaters),
+                            at: now,
+                        });
+                    }
+                }
+            }
             let young: Vec<(&Body, u64)> = bodies
                 .iter()
                 .filter(|b| pooling.young_first(world.age_milli(b)))
@@ -839,6 +1069,19 @@ impl Brains {
                     energy_kj,
                     ..
                 } => {
+                    if rules.needs.pooling.young_seen
+                        && let (Some(mind), Some(b)) = (self.minds.get(body), world.body(*body))
+                        && at_camp(rules, b.pos(), mind)
+                        && self
+                            .reserves
+                            .young
+                            .values()
+                            .flatten()
+                            .any(|(y, _)| y == body)
+                    {
+                        // A young one seen eating at its camp (step 5).
+                        *self.reserves.young_ate.entry(*body).or_insert(0) += u64::from(*energy_kj);
+                    }
                     if let Some(camp) = self.reserves.camp_holding(*item) {
                         self.news.push(News::AteAtHearth {
                             body: *body,
@@ -1375,6 +1618,37 @@ mod tests {
     }
 
     #[test]
+    fn its_share_is_what_it_saw_of_its_reserve_the_last_time_it_saw_it() {
+        // 600 g of berries, 1500 kJ, seen by its circle at dawn.
+        let (mut world, mut rules, id, mut brains) = by_the_bramble(1000, 0, 600);
+        rules.needs.pooling.hearth_look = true;
+        let home = brains.minds[&id].ways.home;
+        let camp = camp_of(&rules, home);
+        brains.see_hearths(&world, &rules, &[(camp, vec![id])]);
+        let known =
+            |b: &Brains, w: &World, r: &Content| known_share_kj(w, r, &b.reserves, &b.minds[&id]);
+        assert_eq!(known(&brains, &world, &rules), 1500);
+        // Another heap laid while it does not look: the truth moves, not
+        // what it knows.
+        let heap = world.spawn_kept("berries", 600, home);
+        brains.reserves.put(camp, home, heap);
+        assert_eq!(brains.reserves.share_kj(&world, &rules, home), 3000);
+        assert_eq!(known(&brains, &world, &rules), 1500);
+        // Far from its camp it sees nothing of it; at its camp it sees.
+        let far = Pos::new(home.x + 40, home.y + 40);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        see_reserve(&world, &rules, &brains.reserves, far, mind);
+        assert_eq!(known(&brains, &world, &rules), 1500);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        see_reserve(&world, &rules, &brains.reserves, home, mind);
+        assert_eq!(known(&brains, &world, &rules), 3000);
+        // The rule before reads it from anywhere.
+        rules.needs.pooling.hearth_look = false;
+        brains.minds.get_mut(&id).unwrap().hearth_seen = None;
+        assert_eq!(known(&brains, &world, &rules), 3000);
+    }
+
+    #[test]
     fn its_store_counts_its_share_of_its_hearth_s_reserve() {
         // 600 g of berries, 1500 kJ, at the hearth; a store of 1000 kJ.
         for (others, reserve_g, gathers) in [
@@ -1518,6 +1792,115 @@ mod tests {
                 (wakes, true),
                 "hearth_wakes {wakes}"
             );
+        }
+    }
+
+    #[test]
+    fn what_the_reserve_keeps_for_the_young_reads_the_stomach_of_those_seen() {
+        let at = Pos::new(5, 5);
+        for seen in [false, true] {
+            let mut rules = pooled();
+            rules.needs.pooling.young_seen = seen;
+            let away = Pos::new(50, 50);
+            let (mut world, mut brains, ids) = field(&rules, &[(at, 30), (at, 5), (away, 5)]);
+            let camp = camp_of(&rules, at);
+            brains.see_hearths(&world, &rules, &[(camp, ids.clone())]);
+            for &child in &ids[1..] {
+                hungry(&mut world, &rules, child, 70);
+            }
+            let room = |id| world.body(id).unwrap().condition().room_j(&rules.needs) / 1000;
+            let need = need_kj_per_day(&rules, world.body(ids[2]).unwrap());
+            let grown = world.body(ids[0]).unwrap();
+            let ahead = young_ahead(
+                &world,
+                &rules,
+                &brains.reserves,
+                (camp, grown, &brains.minds[&ids[0]]),
+            );
+            // The one away: its stomach read from afar before; a day of its
+            // need, nothing seen eaten, now.
+            let far = if seen { need } else { room(ids[2]) };
+            assert_eq!(ahead, room(ids[1]) + far, "young_seen {seen}");
+        }
+    }
+
+    #[test]
+    fn a_starving_giver_eats_first() {
+        let mut rules = pooled();
+        rules.needs.pooling.young_seen = true;
+        let at = Pos::new(5, 5);
+        for starving in [false, true] {
+            let (mut world, mut brains, ids) = field(&rules, &[(at, 30), (Pos::new(6, 5), 5)]);
+            let (grown, child) = (ids[0], ids[1]);
+            brains.see_hearths(&world, &rules, &[(camp_of(&rules, at), ids.clone())]);
+            let item = world.spawn_item("berries", 400, at);
+            world.queue(Intention::PickUp { body: grown, item });
+            world.step(&rules, &mut Vec::new());
+            hungry(&mut world, &rules, child, 70);
+            hungry(&mut world, &rules, grown, 60);
+            if starving {
+                // A tenth of its fat left: its hunger gives way.
+                let b = world.bodies.iter_mut().find(|b| b.id() == grown).unwrap();
+                b.condition.deficit_j = b.condition.reserve_j(&rules.needs) * 9 / 10;
+            }
+            let body = world.body(grown).unwrap();
+            let mind = brains.minds.get_mut(&grown).unwrap();
+            let gives = feed_young(
+                &world,
+                &rules,
+                &mut brains.reserves,
+                (grown, body, at),
+                mind,
+                7,
+            );
+            assert_eq!(
+                gives
+                    .as_ref()
+                    .is_some_and(|d| matches!(d.intention, Intention::Feed { .. })),
+                !starving,
+                "starving {starving}: {gives:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hungry_child_waiting_at_the_camp_is_seen_and_fed() {
+        // The young are seen, not their stomach (step 5 of the audit of
+        // wakes): the grown one coming home sees the child hungry and
+        // feeds it what she carries, at once, no wake of the child's.
+        for seen in [false, true] {
+            let mut rules = pooled();
+            rules.needs.pooling.young_seen = seen;
+            let at = Pos::new(5, 5);
+            let (mut world, mut brains, ids) = field(&rules, &[(at, 30), (Pos::new(7, 6), 5)]);
+            let (grown, child) = (ids[0], ids[1]);
+            brains.see_hearths(&world, &rules, &[(camp_of(&rules, at), ids.clone())]);
+            let item = world.spawn_item("berries", 1000, at);
+            world.queue(Intention::PickUp { body: grown, item });
+            world.step(&rules, &mut Vec::new());
+            hungry(&mut world, &rules, child, 90);
+            // It waits, its hunger already known to it: nothing wakes it.
+            let past = super::super::pasts(&world, &rules, child, false);
+            let child_mind = brains.minds.get_mut(&child).unwrap();
+            (child_mind.due, child_mind.wake_at, child_mind.past) = (false, None, past);
+            brains.minds.get_mut(&grown).unwrap().due = true;
+            let (mut events, mut fed, mut thought) = (Vec::new(), false, false);
+            for _ in 0..100 {
+                events.clear();
+                world.step(&rules, &mut events);
+                fed |= events.iter().any(|e| {
+                    matches!(e, crate::Event::BodyAte { body, item: i, .. } if *body == child && *i == item)
+                });
+                for (b, d) in brains.think(&world, &rules, &events) {
+                    thought |= b == child;
+                    world.queue(d.intention);
+                }
+            }
+            assert_eq!(fed, seen, "young_seen {seen}: fed from her hands");
+            assert!(!thought, "the child thought nothing of it");
+            // A mouthful after another, until it is no longer hungry.
+            let after = world.body(child).unwrap().condition().hunger.points();
+            assert_eq!(after < HUNGRY, seen, "young_seen {seen}: hunger {after}");
         }
     }
 

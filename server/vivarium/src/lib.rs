@@ -198,6 +198,10 @@ pub struct Settings {
     /// 2026): true is the control run of the rule before (`--wake-all`),
     /// the content's `thought.hearth_wakes` set to true.
     pub wake_all: bool,
+    /// The control run of the audit of wakes (26 November 2026): every
+    /// switch of its steps at the rule before (`old_wakes`),
+    /// `--old-wakes`.
+    pub old_wakes: bool,
     /// The passages remembered and told (D53, amended 26 November 2026):
     /// false is the control run without them (`--no-passages`), the
     /// content's `passages` section replaced by none.
@@ -288,6 +292,7 @@ impl Default for Settings {
             trips: true,
             problems: true,
             wake_all: false,
+            old_wakes: false,
             passages: true,
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
@@ -2265,6 +2270,7 @@ pub fn run_watched(
         || !settings.trips
         || !settings.problems
         || settings.wake_all
+        || settings.old_wakes
         || !settings.passages
     {
         let mut own = content.clone();
@@ -2296,6 +2302,9 @@ pub fn run_watched(
         }
         if settings.wake_all {
             own.needs.thought.hearth_wakes = true;
+        }
+        if settings.old_wakes {
+            old_wakes(&mut own.needs);
         }
         if !settings.trips {
             own.needs.trips = sim::content::Trips::default();
@@ -3935,6 +3944,7 @@ fn thought(intention: &Intention, why: Why) -> String {
         Intention::Sleep { .. } => "lies down to sleep".to_owned(),
         Intention::Wake { .. } => "gets up".to_owned(),
         Intention::Gather { gives, .. } => format!("gathers {gives}"),
+        Intention::Feed { young, item, .. } => format!("feeds {} item {}", young.0, item.0),
         other => format!("{other:?}"),
     };
     format!("{reason}: {act}")
@@ -5339,6 +5349,17 @@ pub struct Relief {
 /// Every value of `content/needs.ron` by its path in the file: an object
 /// is walked into (`trials.trial_days`, a season's value
 /// `night_from_percent.winter`), a number, a text or a list is a value.
+/// The switches of the audit of wakes (26 November 2026) at the rule
+/// before, each step's: the control run of `--old-wakes`.
+fn old_wakes(needs: &mut sim::content::Needs) {
+    needs.thought.wake_on_interrupt = true;
+    needs.thought.wake_asleep = true;
+    needs.decisions.behind_glance = false;
+    needs.pooling.hearth_look = false;
+    needs.pooling.young_seen = false;
+    needs.temperance.kin_seen = false;
+}
+
 fn factors_of(content: &Content) -> Vec<(String, serde_json::Value)> {
     fn walk(prefix: &str, value: serde_json::Value, out: &mut Vec<(String, serde_json::Value)>) {
         match value {
@@ -6902,6 +6923,7 @@ mod tests {
             trips: true,
             problems: true,
             wake_all: false,
+            old_wakes: false,
             passages: true,
             continents: None,
             lands: None,

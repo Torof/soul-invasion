@@ -97,6 +97,8 @@ use crate::{Blockage, Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, W
 mod handwork;
 mod pooling;
 mod problems;
+#[cfg(test)]
+mod wake_tests;
 pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
 pub use problems::{Problem, ProblemAim, ProblemStep};
 
@@ -257,6 +259,23 @@ enum Doing {
     ToReserve(Pos),
     /// Stepping to a thing or a tree to do a deed of its hands (D57).
     ToHands,
+    /// On its way to a young one seen hungry, or to its hearth's reserve
+    /// for it, to feed it (D58, the audit of wakes, step 5).
+    ToFeed(BodyId),
+}
+
+/// What a mind watches without a thought (D56, the audit of wakes, step
+/// 3, `decisions.behind_glance`): it thinks when what it waits for comes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Glance {
+    /// The caller walking to the group's place glances behind at this
+    /// tick: it thinks if it sees a member to wait for.
+    Behind(u64),
+    /// The caller waiting at dawn: it thinks when none of its members
+    /// sleeps or stands out of its reach any more.
+    Members,
+    /// A member waiting by its caller: it thinks when the caller sets off.
+    Caller(BodyId),
 }
 
 /// A tree or plant a body is going to gather from, or gathers from.
@@ -2309,6 +2328,9 @@ pub struct Mind {
     /// gathered while it owed its hearth, not its own to eat; put down at
     /// the camp.
     hearth_carried_kj: u64,
+    /// What it last saw of its hearth's reserve (D58, the audit of wakes,
+    /// step 4): with `pooling.hearth_look`, its share is read from this.
+    hearth_seen: Option<pooling::HearthSeen>,
     /// The tick it chose to eat of what it carried for its hearth, its
     /// hunger giving way (D58, amended 25 November 2026, the hunger bar):
     /// eaten, its `hearth_carried_kj` is lowered to what it holds.
@@ -2337,6 +2359,9 @@ pub struct Mind {
     /// The tick its point of no return may come at the earliest, walking
     /// straight away from its camp: looked at then, without a thought.
     turn_at: Option<u64>,
+    /// What a group's caller, or a member waiting by its caller, watches
+    /// without a thought (D56, the audit of wakes, step 3).
+    glance: Option<Glance>,
     /// How many times it thought.
     thoughts: u64,
     /// Its hands (D57): what it tries, steps to and practised.
@@ -2535,6 +2560,7 @@ impl Mind {
             hearth_extra_kj: 0,
             hearth_put_kj: 0,
             hearth_carried_kj: 0,
+            hearth_seen: None,
             hearth_bar_meal: None,
             hearth_barred: None,
             walks: 0,
@@ -2548,6 +2574,7 @@ impl Mind {
             out: None,
             trip_from: None,
             turn_at: None,
+            glance: None,
             thoughts: 0,
             handwork: Handwork::default(),
             problems: Vec::new(),
@@ -4801,8 +4828,10 @@ impl Brains {
         // Who is gone, and who is due: the due noted on the way, by their
         // ids, rather than swept again.
         let spread = wake_spread(world);
+        let wake_asleep = rules.needs.thought.wake_asleep;
         let mut due: Vec<BodyId> = Vec::new();
         let (memory, gone_wills) = (&mut self.memory, &mut self.gone_wills);
+        let groups = &self.groups;
         // Bodies and minds both by id: one walk through each.
         let (bodies, mut at) = (world.bodies(), 0);
         self.minds.retain(|&id, mind| {
@@ -4823,7 +4852,16 @@ impl Brains {
                 // A gauge past a threshold: in its own tick too, as the
                 // dawn (a tribe born at once grows hungry at once).
                 mind.past = past;
-                mind.wake(id, now, spread);
+                if wake_asleep || !(past.3 && (!past.1 || past.4)) {
+                    mind.wake(id, now, spread);
+                } else {
+                    // Falling asleep, or a gauge moving in its sleep: no
+                    // thought (the audit of wakes, step 2). It drops what
+                    // it was about, as its thought asleep did.
+                    mind.doing = Doing::Nothing;
+                    mind.stopped = false;
+                    mind.blocked = None;
+                }
             }
             if mind.wake_at.is_some_and(|tick| now >= tick) {
                 mind.due = true;
@@ -4841,6 +4879,9 @@ impl Brains {
                         Err(next) => mind.turn_at = Some(next),
                     }
                 }
+            }
+            if mind.glance.is_some() {
+                glance(world, rules, groups, (id, body), mind, now);
             }
             if mind.due {
                 due.push(id);
@@ -4861,7 +4902,7 @@ impl Brains {
         rules: &Content,
         events: &[Event],
     ) -> Vec<(BodyId, Decision)> {
-        self.notice(events, world);
+        self.notice(events, world, rules);
         self.hearth_events(events, world, rules);
         self.count_gathers(events, world, rules);
         self.live_problems(events, world, rules);
@@ -4911,6 +4952,7 @@ impl Brains {
             };
             mind.due = false;
             mind.wake_at = None;
+            mind.glance = None;
             mind.thoughts += 1;
             land.food.refresh(world, rules);
             used += 1 + look(world, rules, id, body.pos(), mind, &mut land);
@@ -5043,7 +5085,7 @@ impl Brains {
         let day = today(world);
         let now = world.tick().0;
         self.food.refresh(world, rules);
-        let (kin, season) = temper_today(world, rules, day);
+        let (kin, season) = temper_today(world, rules, day, &self.minds);
         let ids: Vec<BodyId> = self.minds.keys().copied().collect();
         let follows = self.follows_today(world, rules, day);
         let gathered: BTreeMap<BodyId, u64> = self
@@ -6487,7 +6529,8 @@ impl Brains {
                 said.insert(id, (Act::Alone, Some(spot), None, 0));
                 continue;
             }
-            if carried_kj(world, rules, id) + self.reserves.share_kj(world, rules, mind.ways.home)
+            if carried_kj(world, rules, id)
+                + pooling::known_share_kj(world, rules, &self.reserves, mind)
                 >= mind.ways.stock_kj + need_kj_per_day(rules, body)
             {
                 // It holds what it wants for tomorrow and tomorrow's
@@ -7454,7 +7497,11 @@ impl Brains {
     }
 
     /// Marks the minds the tick's events concern.
-    fn notice(&mut self, events: &[Event], world: &World) {
+    fn notice(&mut self, events: &[Event], world: &World, rules: &Content) {
+        let thought = &rules.needs.thought;
+        // The young fed last turn: their meal is no thought of theirs
+        // (step 5 of the audit of wakes).
+        let handed = self.reserves.take_handed();
         for event in events {
             let body = match event {
                 Event::DayStarted { .. } | Event::NightFell { .. } => {
@@ -7462,6 +7509,16 @@ impl Brains {
                     let now = world.tick().0;
                     let spread = wake_spread(world);
                     for (id, mind) in &mut self.minds {
+                        // A sleeper does not hear the dawn nor the dusk
+                        // (the audit of wakes, step 2): it thinks when it
+                        // wakes, its sleep done.
+                        if !thought.wake_asleep
+                            && world
+                                .body(*id)
+                                .is_some_and(|b| sleeps_on(b, rules, mind.past.2))
+                        {
+                            continue;
+                        }
                         mind.wake(*id, now, spread);
                     }
                     continue;
@@ -7492,17 +7549,34 @@ impl Brains {
                 // (22 November 2026).
                 continue;
             }
+            if echo(event, thought, &handed) {
+                continue;
+            }
             if let Some(mind) = self.minds.get_mut(&body) {
-                mind.due = true;
-                if matches!(
-                    event,
-                    Event::BodyStopped { .. }
-                        | Event::BodyBlocked { .. }
-                        | Event::MoveRefused { .. }
-                ) {
+                let heard = thought.wake_asleep
+                    || !world
+                        .body(body)
+                        .is_some_and(|b| sleeps_on(b, rules, mind.past.2));
+                if heard {
+                    mind.due = true;
+                } else {
+                    // Asleep, it hears nothing (step 2): fallen asleep
+                    // on its way or at its work, it drops what it was
+                    // about, as its thought asleep did.
+                    mind.doing = Doing::Nothing;
+                }
+                if heard
+                    && matches!(
+                        event,
+                        Event::BodyStopped { .. }
+                            | Event::BodyBlocked { .. }
+                            | Event::MoveRefused { .. }
+                    )
+                {
                     mind.stopped = true;
                 }
                 if let Event::BodyBlocked { reason, .. } | Event::MoveRefused { reason, .. } = event
+                    && heard
                 {
                     mind.blocked = Some(*reason);
                     // A measure (D53, amended 26 November 2026): the days
@@ -7574,6 +7648,30 @@ fn pasts_of(body: &Body, rules: &Content, was_hungry: bool) -> (bool, bool, bool
         c.asleep,
         c.asleep && c.fatigue.points() >= COLLAPSED,
     )
+}
+
+/// Whether `event` is the echo of something already decided, which
+/// wakes nobody: a gather its own new intention, or its falling asleep,
+/// stopped (the audit of wakes, step 1, `thought.wake_on_interrupt`
+/// false: it has just decided; sleep has its threshold); a young one's
+/// meal it was handed (step 5, `handed`: no thought of its own).
+fn echo(event: &Event, thought: &crate::content::Thought, handed: &BTreeSet<BodyId>) -> bool {
+    match event {
+        Event::BodyAte { body, .. } => handed.contains(body),
+        Event::WorkStopped {
+            why: crate::WorkEnd::Interrupted,
+            ..
+        } => !thought.wake_on_interrupt,
+        _ => false,
+    }
+}
+
+/// Whether a body asleep sleeps on whatever it would think (D45): asleep,
+/// and not parched, or parched but collapsed of fatigue. Such a body's
+/// thought only lays down what it was about.
+fn sleeps_on(body: &Body, rules: &Content, was_hungry: bool) -> bool {
+    let (_, parched, _, asleep, collapsed) = pasts_of(body, rules, was_hungry);
+    asleep && (!parched || collapsed)
 }
 
 /// Can a body stand on `pos`?
@@ -8052,6 +8150,10 @@ fn decide(
     let map = world.map();
     let decision = |intention, why| Some(Decision { intention, why });
     let (thirsty, parched, hungry, asleep, collapsed) = pasts(world, rules, id, mind.past.2);
+    if !asleep {
+        // Awake at its camp, it sees its hearth's reserve (step 4).
+        pooling::see_reserve(world, rules, reserves, here, mind);
+    }
     // The world refuses a gather to a body whose arms and containers are
     // full (D57).
     let can_carry = body.food_room_g(&rules.movement) > 0;
@@ -8203,6 +8305,13 @@ fn decide(
             Why::Thirst,
         );
     }
+    // A young one of its hearth seen hungry near it: it feeds it (D58,
+    // the audit of wakes, step 5).
+    if let Some(decision) =
+        pooling::feed_young(world, rules, reserves, (id, body, here), mind, seed)
+    {
+        return Some(decision);
+    }
     // A child fed by its hearth does not gather alone (D58).
     let fed = pooling::fed_by_hearth(world, rules, reserves, body);
     // Back at its camp (home from the day, or at night), it first puts
@@ -8337,7 +8446,7 @@ fn decide(
     let carried = carried_kj(world, rules, id);
     let full = !can_carry
         || carried >= store
-        || carried + reserves.share_kj(world, rules, mind.ways.home) >= store;
+        || carried + pooling::known_share_kj(world, rules, reserves, mind) >= store;
     let mut gathers = !night && !fed && !going_home && (!full || on_the_way(world, groups, mind));
     let mut group_home = false;
     if !night {
@@ -8945,17 +9054,16 @@ fn follow_or_wait(
     if leader == id {
         // The caller waits, an hour after dawn at most, while a member
         // still sleeps or has not come within reach of it.
-        let waits = early
-            && !g.started
-            && g.members.iter().skip(1).any(|m| {
-                !g.left.contains(m)
-                    && world.body(*m).is_some_and(|b| {
-                        b.condition().asleep || !within(b.pos(), body.pos(), crate::FOLLOW_TILES)
-                    })
-            });
+        let waits = early && !g.started && members_away(world, g, body);
         if waits {
             mind.doing = Doing::Nothing;
-            mind.wake_at = Some(now + group_wait(world));
+            if rules.needs.decisions.behind_glance {
+                // Woken by the members it waits for, or its hour up.
+                mind.glance = Some(Glance::Members);
+                mind.wake_at = Some(g.dawn + hour(world));
+            } else {
+                mind.wake_at = Some(now + group_wait(world));
+            }
             return None;
         }
         return look_behind(world, rules, g, (id, body), mind, d, now);
@@ -8982,7 +9090,13 @@ fn follow_or_wait(
         if near {
             // The caller has not set off (or still sleeps): it waits by it.
             mind.doing = Doing::Nothing;
-            mind.wake_at = Some(now + group_wait(world));
+            if rules.needs.decisions.behind_glance {
+                // Woken when its caller sets off, or the hour is up.
+                mind.glance = Some(Glance::Caller(leader));
+                mind.wake_at = Some(g.dawn + hour(world));
+            } else {
+                mind.wake_at = Some(now + group_wait(world));
+            }
             return None;
         }
         // It goes to stand by its caller first.
@@ -9285,19 +9399,41 @@ fn close_habit(
 /// With the will tempered (D56): whether each parent's children are fed
 /// tonight ([`kin_fed`]), and whether a season ends with this day (the
 /// will and the confidences come back toward the innate then).
-fn temper_today(world: &World, rules: &Content, day: u64) -> (BTreeMap<BodyId, bool>, bool) {
+fn temper_today(
+    world: &World,
+    rules: &Content,
+    day: u64,
+    minds: &BTreeMap<BodyId, Mind>,
+) -> (BTreeMap<BodyId, bool>, bool) {
     if !rules.needs.temperance.on() {
         return (BTreeMap::new(), false);
     }
     let season = u64::from(world.calendar().days_per_cycle() / 4).max(1);
-    (kin_fed(world, rules), day > 0 && day.is_multiple_of(season))
+    (
+        kin_fed(world, rules, minds),
+        day > 0 && day.is_multiple_of(season),
+    )
 }
 
 /// Whether the children under `follows_mother_years` of each parent are
 /// fed at nightfall (D56): none of them hungry. Parents without such a
-/// child are not in it.
-fn kin_fed(world: &World, rules: &Content) -> BTreeMap<BodyId, bool> {
+/// child are not in it. With `temperance.kin_seen` (the audit of wakes,
+/// step 6), only the children it sees: both at its camp at nightfall.
+fn kin_fed(
+    world: &World,
+    rules: &Content,
+    minds: &BTreeMap<BodyId, Mind>,
+) -> BTreeMap<BodyId, bool> {
     let young = u64::from(rules.needs.decisions.follows_mother_years) * 1000;
+    let seen_only = rules.needs.temperance.kin_seen;
+    let sees = |parent: BodyId, child: &Body| {
+        minds.get(&parent).is_some_and(|mind| {
+            world
+                .body(parent)
+                .is_some_and(|p| pooling::at_camp(rules, p.pos(), mind))
+                && pooling::at_camp(rules, child.pos(), mind)
+        })
+    };
     let mut fed: BTreeMap<BodyId, bool> = BTreeMap::new();
     for child in world.bodies() {
         if child.condition().vitality.points() == 0 || world.age_milli(child) >= young {
@@ -9305,6 +9441,9 @@ fn kin_fed(world: &World, rules: &Content) -> BTreeMap<BodyId, bool> {
         }
         let ok = child.condition().hunger.points() < HUNGRY;
         for parent in [child.mother(), child.father()].into_iter().flatten() {
+            if seen_only && !sees(parent, child) {
+                continue;
+            }
             let entry = fed.entry(parent).or_insert(true);
             *entry = *entry && ok;
         }
@@ -9433,30 +9572,12 @@ fn look_behind(
         g.started = true;
         if dec.behind_tiles > 0 && !g.arrived.contains_key(&id) {
             // Setting off, it will look behind in a moment.
-            mind.wake_at = Some(now + group_wait(world));
+            look_again(world, dec, mind, now);
         }
         return Some(d);
     }
-    let reach = i32::try_from(dec.behind_tiles).unwrap_or(i32::MAX);
     let most = game_minutes(world, dec.behind_wait_minutes);
-    // It sees a member walking behind it, out of reach: it waits for it.
-    // One it does not see, or that stands still, it cannot wait for.
-    let sight = sight_at(world.map(), rules, body.pos());
-    let behind: Vec<BodyId> = g
-        .members
-        .iter()
-        .skip(1)
-        .filter(|m| {
-            !g.left.contains(m)
-                && !g.arrived.contains_key(m)
-                && world.body(**m).is_some_and(|b| {
-                    b.is_walking()
-                        && within(b.pos(), body.pos(), sight)
-                        && !within(b.pos(), body.pos(), reach)
-                })
-        })
-        .copied()
-        .collect();
+    let behind = behind_of(world, rules, g, body);
     if !behind.is_empty() && g.waited < most {
         // A fact of its review (PR 1 ter): whom it waited for.
         g.waited_for.extend(behind);
@@ -9475,12 +9596,108 @@ fn look_behind(
             why: d.why,
         });
     }
-    mind.wake_at = Some(now + group_wait(world));
+    look_again(world, dec, mind, now);
     if g.held {
         g.held = false;
         return Some(d);
     }
     None
+}
+
+/// The members of `g` its caller `body` sees walking behind it, not yet
+/// there, farther than `behind_tiles` (D56): those it waits for. One it
+/// does not see, or that stands still, it cannot wait for.
+fn behind_of(world: &World, rules: &Content, g: &Group, body: &Body) -> Vec<BodyId> {
+    let reach = i32::try_from(rules.needs.decisions.behind_tiles).unwrap_or(i32::MAX);
+    let sight = sight_at(world.map(), rules, body.pos());
+    g.members
+        .iter()
+        .skip(1)
+        .filter(|m| {
+            !g.left.contains(m)
+                && !g.arrived.contains_key(m)
+                && world.body(**m).is_some_and(|b| {
+                    b.is_walking()
+                        && within(b.pos(), body.pos(), sight)
+                        && !within(b.pos(), body.pos(), reach)
+                })
+        })
+        .copied()
+        .collect()
+}
+
+/// Whether a member of `g` its caller `body` waits for at dawn still
+/// sleeps or stands out of its reach (D56).
+fn members_away(world: &World, g: &Group, body: &Body) -> bool {
+    g.members.iter().skip(1).any(|m| {
+        !g.left.contains(m)
+            && world.body(*m).is_some_and(|b| {
+                b.condition().asleep || !within(b.pos(), body.pos(), crate::FOLLOW_TILES)
+            })
+    })
+}
+
+/// The caller on its way looks behind again in [`GROUP_WAIT_SECONDS`]:
+/// a thought then, or, with `behind_glance`, a glance (step 3 of the
+/// audit of wakes).
+fn look_again(world: &World, dec: &crate::content::Decisions, mind: &mut Mind, now: u64) {
+    let at = now + group_wait(world);
+    if dec.behind_glance {
+        mind.glance = Some(Glance::Behind(at));
+    } else {
+        mind.wake_at = Some(at);
+    }
+}
+
+/// What a mind watches without a thought (step 3 of the audit of wakes):
+/// due when what it waits for comes, or what it watched is gone.
+fn glance(
+    world: &World,
+    rules: &Content,
+    groups: &BTreeMap<BodyId, Group>,
+    (id, body): (BodyId, &Body),
+    mind: &mut Mind,
+    now: u64,
+) {
+    let Some(watch) = mind.glance else {
+        return;
+    };
+    let wake = match watch {
+        Glance::Behind(at) if now < at => return,
+        Glance::Behind(_) => {
+            let on_way = groups.get(&id).filter(|g| {
+                g.members[0] == id && !g.arrived.contains_key(&id) && g.ended.is_none() && !g.home
+            });
+            match on_way {
+                Some(g) if body.is_walking() => {
+                    let most = game_minutes(world, rules.needs.decisions.behind_wait_minutes);
+                    if g.waited >= most || behind_of(world, rules, g, body).is_empty() {
+                        mind.glance = Some(Glance::Behind(now + group_wait(world)));
+                        return;
+                    }
+                    true
+                }
+                _ => true,
+            }
+        }
+        Glance::Members => groups
+            .get(&id)
+            .is_none_or(|g| g.started || !members_away(world, g, body)),
+        Glance::Caller(leader) => {
+            let lead = world.body(leader);
+            groups.get(&leader).is_none_or(|g| {
+                g.home
+                    || g.arrived.contains_key(&leader)
+                    || lead.is_none_or(|l| {
+                        l.is_walking() || !within(l.pos(), body.pos(), crate::FOLLOW_TILES)
+                    })
+            })
+        }
+    };
+    if wake {
+        mind.glance = None;
+        mind.due = true;
+    }
 }
 
 /// What a member of a group does once it is there (D56).
@@ -12298,7 +12515,7 @@ mod tests {
             gives: "blackberries".to_owned(),
             reason: Refusal::NothingRipe,
         };
-        brains.notice(&[refused], &world);
+        brains.notice(&[refused], &world, &rules);
         let mind = brains.mind(id).unwrap();
         assert!(mind.left_alone[&key] > world.tick().0);
         // A few are held at most: the soonest free forgotten first.

@@ -405,6 +405,23 @@
     //                    that hearth at the camp, as before (the
     //                    vivarium's --wake-all); 48 % of all thoughts came
     //                    from it, 90 % of them changing nothing.
+    // wake_on_interrupt: false — a gather stopped by the body's own new
+    //                    intention (to eat, to drink, to go home), or by
+    //                    its falling asleep, does not make it think again:
+    //                    it has just decided, and falling asleep has its
+    //                    own threshold (the audit of wakes, 26 November
+    //                    2026, step 1: 4.4 thoughts a person-journée, 99 %
+    //                    changing nothing). true, or absent: the rule
+    //                    before (the vivarium's --old-wakes).
+    // wake_asleep:       false — a sleeper does not think: not when it
+    //                    falls asleep, nor at dawn or dusk, nor at a gauge
+    //                    or an event while it sleeps on (it drops what it
+    //                    was about, as its thought asleep did); it thinks
+    //                    when it wakes, its sleep done, or when it is
+    //                    parched and not collapsed (it gets up to drink).
+    //                    Step 2 of the audit: 1.4 thoughts a
+    //                    person-journée, 97 to 100 % changing nothing.
+    //                    true, or absent: the rule before.
     thought: (
         plant_sight_tiles: 30,
         fed_under: 30,
@@ -413,6 +430,8 @@
         places_remembered: 48,
         patch_tiles: 4,
         hearth_wakes: false,
+        wake_on_interrupt: false,
+        wake_asleep: false,
     ),
     // The evening fire and the common memory (D55, lot 4 of the
     // simulation, decided by the project lead on 22 November 2026). Every
@@ -518,6 +537,16 @@
     //                          derrière"); 0: it never does;
     // behind_wait_minutes: 30 — half an hour of such waits a day at most,
     //                          in game minutes (a 1,440th of the day).
+    // behind_glance: true — the look behind is a glance, not a thought
+    //                (the audit of wakes, 26 November 2026, step 3): the
+    //                caller on its way glances behind every 4 seconds and
+    //                thinks only when it sees a member to wait for;
+    //                waiting at dawn it thinks when the last member it
+    //                waits for wakes and comes within reach (or its hour
+    //                is up), not every 4 seconds; a member waiting by its
+    //                caller thinks when the caller sets off. 10.9 thoughts
+    //                a person-journée, 97 % changing nothing. false, or
+    //                absent: the rule before (--old-wakes).
     // The evening's review (PR 1 ter; the lead, 23 November 2026: "on
     // peut mettre ça en place... les améliorer et les pousser un peu plus
     // loin"): a caller keeps dated facts on its companions, never a level
@@ -561,6 +590,7 @@
         review_outings: 3,
         review_bad: 2,
         near_camp_minutes: 3,
+        behind_glance: true,
     ),
     // The will tempered, and a confidence by activity (D50 amended, D56;
     // the project lead, 23 November 2026: "je suis d'accord avec toutes
@@ -604,6 +634,13 @@
     //                  a day's success after successes in a row of the
     //                  same activity weighs more, up to twice after four,
     //                  straight between; a failure ends the streak.
+    // kin_seen: true — a parent judges its day at the camp ("stay") only
+    //                  by the children it sees: both at its camp at
+    //                  nightfall; a child away is not judged (the audit of
+    //                  wakes, 26 November 2026, step 6: 61 % of the pairs
+    //                  read with the child out of sight). false, or
+    //                  absent: all its children, wherever they are, the
+    //                  rule before (--old-wakes).
     temperance: (
         bears_by_innate: [(0, 2), (100, 6)],
         failure_milli: 1000,
@@ -613,6 +650,7 @@
         activities: [("explore", 75), ("gather", 50), ("stay", 90)],
         bold_will: 40,
         streak_percent: [(0, 100), (4, 200)],
+        kin_seen: true,
     ),
     // Who is believed to know (D56, PR 1 ter): "32 knows where berries
     // are" is a record in the common memory (D55); each body holds, for
@@ -811,6 +849,36 @@
     //                        the very journée it would have gone alone;
     //                        3: fewer heaps, but food spoils up to two
     //                        journées early (berries keep three).
+    // hearth_look: true — a body knows its hearth's reserve by what it
+    //                        saw of it (the project lead, 26 November 2026:
+    //                        "no telepathy: a person knows what is at the
+    //                        camp when she sees it"): what the reserve held
+    //                        and how many lay in its circle the last time
+    //                        it saw it, awake at its camp (6 tiles of its
+    //                        home, or its home's place), at the dawn
+    //                        circle, or laying a heap there itself. Out at
+    //                        its gathering it believes what it saw: full,
+    //                        emptied since, it comes home to an empty one.
+    //                        false, or absent: its share read from
+    //                        anywhere, the rule before (--old-wakes).
+    // young_seen: true — the young are seen, not their stomach (the
+    //                        project lead, 26 November 2026, from the case
+    //                        of a hungry child waiting at the camp, food
+    //                        laid there no longer waking it): an awake
+    //                        grown body, or a child past fed_until_years,
+    //                        who sees a young one of its hearth (fed by
+    //                        it, seen at the dawn circle) hungry within 6
+    //                        tiles feeds it: what it carries, walking to
+    //                        it, or at its camp a handful taken from the
+    //                        reserve for it (laid back once the young is
+    //                        fed). The young thinks nothing of it. And what
+    //                        the reserve keeps for the young counts the
+    //                        stomach of those seen at the camp; for the
+    //                        others, a day of their need less what they
+    //                        were seen eating at the camp since dawn.
+    //                        false, or absent: nobody feeds another, the
+    //                        young's stomach read from anywhere, the rule
+    //                        before (--old-wakes).
     pooling: (
         fed_until_years: 8,
         young_first_until_years: 12,
@@ -821,6 +889,8 @@
         starving_fat_percent: 25,
         keep_percent_by_will: [(0, 10), (100, 90)],
         heap_days: 1,
+        hearth_look: true,
+        young_seen: true,
     ),
     // The gestures of the hands (D57; the project lead, 24 November 2026:
     // "C'est parfait"): pick up, cut with what is in hand, fold. No

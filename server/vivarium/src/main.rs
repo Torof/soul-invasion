@@ -82,6 +82,14 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            from a hearth's reserve wakes everyone of that
                            hearth at the camp, asleep or not, as before
                            (thought.hearth_wakes true)
+  --old-wakes              the control run of the audit of wakes (26
+                           November 2026): every switch of its steps at the
+                           rule before (thought.wake_on_interrupt and
+                           thought.wake_asleep true,
+                           decisions.behind_glance false,
+                           pooling.hearth_look and
+                           pooling.young_seen,
+                           temperance.kin_seen false)
   --no-passages            the control run of the passages: nobody keeps,
                            tells or walks through a passage (the content's
                            passages section replaced by none)
@@ -197,6 +205,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-trips" => settings.trips = false,
             "--no-problems" => settings.problems = false,
             "--wake-all" => settings.wake_all = true,
+            "--old-wakes" => settings.old_wakes = true,
             "--no-passages" => settings.passages = false,
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,
