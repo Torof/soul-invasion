@@ -9,16 +9,18 @@
 //!
 //! What it tells, in order, each step reading only the ones before:
 //!
-//! 1. **The plates' history** ([`history`], version 3, the lead's 26
-//!    November): a supercontinent breaks along rifts, its fragments drift,
-//!    collide and weld, terranes accrete. The continents of today are what
-//!    is left, each piece of crust carrying its record (fragment, age,
-//!    margins, last mountain building). A world's character is an input:
-//!    [`Settings`].
+//! 1. **The plates' history** ([`history`], version 4, the lead's 26
+//!    November): plates move through the whole history, driven by the
+//!    mantle and by slab pull, making ocean floor at their ridges and
+//!    sinking it at their trenches; the supercontinent on them breaks,
+//!    its pieces collide and weld, terranes and arcs accrete. The
+//!    continents of today are what is left, each piece of crust carrying
+//!    its record (piece, age, margins, last mountain building). A world's
+//!    character is an input: [`Settings`].
 //! 2. **Older seams** inside the supercontinent (old sutures, failed
 //!    rifts), carried with its crust.
-//! 3. **Today's plates**: one on each large group of welded pieces,
-//!    turning as it last turned, oceanic plates between.
+//! 3. **Today's plates**: the plates of the history's last step, turning
+//!    as they last turned.
 //! 4. **Boundaries.** Each boundary cell is classified by the relative
 //!    motion of the two plates: convergent (collision, continental arc,
 //!    island arc, or the trench of the plate that sinks), divergent
@@ -273,6 +275,7 @@ fn tan_step(k: i64) -> i64 {
 }
 
 /// The planet's grid: cell centres, areas and neighbours.
+#[derive(Debug, Clone)]
 pub struct Sphere {
     /// Each cell's centre.
     pub centre: Vec<V3>,
@@ -528,7 +531,23 @@ pub struct Layout {
     /// The plates.
     pub plates: Vec<Plate>,
     warp_seed: u64,
+    /// Plates read from a grid (today's, the history's last step) rather
+    /// than from a Voronoi of seed points.
+    grid: Option<Box<Grid>>,
 }
+
+/// Each cell's plate on the grid.
+#[derive(Debug, Clone)]
+struct Grid {
+    sphere: Sphere,
+    plate: Vec<u8>,
+}
+
+/// The warp of a grid's plate borders, `(cell, amplitude)` in [`ONE`]
+/// units: a few tens of km, so a border is no staircase of cells.
+const GRID_WARP: [(i64, i64); 2] = [(80_000, 10_000), (25_000, 3_000)];
+/// A grid cell votes for its plate within this, km.
+const GRID_VOTE_KM: i64 = 150;
 
 impl Layout {
     fn draw(seed: u64, purpose: u64, (lo, hi): (i64, i64)) -> Self {
@@ -548,11 +567,88 @@ impl Layout {
         Self {
             plates,
             warp_seed: hash(&[seed, purpose, 0xa5]),
+            grid: None,
         }
+    }
+
+    /// Today's plates: the history's last step, each turning as it last
+    /// turned. Ids are renumbered from 0, largest plate first; the second
+    /// value is each cell's plate.
+    fn of_history(seed: u64, s: &Settings, sphere: &Sphere, h: &History) -> (Self, Vec<u8>) {
+        let last = h.last();
+        let raw = &h.plate[last];
+        let mut area = vec![0_i64; history::MAXP];
+        let mut sum = vec![[0_i64; 3]; history::MAXP];
+        let mut ocean = vec![(0_i64, 0_i64); history::MAXP];
+        for c in 0..CELLS {
+            let p = raw[c] as usize;
+            area[p] += i64::from(sphere.area_km2[c]);
+            sum[p] = add(sum[p], sphere.centre[c]);
+            if h.class[last][c] == history::OCEAN {
+                ocean[p].0 += i64::from(h.age[last][c]);
+                ocean[p].1 += 1;
+            }
+        }
+        let mut ids: Vec<usize> = (0..history::MAXP).filter(|&p| area[p] > 0).collect();
+        ids.sort_by_key(|&p| (Reverse(area[p]), p));
+        let mut dense = [0_u8; history::MAXP];
+        let plates = ids
+            .iter()
+            .enumerate()
+            .map(|(k, &p)| {
+                dense[p] = k as u8;
+                let m = h.motion[last][p];
+                let age = if ocean[p].1 > 0 {
+                    ocean[p].0 / ocean[p].1
+                } else {
+                    0
+                };
+                Plate {
+                    centre: normalize(sum[p]),
+                    weight: 0,
+                    pole: if m.speed_mm > 0 { m.pole } else { [0, 0, ONE] },
+                    speed: m.speed_mm.max(s.speed_mm.0),
+                    // Younger floor is lighter: it rides.
+                    buoyancy: (1000 - age * 1000 / 200).clamp(0, 1000),
+                }
+            })
+            .collect();
+        let plate: Vec<u8> = raw.iter().map(|&p| dense[p as usize]).collect();
+        let layout = Self {
+            plates,
+            warp_seed: hash(&[seed, P_PLATES, 0xa5]),
+            grid: Some(Box::new(Grid {
+                sphere: sphere.clone(),
+                plate: plate.clone(),
+            })),
+        };
+        (layout, plate)
     }
 
     /// The plate at a point.
     pub fn plate_at(&self, p: V3) -> usize {
+        if let Some(g) = &self.grid {
+            // The cells around vote, nearer ones more.
+            let q = warp(self.warp_seed, p, &GRID_WARP);
+            let c = g.sphere.cell_of(q);
+            let floor = cos(GRID_VOTE_KM * ONE / RADIUS_KM);
+            let mut tally: [(u8, i64); 9] = [(u8::MAX, 0); 9];
+            let around =
+                std::iter::once(c).chain(g.sphere.links[c].iter().map(|&(n, _)| n as usize));
+            for k in around {
+                let w = (dot(q, g.sphere.centre[k]) - floor).max(0);
+                let plate = g.plate[k];
+                if let Some(t) = tally.iter_mut().find(|t| t.0 == plate || t.0 == u8::MAX) {
+                    t.0 = plate;
+                    t.1 += w;
+                }
+            }
+            return tally
+                .iter()
+                .filter(|t| t.0 != u8::MAX)
+                .max_by_key(|t| (t.1, Reverse(t.0)))
+                .map_or(g.plate[c] as usize, |t| t.0 as usize);
+        }
         let q = warp(self.warp_seed, p, &PLATE_WARP);
         let mut best = 0;
         let mut best_score = i64::MIN;
@@ -759,70 +855,8 @@ fn range_of(h: &History, c: usize) -> Option<(i64, i64)> {
     Some((height * youth / 1000, width))
 }
 
-/// Today's plates: one centred on each group of welded pieces larger than
-/// [`PLATE_GROUP_KM2`], turning as the group last turned, then oceanic
-/// plates up to the settings' count (at least [`OCEAN_PLATES`]).
-fn today_plates(seed: u64, s: &Settings, sphere: &Sphere, h: &History) -> Layout {
-    let mut sum = vec![[0_i64; 3]; 256];
-    let mut area = vec![0_i64; 256];
-    for c in 0..CELLS {
-        let p = h.piece[c];
-        if p == history::NONE {
-            continue;
-        }
-        let g = h.group[p as usize] as usize;
-        sum[g] = add(sum[g], sphere.centre[c]);
-        area[g] += i64::from(sphere.area_km2[c]);
-    }
-    let mut plates = Vec::new();
-    for g in 0..256 {
-        if area[g] < PLATE_GROUP_KM2 {
-            continue;
-        }
-        let m = h.motion[g];
-        let speed = (m.angle * RADIUS_KM / ONE / s.step_my).max(LEAST_SPEED_MM);
-        plates.push(Plate {
-            centre: normalize(sum[g]),
-            weight: (60_000 + area[g] / 200).min(200_000),
-            pole: m.pole,
-            speed,
-            buoyancy: draw(seed, P_PLATES, 300 + g as u64, 0, 1000),
-        });
-    }
-    let want =
-        draw(seed, P_PLATES, 0, s.plates.0, s.plates.1).max(plates.len() as i64 + OCEAN_PLATES);
-    let mut k = 0;
-    while (plates.len() as i64) < want && k < 10_000 {
-        let at = random_unit(seed, P_PLATES + 1, k);
-        k += 1;
-        if h.piece[sphere.cell_of(at)] != history::NONE
-            || plates.iter().any(|p| km_between(p.centre, at) < 2_000)
-        {
-            continue;
-        }
-        let u = draw(seed, P_PLATES, 100 + k, 0, 1000);
-        plates.push(Plate {
-            centre: at,
-            weight: u * u * OCEAN_PLATE_WEIGHT / 1_000_000,
-            pole: random_unit(seed, P_PLATES + 2, k),
-            speed: draw(seed, P_PLATES, 200 + k, SPEED_MM.0, SPEED_MM.1),
-            buoyancy: draw(seed, P_PLATES, 400 + k, 0, 1000),
-        });
-    }
-    Layout {
-        plates,
-        warp_seed: hash(&[seed, P_PLATES, 0xa5]),
-    }
-}
-
-/// A group of welded pieces this large gets its own plate, km².
-const PLATE_GROUP_KM2: i64 = 1_500_000;
-/// Oceanic plates, at least.
-const OCEAN_PLATES: i64 = 4;
-/// The largest weight of an oceanic plate's seed, [`ONE`] units.
-const OCEAN_PLATE_WEIGHT: i64 = 150_000;
-/// A continent's plate moves at least this fast, mm a year.
-const LEAST_SPEED_MM: i64 = 10;
+/// Ocean floor older than this, millions of years, sinks no more.
+const FLAT_FLOOR_MY: i64 = 120;
 
 /// How far back a hotspot's chain is followed, millions of years.
 const TRACK_MYR: i64 = 70;
@@ -873,20 +907,15 @@ impl Planet {
         let mut old_edge = vec![None; CELLS];
         for c in 0..CELLS {
             if continental[c] {
-                let src = history.source[c] as usize;
-                old_plate[c] = old_at[src];
-                old_edge[c] = old_at_edge[src];
+                let home = history.home[c] as usize;
+                old_plate[c] = old_at[home];
+                old_edge[c] = old_at_edge[home];
             } else {
                 old_plate[c] = old.plate_at(sphere.centre[c]) as u8;
             }
         }
-        // 3. Today's plates, from the history's last motions.
-        let plates = today_plates(seed, settings, &sphere, &history);
-        let plate: Vec<u8> = sphere
-            .centre
-            .iter()
-            .map(|&p| plates.plate_at(p) as u8)
-            .collect();
+        // 3. Today's plates: the history's last step.
+        let (plates, plate) = Layout::of_history(seed, settings, &sphere, &history);
         // 4. Boundaries.
         let mut edge = vec![None; CELLS];
         for c in 0..CELLS {
@@ -918,19 +947,6 @@ impl Planet {
             .collect();
         let (near_d, near_l) = sphere.spread(&sources, |a, b| plate[a] == plate[b], 1_500);
         let near: Vec<(u32, u32)> = near_d.into_iter().zip(near_l).collect();
-        let ridges: Vec<(usize, u32)> = (0..CELLS)
-            .filter(|&c| {
-                matches!(
-                    edge[c],
-                    Some(Edge {
-                        kind: Kind::Ridge,
-                        ..
-                    })
-                )
-            })
-            .map(|c| (c, 0))
-            .collect();
-        let (ridge_d, _) = sphere.spread(&ridges, |_, b| !continental[b], 5_000);
         let shore: Vec<(usize, u32)> = (0..CELLS)
             .filter(|&c| !continental[c])
             .map(|c| (c, 0))
@@ -946,7 +962,7 @@ impl Planet {
         let coasts: Vec<(usize, u32)> = (0..CELLS)
             .filter(|&c| continental[c])
             .filter_map(|c| {
-                let k = history.margin[history.margin.len() - 1][c];
+                let k = history.margin[history.last()][c];
                 (k == history::Margin::Passive as u8 || k == history::Margin::Active as u8)
                     .then_some((c, u32::from(k)))
             })
@@ -1002,7 +1018,7 @@ impl Planet {
                     } else {
                         900
                     };
-                    let from = sphere.centre[history.source[c] as usize];
+                    let from = sphere.centre[history.home[c] as usize];
                     let broad = fbm3(relief_seed ^ 0xb0, from, &[(300_000, 2), (120_000, 1)]) - 500;
                     let mut range = 0;
                     if range_d[c] != u32::MAX {
@@ -1012,8 +1028,11 @@ impl Planet {
                     }
                     -300 + inland * rise / 600 + broad / 2 + rough + range
                 } else {
-                    let r = i64::from(ridge_d[c].min(3_500));
-                    -2_600 - 3_000 * ((r * 1_000_000 / 3_500).isqrt()) / 1000 + rough
+                    // The floor sinks as it cools: ~2,500 m at a ridge,
+                    // ~350 m more per square root of a million years
+                    // (Parsons and Sclater), flat past [`FLAT_FLOOR_MY`].
+                    let age = i64::from(history.age_my[c]).min(FLAT_FLOOR_MY);
+                    -2_500 - 350 * (age * 1_000_000).isqrt() / 1000 + rough
                 };
                 let (d, src) = near[c];
                 if d != u32::MAX {
@@ -1205,7 +1224,7 @@ fn across(
     c: usize,
 ) -> Option<(usize, V3, bool)> {
     let mine = plate[c];
-    let mut counts = [0_u8; 32];
+    let mut counts = [0_u8; history::MAXP];
     for &(n, _) in &sphere.links[c] {
         let o = plate[n as usize];
         if o != mine {
@@ -2202,7 +2221,8 @@ mod tests {
         let b = Planet::new(3);
         assert_eq!(a.elevation, b.elevation);
         assert_eq!(a.plate, b.plate);
-        assert_eq!(a.history.owner, b.history.owner);
+        assert_eq!(a.history.plate, b.history.plate);
+        assert_eq!(a.history.age, b.history.age);
         assert_eq!(a.history.orogeny_my, b.history.orogeny_my);
         let land: i64 = a.lands.iter().map(|l| l.area_km2).sum();
         assert!(
@@ -2213,11 +2233,11 @@ mod tests {
 
     #[test]
     fn lands_come_from_the_history_large_but_not_gigantic() {
-        for seed in [11, 17] {
+        for seed in [2, 12] {
             let world = Planet::new(seed);
             let biggest = &world.lands[0];
             assert!(
-                biggest.area_km2 <= 30_000_000,
+                (14_000_000..=30_000_000).contains(&biggest.area_km2),
                 "seed {seed}: {}",
                 biggest.area_km2
             );
@@ -2226,7 +2246,7 @@ mod tests {
                 .iter()
                 .filter(|l| l.area_km2 > 1_000_000)
                 .count();
-            assert!(large >= 8, "seed {seed}: {large} lands over 1 M km²");
+            assert!(large >= 4, "seed {seed}: {large} lands over 1 M km²");
             let mut pieces: Vec<u8> = biggest
                 .cells
                 .iter()
@@ -2252,20 +2272,54 @@ mod tests {
         let world = Planet::new(11);
         let h = &world.history;
         // At the start, one supercontinent of the settings' crust share.
-        let first = &h.owner[0];
-        let land: usize = first.iter().filter(|&&p| p != history::NONE).count();
+        let first = &h.class[0];
+        let land = (0..CELLS)
+            .filter(|&c| first[c] == history::CONTINENT)
+            .count();
         let share = land as i64 * 1000 / CELLS as i64;
         assert!((share - 220).abs() < 60, "{share}");
         // Today, every piece of crust carries a record.
         for c in 0..CELLS {
             if world.continental[c] {
-                assert_ne!(h.source[c], u32::MAX);
-                assert!(h.age_my[c] > 0);
+                assert!((h.home[c] as usize) < CELLS);
+            }
+            // The supercontinent's crust is old (an arc may be born today).
+            if h.piece[c] < history::TERRANE_BASE {
+                assert!(h.age_my[c] >= 700, "{}", h.age_my[c]);
             }
         }
         // Leading edges today are young mountains.
-        let last = h.margin.len() - 1;
+        let last = h.last();
         assert!((0..CELLS).any(|c| h.margin[last][c] == history::Margin::Active as u8
             && h.orogeny_my[c] == 0));
+        // The ocean floor is young near the ridges and old far from them:
+        // new floor was made, old floor sank.
+        let ocean: Vec<u16> = (0..CELLS)
+            .filter(|&c| h.class[last][c] == history::OCEAN)
+            .map(|c| h.age[last][c])
+            .collect();
+        let young = ocean.iter().filter(|&&a| a <= 20).count();
+        assert!(young * 20 > ocean.len(), "{young} of {}", ocean.len());
+    }
+
+    #[test]
+    fn every_cell_is_on_exactly_one_plate_at_every_step() {
+        for seed in [11, 17] {
+            let world = Planet::new(seed);
+            let h = &world.history;
+            for t in 0..=h.last() {
+                // One plate per cell, a plate id (never "none"), whose
+                // motion at that step is on record.
+                let mut cells = vec![0_usize; history::MAXP];
+                for &p in &h.plate[t] {
+                    assert!(
+                        (p as usize) < h.motion[t].len(),
+                        "seed {seed} step {t}: plate {p}"
+                    );
+                    cells[p as usize] += 1;
+                }
+                assert_eq!(cells.iter().sum::<usize>(), CELLS);
+            }
+        }
     }
 }

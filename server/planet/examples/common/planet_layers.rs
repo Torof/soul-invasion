@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use planet::history::{self, History, Margin, NONE};
+use planet::history::{self, Margin, NONE};
 use planet::{
     self, Edge, Kind, Line, OldKind, Planet, Setting, ZOOM_SIDE, Zoom, chamfer, open_sea,
 };
@@ -384,7 +384,7 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         l.px[i] = if edge {
             [30, 30, 30, 255]
         } else {
-            rgba(piece_colour(h, p), 255)
+            rgba(piece_colour(p), 255)
         };
     }
     l.write(dir, &format!("p{seed}-fragments.png"));
@@ -431,6 +431,14 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         l.px[i] = rgba(mix([255, 245, 200], [90, 45, 20], t), 230);
     }
     l.write(dir, &format!("p{seed}-age.png"));
+    let mut l = Layer::new(PW, PH);
+    for (i, &c) in cell.iter().enumerate() {
+        if h.piece[c] != NONE {
+            continue;
+        }
+        l.px[i] = rgba(floor_colour(i64::from(h.age_my[c])), 255);
+    }
+    l.write(dir, &format!("p{seed}-fond.png"));
     // Data for the readout, on a 512 × 256 grid: a letter per cell for its
     // plate (upper case on land, lower case at sea), and its height in
     // hundreds of metres as one character from U+00A1.
@@ -461,13 +469,67 @@ fn lon0_of(zoom: Option<&Zoom>) -> i64 {
     })
 }
 
-/// A piece's colour: fragments from a wheel, terranes brown.
-fn piece_colour(h: &History, p: u8) -> [u8; 3] {
-    if h.fragments[p as usize].terrane {
+/// A piece's colour: the supercontinent's plates from a wheel, terranes
+/// brown, island arcs olive.
+fn piece_colour(p: u8) -> [u8; 3] {
+    if p >= history::ARC_BASE {
+        [150, 150, 80]
+    } else if p >= history::TERRANE_BASE {
         [150, 115, 85]
     } else {
         PLATE_COLOURS[p as usize % 16]
     }
+}
+
+/// A history plate's colour (ids past the wheel, darker).
+fn plate_colour(p: u8) -> [u8; 3] {
+    let c = PLATE_COLOURS[p as usize % 16];
+    if p >= 16 {
+        mix(c, [40, 40, 40], 300)
+    } else {
+        c
+    }
+}
+
+/// An ocean floor's age colour: red at the ridge, then orange, yellow,
+/// green, blue, violet past 200 My (the usual map's scale).
+pub fn floor_colour(age: i64) -> [u8; 3] {
+    const STOPS: [(i64, [u8; 3]); 6] = [
+        (0, [200, 30, 40]),
+        (20, [245, 140, 40]),
+        (50, [245, 225, 80]),
+        (90, [110, 200, 110]),
+        (140, [70, 140, 220]),
+        (200, [120, 70, 170]),
+    ];
+    for w in STOPS.windows(2) {
+        let ((a, ca), (b, cb)) = (w[0], w[1]);
+        if age <= b {
+            return mix(ca, cb, (age - a).max(0) * 1000 / (b - a));
+        }
+    }
+    STOPS[5].1
+}
+
+/// A boundary kind's colour on the history's maps (`Kind as u8 + 1`).
+fn kind_colour(k: u8) -> Option<[u8; 3]> {
+    let kinds = [
+        Kind::Ridge,
+        Kind::Rift,
+        Kind::Transform,
+        Kind::Trench,
+        Kind::Arc,
+        Kind::IslandArc,
+        Kind::Collision,
+    ];
+    let kind = *kinds.get(usize::from(k).checked_sub(1)?)?;
+    Some(match kind {
+        Kind::Ridge | Kind::Rift => [255, 230, 50],
+        Kind::Transform => [235, 235, 235],
+        Kind::Trench => [230, 20, 30],
+        Kind::Arc | Kind::IslandArc => [255, 120, 30],
+        Kind::Collision => [200, 60, 255],
+    })
 }
 
 /// A last mountain building's colour: today red, 100 My orange, 200
@@ -484,10 +546,13 @@ fn orogeny_colour(ago: i64) -> [u8; 3] {
     }
 }
 
-/// The history view: the planet at each drift step, `h{seed}-{step}.png`
-/// (1,024 × 512, centred as the planet view): each piece in its colour,
-/// its margins (rift yellow, leading red, trailing green, weld violet),
-/// the upwelling (orange ring) and the downwellings (blue rings).
+/// The history view: the planet at each step, `h{seed}-{step}.png`
+/// (1,024 × 512, centred as the planet view): each plate in its colour,
+/// dark at sea and light under continents, the coasts outlined, the
+/// boundaries by what they do at that step (ridge or rift yellow, trench
+/// red, arc orange, collision violet, transform white), the upwelling
+/// (orange ring) and the downwellings (blue rings); and the ocean floor's
+/// age at each step, `o{seed}-{step}.png`.
 pub fn history_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
     let (w, hgt) = (PW / 2, PH / 2);
     let lon0 = lon0_of(zoom);
@@ -506,20 +571,39 @@ pub fn history_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
             (900 - planet::latitude(v)) * hgt as i64 / 1800,
         )
     };
-    for (t, owner) in h.owner.iter().enumerate() {
+    let right = |i: usize| {
+        if (i + 1).is_multiple_of(w) {
+            i + 1 - w
+        } else {
+            i + 1
+        }
+    };
+    let down = |i: usize| if i + w < w * hgt { i + w } else { i };
+    for t in 0..=h.last() {
+        let (plate, class, kind) = (&h.plate[t], &h.class[t], &h.kind[t]);
         let mut l = Layer::new(w, hgt);
+        let mut o = Layer::new(w, hgt);
         for (i, &c) in cell.iter().enumerate() {
-            let p = owner[c];
-            l.px[i] = if p == NONE {
-                [22, 42, 82, 255]
+            let land = class[c] != history::OCEAN;
+            let base = plate_colour(plate[c]);
+            let coast = [right(i), down(i)]
+                .iter()
+                .any(|&j| (class[cell[j]] != history::OCEAN) != land);
+            l.px[i] = if coast {
+                [25, 25, 25, 255]
+            } else if let Some(k) = kind_colour(kind[c]) {
+                rgba(k, 255)
+            } else if land {
+                rgba(mix(base, [255, 250, 235], 450), 255)
             } else {
-                match h.margin[t][c] {
-                    k if k == Margin::Rift as u8 => [255, 225, 60, 255],
-                    k if k == Margin::Active as u8 => [235, 35, 35, 255],
-                    k if k == Margin::Passive as u8 => [120, 235, 140, 255],
-                    k if k == Margin::Suture as u8 => [190, 70, 240, 255],
-                    _ => rgba(piece_colour(h, p), 255),
-                }
+                rgba(mix(base, [15, 25, 60], 600), 255)
+            };
+            o.px[i] = if coast {
+                [25, 25, 25, 255]
+            } else if land {
+                [200, 195, 185, 255]
+            } else {
+                rgba(floor_colour(i64::from(h.age[t][c])), 255)
             };
         }
         let (x, y) = at(h.upwelling);
@@ -529,6 +613,7 @@ pub fn history_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
             l.ring(x, y, 12, 3, [60, 200, 255, 255]);
         }
         l.write(dir, &format!("h{}-{t:02}.png", world.seed));
+        o.write(dir, &format!("o{}-{t:02}.png", world.seed));
     }
 }
 

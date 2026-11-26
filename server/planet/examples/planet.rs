@@ -238,12 +238,18 @@ fn main() {
     }
 }
 
-/// The history in numbers: pieces, welds, and what the largest lands are
-/// made of.
+/// The history in numbers: plates, welds, rifts, accretions, the ocean
+/// floor, and what the largest lands are made of.
 fn history_json(world: &Planet) -> serde_json::Value {
+    use planet::history::{NONE, OCEAN, TERRANE_BASE};
     let h = &world.history;
-    let fragments = h.fragments.iter().filter(|f| !f.terrane).count();
-    let terranes = h.fragments.len() - fragments;
+    let last = h.last();
+    let alive = |t: usize| {
+        let mut v = h.plate[t].clone();
+        v.sort_unstable();
+        v.dedup();
+        v.len()
+    };
     let welded: Vec<serde_json::Value> = world
         .lands
         .iter()
@@ -253,26 +259,53 @@ fn history_json(world: &Planet) -> serde_json::Value {
                 .cells
                 .iter()
                 .map(|&c| h.piece[c as usize])
-                .filter(|&p| p != planet::history::NONE)
+                .filter(|&p| p != NONE)
                 .collect();
             pieces.sort_unstable();
             pieces.dedup();
-            let (f, t): (Vec<u8>, Vec<u8>) = pieces
-                .iter()
-                .partition(|&&p| !h.fragments[p as usize].terrane);
+            let (f, t): (Vec<u8>, Vec<u8>) = pieces.iter().partition(|&&p| p < TERRANE_BASE);
             json!({"area_km2": l.area_km2, "span_km": l.span_km, "fragments": f.len(),
                 "terranes": t.len()})
         })
         .collect();
-    let mut groups: Vec<u8> = h.group.clone();
-    groups.sort_unstable();
-    groups.dedup();
-    json!({"fragments": fragments, "terranes": terranes, "groups_at_end": groups.len(),
-        "downwellings": h.downwellings.len(),
-        "welds": h.welds.iter().filter(|w| !w.3).map(|w| json!([w.0, w.1, w.2,
-            h.fragments[w.1 as usize].area_km2, h.fragments[w.2 as usize].area_km2])).collect::<Vec<_>>(),
-        "accretions": h.welds.iter().filter(|w| w.3).count(), "my": h.owner.len().saturating_sub(1) as i64
-            * world.settings.step_my, "largest_lands": welded})
+    let s = &world.sphere;
+    let (mut floor_km2, mut floor_age, mut young_km2, mut floor_max) = (0_i64, 0_i64, 0_i64, 0);
+    for c in 0..planet::CELLS {
+        if h.class[last][c] != OCEAN {
+            continue;
+        }
+        let a = i64::from(s.area_km2[c]);
+        let age = i64::from(h.age[last][c]);
+        floor_km2 += a;
+        floor_age += a * age;
+        young_km2 += if age <= 20 { a } else { 0 };
+        floor_max = floor_max.max(age);
+    }
+    let mut speeds: Vec<(i64, i64)> = (0..world.plates.plates.len())
+        .map(|k| {
+            let area: i64 = (0..planet::CELLS)
+                .filter(|&c| world.plate[c] as usize == k)
+                .map(|c| i64::from(s.area_km2[c]))
+                .sum();
+            (area, world.plates.plates[k].speed)
+        })
+        .collect();
+    speeds.sort_unstable_by_key(|&(a, _)| std::cmp::Reverse(a));
+    json!({"plates_at_start": h.plates_at_start.1, "continent_plates_at_start": h.plates_at_start.0,
+        "plates_at_end": alive(last), "terranes": h.terranes, "downwellings": h.downwellings.len(),
+        "welds": h.welds.iter().map(|w| json!([w.my, w.kept, w.absorbed, w.kept_km2,
+            w.absorbed_km2, w.parted])).collect::<Vec<_>>(),
+        "rifts": h.rifts.iter().map(|r| json!([r.my, r.plate, r.new, r.area_km2, r.aborted]))
+            .collect::<Vec<_>>(),
+        "accretions": h.accretions.len(),
+        "accreted_km2": h.accretions.iter().map(|a| a.km2).sum::<i64>(),
+        "shortened_km2": h.shortened_km2.iter().sum::<i64>(),
+        "arcs_made_km2": h.made_km2.iter().sum::<i64>(),
+        "continental_km2": [h.continental_km2[0], h.continental_km2[last]],
+        "ocean_floor": {"mean_my": floor_age / floor_km2.max(1), "max_my": floor_max,
+            "young_per_mille": young_km2 * 1000 / floor_km2.max(1)},
+        "plates_today": speeds.iter().map(|&(a, v)| json!([a, v])).collect::<Vec<_>>(),
+        "my": last as i64 * world.settings.step_my, "largest_lands": welded})
 }
 
 fn write(path: &Path, w: usize, h: usize, pixels: &[Rgb]) {
