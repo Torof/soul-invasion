@@ -424,7 +424,7 @@ clock, the only field no seed decides.
 | `hands.tribes[].years[].home_without_nights` | The nights counted | count |
 | `hands.tribes[].years[].noon_tiles_x10` | The grown's distance from home at noon, on each axis the larger, mean × 10 | tiles × 10 |
 | `hands.tribes[].years[].home_changes` | Homes changed in the age-year (`home_changes`) | count |
-| `settlements[]` | The settlements at each year's end and the run's (24 November 2026): the living whose homes lie within `mate_within_tiles` of one another on each axis, link by link; an infant counted at its carrier's home, a body without a mind where it stands | list |
+| `settlements[]` | The settlements at each year's end and the run's (24 November 2026): the living whose homes lie within 64 tiles (`SETTLEMENT_TILES`, its own measure since 24 November 2026, no longer `mate_within_tiles`) of one another on each axis, link by link; an infant counted at its carrier's home, a body without a mind where it stands | list |
 | `settlements[].year` | The year | integer |
 | `settlements[].groups[]` | Its settlements, the largest first | list |
 | `settlements[].groups[].at` | The mean of its homes | `[x, y]` tiles |
@@ -438,7 +438,7 @@ clock, the only field no seed decides.
 | `partings[].dawns[].apart` | The spouses apart where they woke | tiles |
 | `partings[].dawns[].from_home` | Each one from its own home, the lower id first | `[tiles, tiles]` |
 | `partings[].dawns[].homes_apart` | Their two homes apart | tiles |
-| `home_changes[]` | Each grown body's home changed between two dawns, whatever moved it (24 November 2026, why daughter villages), against the settlements of the dawn before: the others' homes linked within `mate_within_tiles` on each axis, link by link; a village is such a settlement of 10 or more that does not reach the old home | list |
+| `home_changes[]` | Each grown body's home changed between two dawns, whatever moved it (24 November 2026, why daughter villages), against the settlements of the dawn before: the others' homes linked within `SETTLEMENT_TILES` (64) on each axis, link by link; a village is such a settlement of 10 or more that does not reach the old home | list |
 | `home_changes[].day` | The dawn it was seen | day |
 | `home_changes[].body` | Who | id |
 | `home_changes[].tribe` | Its tribe | 0 or 1 |
@@ -505,6 +505,20 @@ clock, the only field no seed decides.
 | `meetings.seen[].*` | The first 12 hours with a pair in sight, in order: `day`, `hour`, the nearest pair in sight that hour, `a` and `b` (body ids, the lower first) with `a_at` and `b_at` (`[x, y]` tiles), `tiles` between them (longer axis), `pairs` in sight that hour | day, hour, id, tiles, pairs |
 | `meetings.seasons[].*` | Season by season of the run: `cycle` (from 1), `season`, `hours` read, `hours_in_sight`; the nearest two bodies of different tribes over its hours, in sight or not: `nearest_tiles`, `nearest_day`, `nearest_hour`, `nearest_at` (two `{body, at}`, `at` as `[x, y]` tiles); `null` with fewer than two tribes alive. The cost: the living sorted by x once an hour, then a sweep comparing a body only with those within the larger of the widest sight and the nearest found so far on x (every pair at worst, 1,770 comparisons an hour for sixty bodies), and one look at the ground under each body: measured at 6 µs an hour for sixty bodies, 0.06 s over 400 journées | cycles, hours, tiles, day, hour, id |
 | `meetings.seasons[].nearest_at[].*` | The season's nearest two: `body` (id) and `at` (`[x, y]` tiles) | id, tiles |
+| `reach[]` | How far the living went, year by year (24 November 2026, the brain in walking time: "Faut le passer non en mètres, mais en temps de marche"). A walk is in game minutes (a 1,440th of the game day) of each one's own walk, at the pace it felt at its last nightfall on the ground it lay on (the reference ground's before any), straight from its home; tiles beside | list |
+| `reach[].year` | The year | integer |
+| `reach[].gathers` | The gathers ended that year | count |
+| `reach[].gather_minutes_x10_median` | Where each gather ended, from the gatherer's home: the median | tenths of a game minute |
+| `reach[].gather_minutes_x10_p90` | The same, the 90th centile | tenths of a game minute |
+| `reach[].gather_tiles_median` | The median in tiles | tiles |
+| `reach[].gather_tiles_p90` | The 90th centile in tiles | tiles |
+| `reach[].notebook_places_mean` | The places in the notebook of each grown one at each dawn (D53), on average, rounded down | count |
+| `reach[].notebook_farthest_minutes_x10_median` | The notebook's farthest place from home, at each dawn of each grown one: the median | tenths of a game minute |
+| `reach[].notebook_farthest_minutes_x10_max` | The same, the most | tenths of a game minute |
+| `reach[].notebook_farthest_tiles_median` | The median in tiles | tiles |
+| `reach[].notebook_farthest_tiles_max` | The most in tiles | tiles |
+| `reach[].forgotten` | The places the notebooks forgot for want of room (`thought.places_remembered`) | count |
+| `reach[].forgotten_tiles_mean` | How far from home they lay, on average, rounded down | tiles |
 | `goals[]` | Each goal held over several days (D56, amended 24 November 2026): `body`, `tribe`, `day` set, `to`, `tiles`, `load_kj` carried then, `end` (`arrived`, `load`, `hunger`, `thirst`, `dropped`, `null` while held at the end), `end_day` | |
 | `map.data_uri` | The page's picture of the map at the run's end, the same PNG: the terrain, the camps red, the living white, the dead black | `"data:image/png;base64,…"` |
 | `map.tiles_per_pixel` | The scale: one pixel is so many tiles a side (5 on the vivarium's world) | tiles |
