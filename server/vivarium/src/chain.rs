@@ -312,10 +312,12 @@ impl Chain {
                 y.walker_hours += u64::from(walker);
                 y.need_j += c.need_j_per_day(needs) / 24;
             }
-            let mind = brains.mind(id);
+            // Its mind looked up only when read: a body lies down or
+            // is measured from home a few ticks a day.
+            let mind = || brains.mind(id);
             if c.asleep && !t.asleep {
                 let day = tick / world.calendar().ticks_per_day().max(1);
-                let lay = lay_of(b, mind, (t.barred, day), reach);
+                let lay = lay_of(b, mind(), (t.barred, day), reach);
                 t.lay = Some((lay, c.fatigue.points(), tick));
             }
             if t.asleep && !c.asleep {
@@ -324,7 +326,7 @@ impl Chain {
             t.asleep = c.asleep;
             if minute
                 && walker
-                && let Some(m) = mind
+                && let Some(m) = mind()
             {
                 let from_home = tiles_apart(b.pos(), m.home());
                 t.far = t.far.max(from_home);
