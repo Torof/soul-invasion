@@ -394,6 +394,17 @@
     //                    the walk are the patch's; a tree or bush holding
     //                    them alone is weighed alone, as before. 0: each
     //                    plant alone.
+    // hearth_wakes:      false — food laid at or taken from a hearth's
+    //                    reserve makes nobody think again, awake or
+    //                    asleep (the project lead, 26 November 2026: "in
+    //                    real life it doesn't happen like that, and it
+    //                    serves nothing; people go and look at the hearth
+    //                    when they are hungry"). A hungry body thinks by
+    //                    its own wakes (a gauge past a threshold, a gesture
+    //                    ended, arrived, dawn and dusk). true: everyone of
+    //                    that hearth at the camp, as before (the
+    //                    vivarium's --wake-all); 48 % of all thoughts came
+    //                    from it, 90 % of them changing nothing.
     thought: (
         plant_sight_tiles: 30,
         fed_under: 30,
@@ -401,6 +412,7 @@
         place_tiles: 16,
         places_remembered: 48,
         patch_tiles: 4,
+        hearth_wakes: false,
     ),
     // The evening fire and the common memory (D55, lot 4 of the
     // simulation, decided by the project lead on 22 November 2026). Every

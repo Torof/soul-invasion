@@ -1730,6 +1730,14 @@ pub struct Thought {
     /// work, not itself alone. 0, or absent: each plant weighed alone.
     #[serde(default)]
     pub patch_tiles: u32,
+    /// Whether food laid at or taken from a hearth's reserve (D58) makes
+    /// the bodies of that hearth at the camp think again, awake or asleep.
+    /// False, or absent: nobody (D58, amended 26 November 2026 by the
+    /// project lead: one goes and looks at the hearth when hungry; the
+    /// food laid there wakes no one). True: everyone at the camp, as
+    /// before (the vivarium's `--wake-all`).
+    #[serde(default)]
+    pub hearth_wakes: bool,
 }
 
 impl Default for Thought {
@@ -1742,6 +1750,7 @@ impl Default for Thought {
             place_tiles: 16,
             places_remembered: 48,
             patch_tiles: 4,
+            hearth_wakes: false,
         }
     }
 }

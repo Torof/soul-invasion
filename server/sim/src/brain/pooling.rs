@@ -874,15 +874,20 @@ impl Brains {
                         self.news.push(News::SpoiledAtHearth { camp, kj, at });
                     }
                 }
-                crate::Event::Kept { into: item, .. } | crate::Event::ItemAdded { item, .. } => {
+                crate::Event::Kept { into: item, .. } | crate::Event::ItemAdded { item, .. }
+                    if rules.needs.thought.hearth_wakes =>
+                {
                     // Food laid at a reserve (kept in its ledger, joined to
                     // a heap there, or what is left of a heap after a
                     // meal; lying on the ground, one taken away let fall
-                    // there): who lives at that hearth and stands at the
-                    // camp sees it, and thinks again
-                    // (a hungry child waiting there, its gauges unmoved,
-                    // would not, and starved beside a full reserve in the
-                    // first trial).
+                    // there) wakes nobody (amended 26 November 2026, the
+                    // project lead: one goes and looks at the hearth when
+                    // hungry): a hungry body thinks by its own wakes. With
+                    // `thought.hearth_wakes`, the rule before it: who lives
+                    // at that hearth and stands at the camp, awake or
+                    // asleep, sees it and thinks again (a hungry child
+                    // waiting there, its gauges unmoved, would not, and
+                    // starved beside a full reserve in the first trial).
                     if let Some(camp) = self.reserves.camp_holding(*item) {
                         for (id, mind) in &mut self.minds {
                             if camp_of(rules, mind.ways.home) == camp
@@ -1501,40 +1506,59 @@ mod tests {
 
     #[test]
     fn a_hungry_child_waiting_at_the_camp_eats_what_is_put_down() {
-        let rules = pooled();
+        // Food laid at the reserve wakes nobody (amended 26 November
+        // 2026): the child eats it at its own next wake (a gauge past a
+        // threshold, dawn, dusk); with `thought.hearth_wakes`
+        // (`--wake-all`), as soon as it is laid.
+        for wakes in [false, true] {
+            let mut rules = pooled();
+            rules.needs.thought.hearth_wakes = wakes;
+            assert_eq!(
+                put_down_for_a_waiting_child(&rules),
+                (wakes, true),
+                "hearth_wakes {wakes}"
+            );
+        }
+    }
+
+    /// A child of five waits hungry at the camp; a grown one comes home
+    /// with food for her own and lays it down. Whether the child ate it
+    /// within 300 ticks; then whether it ate it within 300 ticks of its
+    /// own next wake.
+    fn put_down_for_a_waiting_child(rules: &Content) -> (bool, bool) {
         let at = Pos::new(5, 5);
-        let (mut world, mut brains, ids) = field(&rules, &[(at, 30), (Pos::new(7, 6), 5)]);
+        let (mut world, mut brains, ids) = field(rules, &[(at, 30), (Pos::new(7, 6), 5)]);
         let (grown, child) = (ids[0], ids[1]);
         let item = world.spawn_item("berries", 400, at);
         world.queue(Intention::PickUp { body: grown, item });
-        world.step(&rules, &mut Vec::new());
-        hungry(&mut world, &rules, child, 70);
+        world.step(rules, &mut Vec::new());
+        hungry(&mut world, rules, child, 70);
         // Her store is what she carries: she keeps it until it is owed.
         brains.minds.get_mut(&grown).unwrap().ways.stock_kj = 1000;
         let mut events = Vec::new();
-        // The child waits: nothing to eat, nothing to gather.
-        for _ in 0..20 {
-            events.clear();
-            world.step(&rules, &mut events);
-            for (_, d) in brains.think(&world, &rules, &events) {
-                world.queue(d.intention);
+        let mut run = |world: &mut World, brains: &mut Brains, ticks: u32| {
+            let mut ate = false;
+            for _ in 0..ticks {
+                events.clear();
+                world.step(rules, &mut events);
+                ate |= events.iter().any(|e| {
+                    matches!(e, crate::Event::BodyAte { body, item: i, .. } if *body == child && *i == item)
+                });
+                for (_, d) in brains.think(world, rules, &events) {
+                    world.queue(d.intention);
+                }
             }
-        }
+            ate
+        };
+        // The child waits: nothing to eat, nothing to gather.
+        run(&mut world, &mut brains, 20);
         // Its mother comes home with 1000 kJ for her own.
         brains.minds.get_mut(&grown).unwrap().hearth_carried_kj = 1000;
         brains.minds.get_mut(&grown).unwrap().due = true;
-        let mut ate = false;
-        for _ in 0..300 {
-            events.clear();
-            world.step(&rules, &mut events);
-            ate |= events
-                .iter()
-                .any(|e| matches!(e, crate::Event::BodyAte { body, item: i, .. } if *body == child && *i == item));
-            for (_, d) in brains.think(&world, &rules, &events) {
-                world.queue(d.intention);
-            }
-        }
-        assert!(ate, "the child saw the food put down and ate it");
+        let at_once = run(&mut world, &mut brains, 300);
+        brains.minds.get_mut(&child).unwrap().due = true;
+        let at_its_wake = at_once || run(&mut world, &mut brains, 300);
+        (at_once, at_its_wake)
     }
 
     #[test]
@@ -1836,5 +1860,44 @@ mod tests {
             gives_way(&world, &rules, body, &brains.minds[&ids[0]], 7),
             None
         );
+    }
+
+    #[test]
+    fn food_laid_at_the_reserve_wakes_nobody_at_camp_awake_or_asleep() {
+        let mut rules = pooled();
+        let at = Pos::new(5, 5);
+        let (mut world, mut brains, ids) = field(&rules, &[(at, 30), (Pos::new(6, 5), 30)]);
+        let (sleeper, waiting) = (ids[0], ids[1]);
+        world.bodies[0].condition.fatigue = Gauge::at(80);
+        world.queue(Intention::Sleep { body: sleeper });
+        world.step(&rules, &mut Vec::new());
+        hungry(&mut world, &rules, waiting, 60);
+        assert!(world.body(sleeper).unwrap().condition().asleep);
+        assert!(!world.body(waiting).unwrap().condition().asleep);
+        // A heap laid at the hearth's reserve, at the camp where both are.
+        let heap = world.spawn_kept("berries", 2000, at);
+        brains.reserves.put(camp_of(&rules, at), at, heap);
+        let laid = [crate::Event::Kept {
+            item: heap,
+            into: heap,
+            material: "berries".to_owned(),
+            mass_g: 2000,
+            at,
+        }];
+        let woken = |rules: &Content, brains: &mut Brains| {
+            for id in [sleeper, waiting] {
+                brains.minds.get_mut(&id).unwrap().due = false;
+            }
+            brains.hearth_events(&laid, &world, rules);
+            (brains.minds[&sleeper].due, brains.minds[&waiting].due)
+        };
+        // Nobody sees a fruit laid down: the hungry one awake thinks by
+        // its own wakes, and then eats there
+        // (`hungry_at_its_camp_it_eats_from_the_reserve_before_its_own`).
+        assert!(!rules.needs.thought.hearth_wakes);
+        assert_eq!(woken(&rules, &mut brains), (false, false));
+        // The rule before (`--wake-all`): both, the sleeper too.
+        rules.needs.thought.hearth_wakes = true;
+        assert_eq!(woken(&rules, &mut brains), (true, true));
     }
 }
