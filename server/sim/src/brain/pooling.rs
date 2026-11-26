@@ -1021,7 +1021,9 @@ mod tests {
             hungry(&mut world, &rules, id, 70);
             let mut brains = Brains::new(7);
             brains.adopt(&world, &rules, id);
-            brains.minds.get_mut(&id).unwrap().ways.worth_half_tiles = 1;
+            let mind = brains.minds.get_mut(&id).unwrap();
+            // Halved at a game minute of walk, a tile taking a game minute.
+            (mind.ways.worth_half_minutes, mind.tile_umin) = (1, 1_000_000);
             if let Some(lay) = circle {
                 brains.reserves.dawned = true;
                 if lay {
@@ -1329,7 +1331,7 @@ mod tests {
         brains.adopt(&world, &rules, id);
         let mind = brains.minds.get_mut(&id).unwrap();
         // The bramble beside it stays its choice (as `near_sighted`).
-        mind.ways.worth_half_tiles = 1;
+        (mind.ways.worth_half_minutes, mind.tile_umin) = (1, 1_000_000);
         mind.ways.stock_kj = stock;
         let home = mind.ways.home;
         let camp = camp_of(&rules, home);
@@ -1410,7 +1412,7 @@ mod tests {
             let mut brains = Brains::new(7);
             brains.adopt_at(&world, &rules, id, home);
             let mind = brains.minds.get_mut(&id).unwrap();
-            mind.ways.worth_half_tiles = 1;
+            (mind.ways.worth_half_minutes, mind.tile_umin) = (1, 1_000_000);
             mind.ways.stock_kj = stock;
             brains.see_hearths(&world, &rules, &[(camp_of(&rules, home), vec![id])]);
             let day = world.calendar().ticks_per_day();

@@ -122,13 +122,26 @@ pub const HUNGRY: u32 = 50;
 /// the ring the bodies are born in).
 pub const HOME_TILES: i32 = 6;
 /// How many drinking places and how many foods a body remembers: the
-/// nearest to the camp are kept.
+/// water nearest its home or its notebook's places, the food nearest the
+/// camp.
 pub const MEMORY_PLACES: usize = 64;
-/// How far, in tiles, a plant's worth is halved: a body weighs what an
-/// hour of gathering gives against the walk there (to the place it
-/// remembers, D53; the places worth most from where it last looked are
-/// kept, the content's `thought.places_remembered` of them).
-pub const WORTH_HALF_TILES: u64 = 32;
+/// How long a walk halves a plant's worth, in game minutes (a 1,440th of
+/// the game day): a body weighs what an hour of gathering gives against
+/// the walk there (to the place it remembers, D53; the places worth most
+/// from where it last looked are kept, the content's
+/// `thought.places_remembered` of them). Half an hour: the walk there and
+/// back then takes the hour of gathering it buys (`thought.plant_choice_hours`).
+/// It was 32 tiles, some 2 game minutes on the reference ground, until 26
+/// November 2026 (the project lead: "Faut le passer non en mètres, mais en
+/// temps de marche").
+pub const WORTH_HALF_MINUTES: u64 = 30;
+/// How long a walk from home a grove lies within to count as near it, in
+/// game minutes: a day gathered there is no news at the fire (amended 26
+/// November 2026). It was a grove's side, 64 tiles on each axis, until the
+/// brain counted in walking time (the project lead: "Faut le
+/// passer non en mètres, mais en temps de marche"): 4 game minutes are 64
+/// tiles on the reference ground, 43 in the forest.
+pub const GROVE_NEAR_MINUTES: u64 = 4;
 /// How far, in tiles, a body walks before it looks again for drinking
 /// places and for trees and plants bearing food: a lake shore holds
 /// thousands of tiles of water, a meadow thousands of plants, and its
@@ -477,8 +490,9 @@ fn at_place(tile: Pos, key: PlaceKey, side: i32) -> bool {
 /// never by a rule named after its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ways {
-    /// How far, in tiles, a plant's worth is halved ([`WORTH_HALF_TILES`]).
-    pub worth_half_tiles: u64,
+    /// How long a walk halves a plant's worth, in game minutes
+    /// ([`WORTH_HALF_MINUTES`]).
+    pub worth_half_minutes: u64,
     /// Whether it sleeps where it stands at night (true), or goes home
     /// first (false, the constants' way).
     pub sleep_out: bool,
@@ -505,7 +519,7 @@ impl Ways {
     #[must_use]
     pub fn at(home: Pos) -> Self {
         Self {
-            worth_half_tiles: WORTH_HALF_TILES,
+            worth_half_minutes: WORTH_HALF_MINUTES,
             sleep_out: false,
             stock_kj: STOCK_KJ,
             home,
@@ -517,8 +531,8 @@ impl Ways {
 /// A way a trial or a copy may move (D50): one of [`Ways`]' fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Way {
-    /// [`Ways::worth_half_tiles`], twice or half.
-    WorthHalfTiles,
+    /// [`Ways::worth_half_minutes`], twice or half.
+    WorthHalfMinutes,
     /// [`Ways::sleep_out`], flipped.
     SleepOut,
     /// [`Ways::stock_kj`], twice or half.
@@ -532,7 +546,7 @@ pub enum Way {
 impl Way {
     /// Every way, in a fixed order.
     pub const ALL: [Way; 5] = [
-        Way::WorthHalfTiles,
+        Way::WorthHalfMinutes,
         Way::SleepOut,
         Way::StockKj,
         Way::Home,
@@ -542,7 +556,7 @@ impl Way {
     /// Its value in `ways` set to its value in `from`.
     fn copy(self, ways: &mut Ways, from: &Ways) {
         match self {
-            Way::WorthHalfTiles => ways.worth_half_tiles = from.worth_half_tiles,
+            Way::WorthHalfMinutes => ways.worth_half_minutes = from.worth_half_minutes,
             Way::SleepOut => ways.sleep_out = from.sleep_out,
             Way::StockKj => ways.stock_kj = from.stock_kj,
             Way::Home => ways.home = from.home,
@@ -555,7 +569,7 @@ impl Way {
     pub fn key(self) -> &'static str {
         let [worth, sleep, stock, home, hands] = crate::content::TRIAL_WAYS;
         match self {
-            Way::WorthHalfTiles => worth,
+            Way::WorthHalfMinutes => worth,
             Way::SleepOut => sleep,
             Way::StockKj => stock,
             Way::Home => home,
@@ -566,7 +580,7 @@ impl Way {
     /// Whether it is the same in `a` and `b`.
     fn same(self, a: &Ways, b: &Ways) -> bool {
         match self {
-            Way::WorthHalfTiles => a.worth_half_tiles == b.worth_half_tiles,
+            Way::WorthHalfMinutes => a.worth_half_minutes == b.worth_half_minutes,
             Way::SleepOut => a.sleep_out == b.sleep_out,
             Way::StockKj => a.stock_kj == b.stock_kj,
             Way::Home => a.home == b.home,
@@ -900,7 +914,7 @@ struct Judged {
 /// narrower, more store or less, out or home, a home moved (always up).
 fn step_up(way: Way, before: &Ways, after: &Ways) -> bool {
     match way {
-        Way::WorthHalfTiles => after.worth_half_tiles > before.worth_half_tiles,
+        Way::WorthHalfMinutes => after.worth_half_minutes > before.worth_half_minutes,
         Way::StockKj => after.stock_kj > before.stock_kj,
         Way::SleepOut => after.sleep_out,
         Way::Home | Way::Hands => true,
@@ -2486,6 +2500,13 @@ impl Mind {
         tiles.saturating_mul(self.tile_umin) / 1000
     }
 
+    /// Its way of weighing a walk ([`worth`]): the game minutes that halve
+    /// a plant's worth, and the millionths of a game minute a tile of its
+    /// walk takes.
+    fn walk_worth(&self) -> (u64, u64) {
+        (self.ways.worth_half_minutes, self.tile_umin)
+    }
+
     /// Its notebook (D53), a measure: how many places it holds, and the
     /// farthest of them from its home, in tiles.
     #[must_use]
@@ -2922,13 +2943,13 @@ fn copy_way(
     keys: &[u64],
     trials: &Trials,
 ) -> bool {
-    let lost = matches!(way, Way::WorthHalfTiles | Way::StockKj)
+    let lost = matches!(way, Way::WorthHalfMinutes | Way::StockKj)
         && scatter::roll(seed, purpose::TRIAL_COPY_LOSS, keys) % 100
             < u64::from(trials.imitate_loss_percent);
     match (way, lost) {
-        (Way::WorthHalfTiles, true) => {
-            mind.ways.worth_half_tiles =
-                halfway(mind.ways.worth_half_tiles, theirs.worth_half_tiles);
+        (Way::WorthHalfMinutes, true) => {
+            mind.ways.worth_half_minutes =
+                halfway(mind.ways.worth_half_minutes, theirs.worth_half_minutes);
         }
         (Way::StockKj, true) => {
             mind.ways.stock_kj = halfway(mind.ways.stock_kj, theirs.stock_kj);
@@ -3035,7 +3056,7 @@ impl Place {
         food: &Food,
         memory: &Store,
         from: Pos,
-        half: u64,
+        walk: (u64, u64),
         side: i32,
     ) -> u64 {
         let seen = self
@@ -3054,7 +3075,7 @@ impl Place {
         worth(
             seen.unwrap_or(0).max(told.unwrap_or(0)).max(self.rumour_kj),
             far(place_centre(key, side), from),
-            half,
+            walk,
         )
     }
 }
@@ -3624,7 +3645,7 @@ impl Mind {
                 told.push(id);
             }
         }
-        let half = self.ways.worth_half_tiles;
+        let half = self.walk_worth();
         let looked: Vec<PlaceKey> = self
             .places
             .iter()
@@ -3785,18 +3806,18 @@ impl Mind {
         denied
     }
 
-    /// `me` hears `record` from `teller` at the fire of `camp` (D55) with
+    /// `me` hears `record` from `teller` at the fire (D55) with
     /// `credit` in it, and gains an access if it keeps it: a place heard
     /// enters its places as what the teller said, worth less by the
     /// credit, if it holds no later record of that place (its own look
-    /// included) and the place is worth remembering from the camp; a
+    /// included) and the place is worth remembering from its home; a
     /// water heard joins the drinking places it knows; a kept way heard
     /// joins its heard ways. Whether it kept an access.
     fn hear(
         &mut self,
         fire: &Fire,
         food: &Food,
-        (camp, day): (Pos, u32),
+        (_camp, day): (Pos, u32),
         (credit, record, teller): (u8, RecordId, BodyId),
         memory: &mut Store,
         rules: &Content,
@@ -3852,7 +3873,7 @@ impl Mind {
                 }
                 memory.hold(record);
                 // Worth remembering from the camp, or forgotten at once.
-                trim_places(food, rules, camp, self, memory);
+                trim_places(food, rules, self, memory);
                 self.places
                     .get(&key)
                     .is_some_and(|p| p.access == Some(access))
@@ -3874,7 +3895,7 @@ impl Mind {
                     return false;
                 }
                 self.water.insert(chunk, place);
-                trim_water(self, camp);
+                trim_water(self, rules);
                 false
             }
             Some(Record::Trial { .. } | Record::Deed { .. }) => {
@@ -3974,17 +3995,20 @@ impl Mind {
 }
 
 /// Past the content's `thought.places_remembered`, the places worth
-/// least from `at` are forgotten, their accesses dropped (D53, D55).
-fn trim_places(food: &Food, rules: &Content, at: Pos, mind: &mut Mind, memory: &mut Store) {
+/// least from its home in walking time are forgotten, their accesses
+/// dropped (D53, D55). From its home, not from where it looks (24 November
+/// 2026, the brain in walking time): the notebook followed the body, so a
+/// far find was forgotten on the way back.
+fn trim_places(food: &Food, rules: &Content, mind: &mut Mind, memory: &mut Store) {
     let keep = places_remembered(rules);
     if mind.places.len() <= keep {
         return;
     }
-    let (half, side) = (mind.ways.worth_half_tiles, place_side(rules));
+    let (half, side) = (mind.walk_worth(), place_side(rules));
     let mut ranked: Vec<Rank> = mind
         .places
         .iter()
-        .map(|(key, place)| rank_place(food, at, half, side, *key, place))
+        .map(|(key, place)| rank_place(food, mind.ways.home, half, side, *key, place))
         .collect();
     ranked.select_nth_unstable(keep);
     let gone: Vec<PlaceKey> = ranked[keep..].iter().map(|(_, key)| *key).collect();
@@ -3996,16 +4020,37 @@ fn trim_places(food: &Food, rules: &Content, at: Pos, mind: &mut Mind, memory: &
     }
 }
 
-/// Kept small: the drinking places nearest the camp ([`MEMORY_PLACES`]).
-fn trim_water(mind: &mut Mind, camp: Pos) {
-    while mind.water.len() > MEMORY_PLACES {
-        let farthest = *mind
-            .water
-            .iter()
-            .max_by_key(|(chunk, place)| (far(place.stand, camp), **chunk))
-            .map(|(chunk, _)| chunk)
-            .expect("not empty");
-        mind.water.remove(&farthest);
+/// Kept small ([`MEMORY_PLACES`]): the drinking places nearest in walking
+/// time to its home or to a place of its notebook (24 November 2026, the
+/// brain in walking time: the nearest the camp were kept, so the water by
+/// a far grove was forgotten first and the grove's grade lacked it). One
+/// clock for all its walks, so the nearest in tiles is the nearest in time.
+fn trim_water(mind: &mut Mind, rules: &Content) {
+    if mind.water.len() <= MEMORY_PLACES {
+        return;
+    }
+    let side = place_side(rules);
+    let mut known: Vec<Pos> = mind
+        .places
+        .keys()
+        .map(|&key| place_centre(key, side))
+        .collect();
+    known.push(mind.ways.home);
+    let mut ranked: Vec<(i64, ChunkPos)> = mind
+        .water
+        .iter()
+        .map(|(chunk, place)| {
+            let nearest = known
+                .iter()
+                .map(|&at| far(place.stand, at))
+                .min()
+                .unwrap_or(i64::MAX);
+            (nearest, *chunk)
+        })
+        .collect();
+    ranked.select_nth_unstable(MEMORY_PLACES);
+    for (_, chunk) in &ranked[MEMORY_PLACES..] {
+        mind.water.remove(chunk);
     }
 }
 
@@ -4967,7 +5012,12 @@ impl Brains {
                 continue;
             };
             night.losses[Sense::Warmth as usize] = u64::from(body.condition().cold.points()) * 10;
-            mind.yesterday = Some(yesterday_of(&night, closed, mind.ways.home, grove));
+            let near = |at: Pos| {
+                let tiles = u64::try_from(far(at, mind.ways.home)).unwrap_or(0).isqrt();
+                mind.walk_milliminutes(tiles) <= GROVE_NEAR_MINUTES * 1000
+            };
+            let yesterday = yesterday_of(&night, closed, near, grove);
+            mind.yesterday = Some(yesterday);
             mind.note_night(place_of(body.pos(), side), &night, keep, (season, side));
         }
     }
@@ -5981,7 +6031,7 @@ impl Brains {
         speakers.sort_unstable();
         let rep = &rules.needs.reputation;
         let side = place_side(rules);
-        let near = i32::try_from(dec.near_camp_tiles).unwrap_or(i32::MAX);
+        let near = u64::from(dec.near_camp_minutes).saturating_mul(1000);
         // The review (PR 1 ter): who is called first, who set aside.
         let (good_of, aside_by) = self.review_at_fire(world, rules, &speakers, (today, now));
         // A call to move is the evening's first word (D56, amended 24
@@ -6139,7 +6189,6 @@ impl Brains {
                 said.insert(id, (Act::Nothing, None, None, 0));
                 continue;
             }
-            let pace = u64::from(body.condition().pace_percent(&rules.needs).max(1));
             let percent = dec.look_percent(mind.will) * if full_told { 1 } else { 2 };
             let chance = percent * mind.lean_to_look(rules) / 100;
             if chance > 0
@@ -6161,10 +6210,13 @@ impl Brains {
                 });
                 continue;
             }
-            let mut list = choices(&self.food, rules, world, mind, id, camp, pace);
+            let mut list = choices(&self.food, rules, world, mind, id, camp);
             if review.aside > 0 && aside_by.values().any(|s| s.contains(&id)) && near > 0 {
                 // Set aside, it weighs first the places near the camp.
-                list.sort_by_key(|(key, _, _)| !within(place_centre(*key, side), camp, near));
+                list.sort_by_key(|(key, _, _)| {
+                    let tiles = far(place_centre(*key, side), camp);
+                    mind.walk_milliminutes(u64::try_from(tiles).unwrap_or(0).isqrt()) > near
+                });
             }
             // A reputation weighs (PR 1 ter): the call of whom it believes
             // best at gathering first, with a chance of its credit.
@@ -6820,9 +6872,8 @@ impl Brains {
             .filter(|(_, w, _)| present.contains(w))
             .max_by_key(|&(a, w, c)| (c, std::cmp::Reverse(a), std::cmp::Reverse(w)))?;
         let them = self.minds.get(&whom)?;
-        let body = world.body(whom)?;
-        let pace = u64::from(body.condition().pace_percent(&rules.needs).max(1));
-        let answer = choices(&self.food, rules, world, them, whom, camp, pace)
+        world.body(whom)?;
+        let answer = choices(&self.food, rules, world, them, whom, camp)
             .into_iter()
             .filter(|(key, _, _)| rooms.get(key).is_none_or(|r| r.1 < r.0))
             .find_map(|(key, room, _)| {
@@ -7079,7 +7130,7 @@ impl Brains {
                 remember_places(
                     &self.food,
                     rules,
-                    (id, at, day, world.tick().0),
+                    (id, day, world.tick().0),
                     mind,
                     seen,
                     &mut self.memory,
@@ -7432,15 +7483,16 @@ fn look(
         remember_places(
             land.food,
             rules,
-            (id, at, day, now),
+            (id, day, now),
             mind,
             seen,
             land.memory,
             land.news,
         );
     }
-    // Kept small: the nearest to the camp.
-    trim_water(mind, camp);
+    // Kept small: the water nearest home or its places, the food nearest
+    // the camp.
+    trim_water(mind, rules);
     while mind.food.len() > MEMORY_PLACES {
         let farthest = *mind
             .food
@@ -7582,36 +7634,35 @@ fn add_seen(kinds: &mut Vec<Seen>, one: Seen) {
 type Rank = (std::cmp::Reverse<(bool, u64)>, PlaceKey);
 
 /// The rank of the place `key`, for a body at `at` whose way halves a
-/// plant's worth at `half_tiles` tiles: what bears now comes first, by
+/// plant's worth at a walk of `walk` ([`worth`]): what bears now comes first, by
 /// what an hour of its best kind gives, less the farther the place; then
 /// the rest by their best crop: a fruit corner out of season does not
 /// crowd out the spring's leaves.
 fn rank_place(
     food: &Food,
     at: Pos,
-    half_tiles: u64,
+    walk: (u64, u64),
     side: i32,
     key: PlaceKey,
     place: &Place,
 ) -> Rank {
     let (now, kj) = place.rank_kj(food);
     (
-        std::cmp::Reverse((now, worth(kj, far(place_centre(key, side), at), half_tiles))),
+        std::cmp::Reverse((now, worth(kj, far(place_centre(key, side), at), walk))),
         key,
     )
 }
 
-/// The places `seen` from `at` by `id` on `day` (what and how many of
-/// each kind) join the mind's; past the content's
-/// `thought.places_remembered`, the places worth least from `at` are
-/// forgotten (D53). A place heard of is corrected at this first look
+/// The places `seen` by `id` on `day` (what and how many of each kind)
+/// join the mind's; past the content's `thought.places_remembered`, the
+/// places worth least from its home in walking time are forgotten (D53). A place heard of is corrected at this first look
 /// (D55): the look is now its own, and if it found none of the food the
 /// record told, the rumour is dispelled ([`News::Dispelled`]) and the
 /// access dropped; the bare place is told tonight.
 fn remember_places(
     food: &Food,
     rules: &Content,
-    (id, at, day, now): (BodyId, Pos, u32, u64),
+    (id, day, now): (BodyId, u32, u64),
     mind: &mut Mind,
     seen: BTreeMap<PlaceKey, Vec<Seen>>,
     memory: &mut Store,
@@ -7625,7 +7676,7 @@ fn remember_places(
         place.looked_day = Some(day);
         mind.correct(key, id, &rules.needs.fire, food, memory, news, now);
     }
-    trim_places(food, rules, at, mind, memory);
+    trim_places(food, rules, mind, memory);
 }
 
 /// The minds' shared land, borrowed for a turn: the plants placed, the
@@ -8260,15 +8311,19 @@ fn kj_with_patch(rules: &Content, bears: Bears, alone: Option<u64>, patch_g: u32
 }
 
 /// What a plant giving `kj_per_hour` is worth at `far_squared` (the
-/// squared distance [`far`] gives): halved at `half_tiles` tiles (the
-/// body's way, [`WORTH_HALF_TILES`] by default). Until 22 November 2026
-/// the squared distance was taken for tiles, so the worth was halved at
-/// about 6 tiles, not 32, and the way "twice as far" only reached 1.4
-/// times farther (the brain audit's P7).
-fn worth(kj_per_hour: u64, far_squared: i64, half_tiles: u64) -> u64 {
+/// squared distance [`far`] gives) for a body whose way is `walk`: the
+/// game minutes that halve the worth ([`Ways::worth_half_minutes`]) and
+/// the millionths of a game minute a tile of its walk takes
+/// ([`Mind::walk_worth`]). Halved at that walk: the brain counts in
+/// walking time (the project lead, 24 November 2026: "Faut le passer non
+/// en mètres, mais en temps de marche"), no longer at 32 tiles. Until 22
+/// November 2026 the squared distance was taken for tiles (the brain
+/// audit's P7).
+fn worth(kj_per_hour: u64, far_squared: i64, (half_minutes, tile_umin): (u64, u64)) -> u64 {
     let tiles = u64::try_from(far_squared).unwrap_or(0).isqrt();
-    let half_tiles = half_tiles.max(1);
-    kj_per_hour * half_tiles / (half_tiles + tiles)
+    let walk = tiles.saturating_mul(tile_umin) / 1000;
+    let half = half_minutes.max(1).saturating_mul(1000);
+    kj_per_hour.saturating_mul(half) / half.saturating_add(walk)
 }
 
 /// Is the choice made at `Mind::chose_at` still fresh: less than the
@@ -8693,8 +8748,9 @@ fn night_of(
 
 /// What a body's day `day` was, as it lies down to note it (amended 24
 /// November 2026): the food gathered, where most, and whether that was
-/// near its `home` (its grove within a grove's side of it, `grove` tiles).
-fn yesterday_of(night: &Night, day: u32, home: Pos, grove: i32) -> Yesterday {
+/// near its home (the middle of its grove, of `grove` tiles, `near` it:
+/// within [`GROVE_NEAR_MINUTES`] of walk).
+fn yesterday_of(night: &Night, day: u32, near: impl Fn(Pos) -> bool, grove: i32) -> Yesterday {
     let food = |a: &DayAct| a.gains[Sense::Food as usize];
     let gathered = night.day.iter().filter(|a| a.grove).map(food).sum();
     let most = night
@@ -8706,7 +8762,7 @@ fn yesterday_of(night: &Night, day: u32, home: Pos, grove: i32) -> Yesterday {
         day,
         gathered,
         grove: most.map(|a| (a.place, food(a), a.spot, a.saved)),
-        near: most.is_none_or(|a| within(place_centre(a.place, grove), home, grove)),
+        near: most.is_none_or(|a| near(place_centre(a.place, grove))),
     }
 }
 
@@ -9223,7 +9279,7 @@ fn look_out(world: &World, rules: &Content, id: BodyId, here: Pos, mind: &mut Mi
 
 /// The place it knows bearing food now worth most, open
 /// ([`place_open`]), but for `not` if given: what an hour of the fullest
-/// plant seen there gave, less the farther (`Ways::worth_half_tiles`),
+/// plant seen there gave, less the farther (`Ways::worth_half_minutes`),
 /// the more plants holding food breaking ties; with its worth. Nothing
 /// of the world is read: a memory, and the content's seasons.
 fn place_to_gather(
@@ -9249,7 +9305,7 @@ fn place_to_gather(
             let worth = worth(
                 seen.best_kj,
                 far(place_centre(*key, side), here),
-                mind.ways.worth_half_tiles,
+                mind.walk_worth(),
             );
             Some((*key, worth, seen.holding))
         })
@@ -9278,13 +9334,11 @@ fn choices(
     mind: &Mind,
     id: BodyId,
     camp: Pos,
-    pace: u64,
 ) -> Vec<(PlaceKey, u32, bool)> {
     let dec = &rules.needs.decisions;
     let side = place_side(rules);
     let today = today(world);
     let now = world.tick().0;
-    let pace = i64::try_from(pace.max(1)).unwrap_or(1);
     let mut ranked: Vec<(u64, u32, PlaceKey, u32, bool)> = mind
         .places
         .iter()
@@ -9295,9 +9349,11 @@ fn choices(
         })
         .filter_map(|(key, place)| {
             let seen = place.bearing(food)?;
-            let far_paced =
-                far(place_centre(*key, side), camp).saturating_mul(10_000) / (pace * pace);
-            let worth = worth(seen.best_kj, far_paced, mind.ways.worth_half_tiles);
+            let worth = worth(
+                seen.best_kj,
+                far(place_centre(*key, side), camp),
+                mind.walk_worth(),
+            );
             let room = (place.bearing_count(food) / dec.plants_per_gatherer.max(1))
                 .clamp(1, dec.group_max.max(1));
             let own = place.access.is_none_or(|a| a.is_own(id));
@@ -9464,7 +9520,7 @@ fn pick_in_place<'a>(
     let side = place_side(rules);
     let chunk = place_centre(key, side).chunk();
     let (x0, y0) = (key.0 * side, key.1 * side);
-    let half = mind.ways.worth_half_tiles;
+    let half = mind.walk_worth();
     let reach = patch_reach(rules);
     let PlaceRead {
         picks,
@@ -10365,11 +10421,11 @@ fn start_trial(
     let before = mind.ways;
     let before_days = before_trial(world, trials, mind, way, day);
     match way {
-        Way::WorthHalfTiles => {
-            mind.ways.worth_half_tiles = if up {
-                before.worth_half_tiles.saturating_mul(2)
+        Way::WorthHalfMinutes => {
+            mind.ways.worth_half_minutes = if up {
+                before.worth_half_minutes.saturating_mul(2)
             } else {
-                (before.worth_half_tiles / 2).max(1)
+                (before.worth_half_minutes / 2).max(1)
             };
         }
         Way::SleepOut => mind.ways.sleep_out = !before.sleep_out,
@@ -10428,8 +10484,8 @@ fn lessons(
     let trials = &rules.needs.trials;
     let heed = trials.heed_percent(mind.will);
     let mut candidates: Vec<(Way, bool, u64)> = vec![
-        (Way::WorthHalfTiles, true, 100),
-        (Way::WorthHalfTiles, false, 100),
+        (Way::WorthHalfMinutes, true, 100),
+        (Way::WorthHalfMinutes, false, 100),
         (Way::SleepOut, !mind.ways.sleep_out, 100),
         (Way::StockKj, true, 100),
         (Way::StockKj, false, 100),
@@ -11508,11 +11564,14 @@ mod tests {
     /// Makes `id` weigh nearness hard (a plant's worth halved at a tile):
     /// the bramble beside it stays its choice, while the valley holds
     /// richer plants a short walk away that the default way (halved at 32
-    /// tiles, [`worth_is_halved_at_half_tiles_not_at_their_square`]) would
+    /// tiles, [`worth_is_halved_at_half_an_hour_of_walk_not_at_its_square`]) would
     /// send it to. The tests on the bramble are about hunger, stores and
     /// night, not about the choice of plant.
     fn near_sighted(brains: &mut Brains, id: BodyId) {
-        brains.minds.get_mut(&id).unwrap().ways.worth_half_tiles = 1;
+        let mind = brains.minds.get_mut(&id).unwrap();
+        // Halved at a walk of a game minute, a tile taking a game minute.
+        mind.ways.worth_half_minutes = 1;
+        mind.tile_umin = 1_000_000;
     }
 
     #[test]
@@ -12180,15 +12239,103 @@ mod tests {
     }
 
     #[test]
-    fn worth_is_halved_at_half_tiles_not_at_their_square() {
-        // 32 tiles off, the worth is halved; 6 tiles off (whose square
-        // is near 32) it is barely dented.
-        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(32, 0)), 32), 500);
-        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(6, 0)), 32), 842);
-        // Twice as far (64 tiles) is worth a third, not a fifth.
-        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(64, 0)), 32), 333);
-        // A way reaching twice as far halves at 64 tiles.
-        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(64, 0)), 64), 500);
+    fn worth_is_halved_at_half_an_hour_of_walk_not_at_its_square() {
+        // Sixteen tiles a game minute: 480 tiles off is half an hour of
+        // walk, the worth halved; 6 tiles off it is barely dented.
+        let walk = (WORTH_HALF_MINUTES, 62_500);
+        assert_eq!(
+            worth(1000, far(Pos::new(0, 0), Pos::new(480, 0)), walk),
+            500
+        );
+        assert_eq!(worth(1000, far(Pos::new(0, 0), Pos::new(6, 0)), walk), 987);
+        // Twice as far (an hour) is worth a third, not a fifth.
+        assert_eq!(
+            worth(1000, far(Pos::new(0, 0), Pos::new(960, 0)), walk),
+            333
+        );
+        // A way reaching twice as far halves at an hour.
+        assert_eq!(
+            worth(1000, far(Pos::new(0, 0), Pos::new(960, 0)), (60, 62_500)),
+            500
+        );
+        // A slower walk (the forest's 0.95 m/s, some 10.7 tiles a game
+        // minute) halves it nearer: at some 320 tiles.
+        assert_eq!(
+            worth(1000, far(Pos::new(0, 0), Pos::new(320, 0)), (30, 93_567)),
+            500
+        );
+    }
+
+    #[test]
+    fn the_water_kept_is_the_nearest_to_home_or_to_a_place_it_knows() {
+        let rules = rules();
+        let side = place_side(&rules);
+        let home = Pos::new(4000, 4000);
+        let mut mind = Mind::new(home);
+        // A grove it knows some 2,000 tiles east, two hours of walk.
+        let grove = place_of(Pos::new(6000, 4000), side);
+        mind.places.insert(grove, Place::default());
+        let drink = |at: Pos| DrinkingPlace {
+            stand: at,
+            water: at,
+        };
+        // As many drinking places around home as it holds, one chunk apart.
+        for i in 0..i32::try_from(MEMORY_PLACES).unwrap() {
+            let at = Pos::new(home.x + (i % 8) * 32, home.y + (i / 8) * 32);
+            mind.water.insert(at.chunk(), drink(at));
+        }
+        // The grove's water, and one as far that lies by nothing it knows.
+        let by_grove = place_centre(grove, side);
+        let lone = Pos::new(4000, 2000);
+        mind.water.insert(by_grove.chunk(), drink(by_grove));
+        mind.water.insert(lone.chunk(), drink(lone));
+        trim_water(&mut mind, &rules);
+        assert_eq!(mind.water.len(), MEMORY_PLACES);
+        assert!(
+            mind.water.contains_key(&by_grove.chunk()),
+            "by the grove: kept"
+        );
+        assert!(
+            !mind.water.contains_key(&lone.chunk()),
+            "by nothing: forgotten"
+        );
+        assert!(
+            !mind
+                .water
+                .contains_key(&Pos::new(home.x + 7 * 32, home.y + 7 * 32).chunk()),
+            "the farthest from home goes too"
+        );
+    }
+
+    #[test]
+    fn the_notebook_keeps_a_far_rich_find_from_home_not_from_where_it_looks() {
+        let (world, rules, id, _) = by_a_ripe_bramble(0);
+        let home = world.body(id).unwrap().pos();
+        let side = place_side(&rules);
+        let own = place_of(home, side);
+        let food = food_now(&world, &rules);
+        let (bramble, hazel) = (food.numbers["bramble"], food.numbers["hazel"]);
+        let keep = places_remembered(&rules);
+        let mut mind = Mind::new(home);
+        // A hazel corner 125 places off (some 2,000 tiles, two hours of
+        // walk), and as many bramble corners as the notebook holds around
+        // the home: one is too many.
+        let far_off = (own.0 + 125, own.1);
+        mind.places.insert(far_off, place_with(&food, hazel, 1));
+        let mut ring = (0..).map(|i: i32| (own.0 + i % 7 - 3, own.1 + i / 7 - 3));
+        while mind.places.len() <= keep {
+            mind.places
+                .insert(ring.next().unwrap(), place_with(&food, bramble, 3));
+        }
+        let mut memory = Store::new();
+        trim_places(&food, &rules, &mut mind, &mut memory);
+        assert_eq!(mind.places.len(), keep);
+        // From home, two hours of walk to 52,000 kJ an hour of hazelnuts
+        // is worth more than a bramble corner at the door (1,800 kJ): the
+        // find is kept and a bramble corner forgotten, wherever the body
+        // stood when it looked.
+        assert!(mind.places.contains_key(&far_off));
+        assert_eq!(mind.forgotten().0, 1);
     }
 
     #[test]
@@ -12209,9 +12356,17 @@ mod tests {
             place_to_gather(&world, &food, here, &mind, 0, side, None).map(|p| p.0),
             Some(east(2))
         );
-        // Sixty places off (a thousand tiles), it is not.
+        // Sixty places off (some 960 tiles, an hour of walk), it still is:
+        // the brain counts in walking time (24 November 2026), halved at
+        // half an hour, and a hazel corner gives 29 times a bramble's.
         mind.places.remove(&east(2));
         mind.places.insert(east(60), place_with(&food, hazel, 1));
+        assert_eq!(
+            place_to_gather(&world, &food, here, &mind, 0, side, None).map(|p| p.0),
+            Some(east(60))
+        );
+        // A bramble corner as far, fuller, is not worth the hour.
+        mind.places.insert(east(60), place_with(&food, bramble, 9));
         assert_eq!(
             place_to_gather(&world, &food, here, &mind, 0, side, None).map(|p| p.0),
             Some(own)
@@ -12386,7 +12541,7 @@ mod tests {
         remember_places(
             &food,
             &rules,
-            (BodyId(1), here, 0, 0),
+            (BodyId(1), 0, 0),
             &mut mind,
             seen,
             &mut memory,
@@ -12501,7 +12656,7 @@ mod tests {
         );
         assert!(!place_open(&world, &food, mind, key, 0));
         let camp = mind.ways.home;
-        assert_eq!(choices(&food, &rules, &world, mind, id, camp, 100).len(), 0);
+        assert_eq!(choices(&food, &rules, &world, mind, id, camp).len(), 0);
         // Standing on it clears the mark: it is chosen again.
         let mut news = Vec::new();
         stand_on(
@@ -13900,7 +14055,11 @@ mod tests {
                     (
                         std::cmp::Reverse((
                             now,
-                            worth(best, far(place_centre(*key, side), here), WORTH_HALF_TILES),
+                            worth(
+                                best,
+                                far(place_centre(*key, side), here),
+                                (WORTH_HALF_MINUTES, REFERENCE_TILE_UMIN),
+                            ),
                         )),
                         *key,
                     )
@@ -13976,7 +14135,7 @@ mod tests {
             remember_places(
                 &food,
                 &rules,
-                (BodyId(1), here, 0, 0),
+                (BodyId(1), 0, 0),
                 &mut mind,
                 seen,
                 &mut memory,
@@ -14175,7 +14334,7 @@ mod tests {
         let twice = |x: u64, y: u64| y == x * 2 || y == (x / 2).max(1);
         others
             && match way {
-                Way::WorthHalfTiles => twice(a.worth_half_tiles, b.worth_half_tiles),
+                Way::WorthHalfMinutes => twice(a.worth_half_minutes, b.worth_half_minutes),
                 Way::StockKj => twice(a.stock_kj, b.stock_kj),
                 Way::SleepOut => a.sleep_out != b.sleep_out,
                 Way::Home => a.home != b.home,
@@ -14189,7 +14348,7 @@ mod tests {
         assert_eq!(
             Ways::at(home),
             Ways {
-                worth_half_tiles: WORTH_HALF_TILES,
+                worth_half_minutes: WORTH_HALF_MINUTES,
                 sleep_out: false,
                 stock_kj: STOCK_KJ,
                 home,
@@ -14199,16 +14358,17 @@ mod tests {
         let mind = Mind::new(home);
         assert_eq!(*mind.ways(), Ways::at(home));
         assert_eq!(mind.home(), home);
+        // A tile a game minute: the worth reads the walk's minutes.
         for tiles in [0, 1, 32, 1000] {
             assert_eq!(
-                worth(2850, tiles * tiles, WORTH_HALF_TILES),
-                2850 * WORTH_HALF_TILES / (WORTH_HALF_TILES + u64::try_from(tiles).unwrap())
+                worth(2850, tiles * tiles, (WORTH_HALF_MINUTES, 1_000_000)),
+                2850 * WORTH_HALF_MINUTES / (WORTH_HALF_MINUTES + u64::try_from(tiles).unwrap())
             );
         }
         assert_eq!(
-            worth(1000, 64 * 64, 64),
+            worth(1000, 60 * 60, (60, 1_000_000)),
             500,
-            "a way twice as wide halves at 64"
+            "a way twice as wide halves at an hour"
         );
         // The content's trials absent: nobody tries nor copies.
         assert!(!rules().needs.trials.on());
@@ -14396,9 +14556,9 @@ mod tests {
         let mut brains = piloted(&world);
         let mind = brains.minds.get_mut(&id).unwrap();
         let ways = *mind.ways();
-        mind.ways.worth_half_tiles *= 2;
+        mind.ways.worth_half_minutes *= 2;
         mind.trial = Some(Trial {
-            way: Way::WorthHalfTiles,
+            way: Way::WorthHalfMinutes,
             before: ways,
             started_day: 0,
             before_days: before,
@@ -14415,14 +14575,14 @@ mod tests {
             [
                 News::Tried {
                     body,
-                    way: Way::WorthHalfTiles,
+                    way: Way::WorthHalfMinutes,
                     kept,
                     ..
                 },
             ] if body == id => kept,
             _ => panic!("{news:?}"),
         };
-        (kept, mind.ways().worth_half_tiles)
+        (kept, mind.ways().worth_half_minutes)
     }
 
     #[test]
@@ -14559,7 +14719,7 @@ mod tests {
         // the second.
         mind.days = vec![gathered(400), gathered(600), bare];
         assert_eq!(
-            before_trial(&world, trials, &mind, Way::WorthHalfTiles, 4),
+            before_trial(&world, trials, &mind, Way::WorthHalfMinutes, 4),
             Lately {
                 distress_days: 2,
                 ..Lately::default()
@@ -14569,7 +14729,7 @@ mod tests {
         // Day 5, in the same season as day 4: the two days, as before.
         mind.days.push(bare);
         assert_eq!(
-            before_trial(&world, trials, &mind, Way::WorthHalfTiles, 5),
+            before_trial(&world, trials, &mind, Way::WorthHalfMinutes, 5),
             mind.lately(2)
         );
         // A way judged on its horizon keeps its days, whatever the season.
@@ -14580,16 +14740,16 @@ mod tests {
             mind.lately(4)
         );
         assert!(trial_fits(&world, &slow.needs.trials, Way::StockKj, 3));
-        assert!(!trial_fits(&world, trials, Way::WorthHalfTiles, 3));
-        assert!(trial_fits(&world, trials, Way::WorthHalfTiles, 17));
-        assert!(!trial_fits(&world, trials, Way::WorthHalfTiles, 18));
+        assert!(!trial_fits(&world, trials, Way::WorthHalfMinutes, 3));
+        assert!(trial_fits(&world, trials, Way::WorthHalfMinutes, 17));
+        assert!(!trial_fits(&world, trials, Way::WorthHalfMinutes, 18));
         // A season too short to hold a trial: the rule cannot hold, the
         // trial begins and is judged as before.
         let tiny = World::empty(
             Calendar::new(1, 7200).unwrap().with_cycle(8, 1).unwrap(),
             Map::filled(16, 16, Terrain::Grass),
         );
-        assert!(trial_fits(&tiny, trials, Way::WorthHalfTiles, 1));
+        assert!(trial_fits(&tiny, trials, Way::WorthHalfMinutes, 1));
     }
 
     #[test]
@@ -14637,22 +14797,22 @@ mod tests {
         // More a day, thin no more often: kept.
         assert_eq!(
             judged(before, day(1500, false), 1500, true, false, false),
-            (true, WORTH_HALF_TILES * 2)
+            (true, WORTH_HALF_MINUTES * 2)
         );
         // More a day but thin more often: reverted.
         assert_eq!(
             judged(before, day(1500, true), 1500, true, false, false),
-            (false, WORTH_HALF_TILES)
+            (false, WORTH_HALF_MINUTES)
         );
         // Nothing better: reverted.
         assert_eq!(
             judged(before, day(1000, true), 1000, false, false, false),
-            (false, WORTH_HALF_TILES)
+            (false, WORTH_HALF_MINUTES)
         );
         // The same a day, thin less often: kept.
         assert_eq!(
             judged(before, day(1000, false), 1000, false, false, false),
-            (true, WORTH_HALF_TILES * 2)
+            (true, WORTH_HALF_MINUTES * 2)
         );
     }
 
@@ -14671,12 +14831,12 @@ mod tests {
         // one thirsty day where there was none: reverted.
         assert_eq!(
             judged(before, day(1500), 1500, false, true, false),
-            (false, WORTH_HALF_TILES)
+            (false, WORTH_HALF_MINUTES)
         );
         // More a day, cold no more often (one night, as before): kept.
         assert_eq!(
             judged(before, day(1500), 1500, false, false, true),
-            (true, WORTH_HALF_TILES * 2)
+            (true, WORTH_HALF_MINUTES * 2)
         );
         // More a day, but cold two nights where it was one: reverted.
         assert_eq!(
@@ -14691,12 +14851,12 @@ mod tests {
                 false,
                 true
             ),
-            (false, WORTH_HALF_TILES)
+            (false, WORTH_HALF_MINUTES)
         );
         // The same a day, no cold night where there was one: kept.
         assert_eq!(
             judged(before, day(1000), 1000, false, false, false),
-            (true, WORTH_HALF_TILES * 2)
+            (true, WORTH_HALF_MINUTES * 2)
         );
         // The days as closed carry every distress, and a day of any is a
         // day of distress.
@@ -14804,7 +14964,7 @@ mod tests {
             brains.minds.get_mut(&me).unwrap().days = vec![day(1000)];
             let m = brains.minds.get_mut(&mate).unwrap();
             m.days = vec![day(3000)];
-            m.ways.worth_half_tiles = WORTH_HALF_TILES * 2;
+            m.ways.worth_half_minutes = WORTH_HALF_MINUTES * 2;
             m.will = 100;
             // Farther than imitate_tiles, gathering most of all: not a mate tonight.
             let f = brains.minds.get_mut(&far).unwrap();
@@ -14815,15 +14975,19 @@ mod tests {
             (brains.news(), *brains.mind(me).unwrap().ways())
         };
         let (news, ways) = copy(&trials_at(100, 0));
-        assert_eq!(ways.worth_half_tiles, WORTH_HALF_TILES * 2, "copied whole");
+        assert_eq!(
+            ways.worth_half_minutes,
+            WORTH_HALF_MINUTES * 2,
+            "copied whole"
+        );
         assert!(
-            matches!(news[..], [News::Copied { body, from, way: Way::WorthHalfTiles, lost: false, .. }] if body == me && from == mate),
+            matches!(news[..], [News::Copied { body, from, way: Way::WorthHalfMinutes, lost: false, .. }] if body == me && from == mate),
             "{news:?}"
         );
         let (news, ways) = copy(&trials_at(100, 100));
         assert_eq!(
-            ways.worth_half_tiles,
-            WORTH_HALF_TILES * 3 / 2,
+            ways.worth_half_minutes,
+            WORTH_HALF_MINUTES * 3 / 2,
             "halfway: one and a half"
         );
         assert!(
@@ -16666,9 +16830,9 @@ mod tests {
             if id == BodyId(2) || id == BodyId(4) {
                 // Under a trial of its worth distance.
                 let before = mind.ways;
-                mind.ways.worth_half_tiles *= 2;
+                mind.ways.worth_half_minutes *= 2;
                 mind.trial = Some(Trial {
-                    way: Way::WorthHalfTiles,
+                    way: Way::WorthHalfMinutes,
                     before,
                     started_day: 0,
                     before_days: Lately::default(),
@@ -16696,7 +16860,7 @@ mod tests {
         // Its trial ended unjudged: the way back, the will as it was, its
         // home trial toward the call begun.
         let mind = &brains.minds[&BodyId(2)];
-        assert_eq!(mind.ways.worth_half_tiles, WORTH_HALF_TILES);
+        assert_eq!(mind.ways.worth_half_minutes, WORTH_HALF_MINUTES);
         assert_eq!(mind.will, 10);
         let trial = mind.trial.unwrap();
         assert_eq!(
@@ -17195,7 +17359,7 @@ mod tests {
         remember_places(
             &food,
             rules,
-            (id, Pos::new(5, 5), day, world.tick().0),
+            (id, day, world.tick().0),
             mind,
             seen,
             &mut brains.memory,
@@ -17638,12 +17802,12 @@ mod tests {
         assert_eq!(brains.mind(me).unwrap().home(), before, "no home copied");
         assert_eq!(brains.news(), Vec::new());
         let mut wide = theirs;
-        wide.worth_half_tiles = WORTH_HALF_TILES * 2;
-        heard_kept(&mut brains, (me, mate, 3), Way::WorthHalfTiles, wide, 0);
+        wide.worth_half_minutes = WORTH_HALF_MINUTES * 2;
+        heard_kept(&mut brains, (me, mate, 3), Way::WorthHalfMinutes, wide, 0);
         brains.imitate(&world, &rules, me);
         assert_eq!(
-            brains.mind(me).unwrap().ways().worth_half_tiles,
-            WORTH_HALF_TILES
+            brains.mind(me).unwrap().ways().worth_half_minutes,
+            WORTH_HALF_MINUTES
         );
         // A lost step lands halfway.
         let rules = {
@@ -17651,16 +17815,16 @@ mod tests {
             r.needs.trials.imitate_loss_percent = 100;
             r
         };
-        heard_kept(&mut brains, (me, mate, 4), Way::WorthHalfTiles, wide, 100);
+        heard_kept(&mut brains, (me, mate, 4), Way::WorthHalfMinutes, wide, 100);
         brains.imitate(&world, &rules, me);
         let news = brains.news();
         assert_eq!(
-            brains.mind(me).unwrap().ways().worth_half_tiles,
-            WORTH_HALF_TILES * 3 / 2,
+            brains.mind(me).unwrap().ways().worth_half_minutes,
+            WORTH_HALF_MINUTES * 3 / 2,
             "{news:?}"
         );
         let mind = brains.minds.get_mut(&me).unwrap();
-        mind.ways.worth_half_tiles = WORTH_HALF_TILES;
+        mind.ways.worth_half_minutes = WORTH_HALF_MINUTES;
         mind.trial = Some(Trial {
             way: Way::StockKj,
             before: mind.ways,
@@ -17807,9 +17971,9 @@ mod tests {
         let me = BodyId(1);
         let mind = brains.minds.get_mut(&me).unwrap();
         let ways = mind.ways;
-        mind.ways.worth_half_tiles *= 2;
+        mind.ways.worth_half_minutes *= 2;
         mind.trial = Some(Trial {
-            way: Way::WorthHalfTiles,
+            way: Way::WorthHalfMinutes,
             before: ways,
             started_day: 0,
             before_days: before,
@@ -18071,9 +18235,9 @@ mod tests {
             let mind = brains.minds.get_mut(&BodyId(1)).unwrap();
             mind.will = will;
             let ways = mind.ways;
-            mind.ways.worth_half_tiles *= 2;
+            mind.ways.worth_half_minutes *= 2;
             mind.trial = Some(Trial {
-                way: Way::WorthHalfTiles,
+                way: Way::WorthHalfMinutes,
                 before: ways,
                 started_day: 0,
                 before_days: Lately {
@@ -18252,8 +18416,8 @@ mod tests {
         // Every change but one heard given up, twice each (a teller judges
         // one trial of a way a day: each on its own day).
         for (i, (way, up)) in [
-            (Way::WorthHalfTiles, true),
-            (Way::WorthHalfTiles, false),
+            (Way::WorthHalfMinutes, true),
+            (Way::WorthHalfMinutes, false),
             (Way::SleepOut, true),
             (Way::StockKj, true),
             (Way::Home, true),
@@ -18327,6 +18491,33 @@ mod tests {
             saved,
             gains: [gathered, 0, 0, 0],
         }
+    }
+
+    #[test]
+    fn near_home_and_near_the_camp_are_game_minutes_of_walk() {
+        // A grove's middle is near home within four game minutes of walk:
+        // 64 tiles on the reference ground, some 43 in the forest.
+        let mut mind = Mind::new(Pos::new(0, 0));
+        let near =
+            |mind: &Mind, tiles: u64| mind.walk_milliminutes(tiles) <= GROVE_NEAR_MINUTES * 1000;
+        assert!(near(&mind, 64) && !near(&mind, 66));
+        mind.tile_umin = 93_567;
+        assert!(near(&mind, 42) && !near(&mind, 44));
+        // What a day was: its best grove near home or not.
+        let day = |at: i32| {
+            let night = night_with([0; SENSES], 0, vec![picked((at, 0), 0, 1000)]);
+            yesterday_of(&night, 1, |p: Pos| p.x < 100, 64).near
+        };
+        assert!(day(1), "a grove whose middle lies 96 tiles off: near");
+        assert!(!day(2), "160 tiles off: not");
+        // The evening's near the camp: three game minutes, 48 tiles on
+        // the reference ground (the content's `decisions.near_camp_minutes`).
+        assert_eq!(
+            crate::content::Decisions::placeholders().near_camp_minutes,
+            3
+        );
+        let fresh = Mind::new(Pos::new(0, 0));
+        assert!(fresh.walk_milliminutes(48) <= 3000 && fresh.walk_milliminutes(49) > 3000);
     }
 
     /// A night cold through, nothing else lacking: the cold is out of

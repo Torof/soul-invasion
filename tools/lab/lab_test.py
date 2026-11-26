@@ -55,7 +55,7 @@ def fixture(seed=1, trials=True, fire=False):
                 "intervals_days": [], "interval_days_mean": None, "fifteen": {"turned": 0, "alive": 0},
                 "fertile_women": {"total": 1, "without_spouse": 0}, "trials": trials_n, "kept": kept, "copied": copied,
                 "homes_moved": 0, "home_moves": [],
-                "ways": {"minds": pop, "sleep_out": 1 if pop else 0, "median_worth_tiles": 32, "median_stock_kj": 15000} if pop else None,
+                "ways": {"minds": pop, "sleep_out": 1 if pop else 0, "median_worth_minutes": 30, "median_stock_kj": 15000} if pop else None,
                 "camp": camp,
                 "food": {"start_kj": 0, "gathered_kj": 100000 * yr, "eaten_kj": 90000 * yr, "spoiled_kj": 1000, "end_kj": 500,
                          "lost_kj": 0, "thin_hours": 48, "weak_hours": 24}}
@@ -64,7 +64,7 @@ def fixture(seed=1, trials=True, fire=False):
         return {"id": pid, "name": f"person {pid}", "tribe": tribe, "sex": sex, "born": born,
                 "born_day": 1 if born == "start" else born, "age_days_at_start": 7300 if born == "start" else None,
                 "born_at": [10, 10], "died": died, "mother": None, "father": None, "spouses": [], "children": 0,
-                "lost": [], "will": 50, "ways": {"worth_half_tiles": 32, "sleep_out": False, "stock_kj": 15000, "home": [10, 10]},
+                "lost": [], "will": 50, "ways": {"worth_half_minutes": 30, "sleep_out": False, "stock_kj": 15000, "home": [10, 10]},
                 "trials": list(trials_), "copied": 0, "thin_hours": 24, "weak_hours": 0, "gathered_kj": 5000,
                 "meals": 10, "drinks": 20, "thoughts": 30,
                 "lines": [{"day": 1, "tick": 0, "what": f"person {pid} of tribe {tribe} is born"}] + list(lines)}
@@ -141,7 +141,7 @@ def fixture(seed=1, trials=True, fire=False):
                         {"id": 3, "kind": "place", "day": 40, "witness": 2, "refs": 1, "place": [32, 16], "states": [],
                          "way": None, "up": None, "kept": None, "will": None, "present": None, "told": None},
                         {"id": 4, "kind": "trial", "day": 15, "witness": 1, "refs": 2, "place": None, "states": None,
-                         "way": "worth_half_tiles", "up": True, "kept": True, "will": 10, "present": None, "told": None}]
+                         "way": "worth_half_minutes", "up": True, "kept": True, "will": 10, "present": None, "told": None}]
         d["hearth"] = [{"tribe": "A", "nights": [{"day": 15, "camp": [10, 10], "present": 2, "told": [{"record": 4, "by": 1}, {"record": 1, "by": 1}]},
                                                  {"day": 40, "camp": [10, 10], "present": 2, "told": [{"record": 3, "by": 2}]}]},
                        {"tribe": "B", "nights": []}]

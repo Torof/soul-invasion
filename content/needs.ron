@@ -526,9 +526,12 @@
     //                          first, by name. A parent never sets aside
     //                          its own child, and a child whose parent is
     //                          in the group comes with it;
-    // near_camp_tiles:     40 — one set aside weighs first the places it
-    //                          knows within 40 tiles of the camp: those set
-    //                          aside may make their own group near it.
+    // near_camp_minutes:   3 — one set aside weighs first the places it
+    //                          knows within 3 game minutes of walk from the
+    //                          camp (48 tiles on open ground, 32 in the
+    //                          forest; 40 tiles until 26 November 2026, the
+    //                          brain in walking time): those set aside may
+    //                          make their own group near it.
     decisions: (
         choices: 3,
         plants_per_gatherer: 2,
@@ -545,7 +548,7 @@
         facts_kept: 32,
         review_outings: 3,
         review_bad: 2,
-        near_camp_tiles: 40,
+        near_camp_minutes: 3,
     ),
     // The will tempered, and a confidence by activity (D50 amended, D56;
     // the project lead, 23 November 2026: "je suis d'accord avec toutes

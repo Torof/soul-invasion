@@ -1153,10 +1153,12 @@ pub struct Decisions {
     #[serde(default)]
     pub review_bad: u32,
     /// One told "not with us tomorrow" weighs first the places it knows
-    /// within this many tiles of the camp, on each axis: those set aside
-    /// may make their own group near the camp.
+    /// within this many game minutes of walk from the camp (a game minute
+    /// a 1,440th of the game day; 40 tiles on each axis until 26 November
+    /// 2026, the brain in walking time): those set aside may make their
+    /// own group near the camp.
     #[serde(default)]
-    pub near_camp_tiles: u32,
+    pub near_camp_minutes: u32,
     /// The parts of the review in force (lot 5b, a measure of its causes):
     /// `set_aside` (the bad told "not with us tomorrow"), `aside_costs`
     /// (that costs them a failure of their confidence in gathering),
@@ -1193,7 +1195,7 @@ impl Default for Decisions {
             facts_kept: 0,
             review_outings: 0,
             review_bad: 0,
-            near_camp_tiles: 0,
+            near_camp_minutes: 0,
             review_parts: review_parts_all(),
         }
     }
@@ -1218,7 +1220,7 @@ impl Decisions {
             facts_kept: 32,
             review_outings: 3,
             review_bad: 2,
-            near_camp_tiles: 40,
+            near_camp_minutes: 3,
             ..Self::default()
         }
     }
@@ -1921,7 +1923,13 @@ pub struct Trials {
 }
 
 /// The ways a trial may move, as the content names them (D50).
-pub const TRIAL_WAYS: [&str; 5] = ["worth_half_tiles", "sleep_out", "stock_kj", "home", "hands"];
+pub const TRIAL_WAYS: [&str; 5] = [
+    "worth_half_minutes",
+    "sleep_out",
+    "stock_kj",
+    "home",
+    "hands",
+];
 
 impl Default for Trials {
     /// Nobody tries anything nor copies anybody.
@@ -3846,7 +3854,7 @@ mod tests {
         assert_eq!(trials.days_for("sleep_out", 50), 25);
         assert_eq!(trials.days_for("stock_kj", 8), 5, "never under trial_days");
         assert_eq!(
-            trials.days_for("worth_half_tiles", 50),
+            trials.days_for("worth_half_minutes", 50),
             5,
             "not named: trial_days"
         );
