@@ -509,6 +509,12 @@ pub struct Needs {
     /// gathers until night and walks home in the dark, as before.
     #[serde(default)]
     pub trips: Trips,
+    /// The passages remembered and told (D53, amended 26 November 2026):
+    /// a body that reached a place across water or rock keeps the point of
+    /// its way through which it did, tells it at the fire with the place,
+    /// and walks there in two legs. Absent: nobody keeps a passage.
+    #[serde(default)]
+    pub passages: Passages,
 }
 
 /// Food pooled at the hearth (D58; the project lead, 25 November 2026:
@@ -791,6 +797,51 @@ impl Trips {
                 "trips: stay_percent_by_will and go_on_percent_by_will both empty or both \
                  given, their wills rising, every value at most 100; sleep_out_percent at \
                  most 100; choice_beyond_minutes at most 1440",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The passages remembered and told (D53, amended 26 November 2026; the
+/// project lead, 24 November 2026: "Une personne qui trouve le chemin vient
+/// le dire"). A body standing on a place of its notebook that a straight
+/// walk from its camp could not reach, water or rock in the way, keeps the
+/// elbow of its way through which it came: a ford, the end of a lake. It
+/// tells it at the fire with the place; a listener who knows the place but
+/// not the way holds it; going there, it walks first to the elbow, then to
+/// the place. Every value is a D30 placeholder, named and explained in
+/// `content/needs.ron`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Passages {
+    /// A passage neither found, heard nor walked through for this many
+    /// game days is forgotten. 0: nobody keeps a passage (off).
+    pub fade_days: u32,
+    /// The passages a body tells at a fire at most, apart from the
+    /// places' slots like a mark of seen, not reached.
+    pub told_per_night: u32,
+}
+
+impl Passages {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            fade_days: 64,
+            told_per_night: 2,
+        }
+    }
+
+    /// Whether anybody keeps a passage.
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.fade_days > 0
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if self.fade_days > 100_000 || self.told_per_night > 64 {
+            return Err(ContentError::Needs(
+                "passages: fade_days at most 100000, told_per_night at most 64",
             ));
         }
         Ok(())
@@ -2693,6 +2744,7 @@ impl Needs {
         self.pooling.validate()?;
         self.trips.validate()?;
         self.problems.validate()?;
+        self.passages.validate()?;
         self.hands.validate()
     }
 

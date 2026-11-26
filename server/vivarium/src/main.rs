@@ -82,6 +82,9 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            from a hearth's reserve wakes everyone of that
                            hearth at the camp, asleep or not, as before
                            (thought.hearth_wakes true)
+  --no-passages            the control run of the passages: nobody keeps,
+                           tells or walks through a passage (the content's
+                           passages section replaced by none)
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
@@ -194,6 +197,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-trips" => settings.trips = false,
             "--no-problems" => settings.problems = false,
             "--wake-all" => settings.wake_all = true,
+            "--no-passages" => settings.passages = false,
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,
             "--prepare-land" => prepare = true,

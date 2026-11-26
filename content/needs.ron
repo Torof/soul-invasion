@@ -924,4 +924,28 @@
         sleep_out_percent: 90,
         choice_beyond_minutes: 30,
     ),
+    // The passages remembered and told (D53, amended 26 November 2026; the
+    // project lead, 24 November 2026: "Une personne qui trouve le chemin
+    // vient le dire"). A body standing on a place it remembers that a
+    // straight walk from its camp could not reach (water or rock in the
+    // way) keeps the elbow of its way through which it came: the point of
+    // its way from which the place lies on a clear line, a second one before
+    // it when the first is not on a clear line from the camp (a ford, the
+    // end of a lake). It tells it at the fire with the place; a listener who
+    // knows the place but not the way holds it, and a mark of seen, not
+    // reached it held on the place is lifted. Going there, a body walks
+    // first to the elbow, then to the place, with the same sight as any
+    // walk. Absent: nobody keeps a passage, as before. Every value is a D30
+    // placeholder.
+    // fade_days: 64 — a passage neither found, heard nor walked through for
+    //                 a cycle (64 game days in calendar v1) is forgotten;
+    //                 one walked through and barred is dropped at once, the
+    //                 place marked seen, not reached;
+    // told_per_night: 2 — the passages a body tells at a fire at most, apart
+    //                 from the places' slots, its new ones first, then those
+    //                 of the places it tells tonight.
+    passages: (
+        fade_days: 64,
+        told_per_night: 2,
+    ),
 )

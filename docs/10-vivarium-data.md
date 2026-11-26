@@ -61,6 +61,7 @@ clock, the only field no seed decides.
 | `meta.settings.fire` | The evening fire and the common memory, D55 (false: `--no-fire`); since 23 November 2026 | boolean |
 | `meta.settings.decisions` | The decisions at the evening fire, D56 (false: `--no-decisions`); since 23 November 2026 | boolean |
 | `meta.settings.moves` | Moving home as a consequence (amended 24 November 2026); `false`: the control run, `--no-moves`, nobody is surprised nor moves home | boolean |
+| `meta.settings.passages` | The passages remembered and told (D53, amended 26 November 2026); `false`: the control run, `--no-passages`, nobody keeps, tells or walks through a passage | boolean |
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
 | `meta.camps` | The camps' starting positions, A first | `[[x, y], …]` |
@@ -281,7 +282,7 @@ clock, the only field no seed decides.
 | `people[].lines[].tick` | The tick | tick |
 | `people[].lines[].what` | The line, as the chronicle says it | string |
 | `records[].id` | A record of the common memory at the end (D55): its number | integer |
-| `records[].kind` | `place`, `water`, `trial`, `night`, `reputed` (who is believed to know, D56, PR 1 ter) or `barred` (a place seen, not reached, D53 amended 24 November 2026) | string |
+| `records[].kind` | `place`, `water`, `trial`, `night`, `reputed` (who is believed to know, D56, PR 1 ter) `barred` (a place seen, not reached, D53 amended 24 November 2026) or `passage` (the elbows of a way to a place across water or rock, D53 amended 26 November 2026) | string |
 | `records[].day` | Its day | day |
 | `records[].witness` | Who saw it first, or the trial's body; `null` for a night | integer |
 | `records[].refs` | Accesses and nights holding it | count |
@@ -577,6 +578,18 @@ clock, the only field no seed decides.
 | `chain.outings` | Every outing of a grown body beyond the fire's reach of its home (`trials.imitate_tiles`), as it ended, in order (25 November 2026): the day it woke home again, the tribe (0 or 1), the nights it woke away (0: out and back by the next dawn), and the farthest it stood from its home, on the longer axis, looked at once a game minute; then who went, as it was when the outing began (the first game minute it stood beyond the fire's reach): its will (0 to 100), whether it was a parent of a living child under 8 age-years, of one under 16, its sex (`"female"` or `"male"`), and its age in whole age-years. An outing still open at the end, or ended by death, is not there | `[[day, tribe, nights, tiles, will, parent_under_8, parent_under_16, sex, age_years], …]` |
 | `chain.turns.no_return.*` | What the bodies chose away from home when the straight walk home took the rest of the day's light (`News::Turned`, D53, D56, amended 25 November 2026): `home`, `stay` (food in sight, it stays out) or `on` (it goes on with its trip) | choices |
 | `chain.turns.morning.*` | The same, on a morning they woke on a trip | choices |
+| `passages.dawns_stopped_by_water` | The passages (D53, amended 26 November 2026; measures counted the same with `--no-passages`, where only this key, `marks.made`, `marks.lifted_stood` and `beyond_reached` can be other than 0), their own block, last: the body-days on which a walk was barred by water (`Event::BodyBlocked` or `MoveRefused` with `Blockage::Water`), once a body a day | body-days |
+| `passages.marks.made` | Marks of seen, not reached made by a body's own barred walk (`News::Barred` with a cause; the same as the sum of `years[].decisions.barred.made`) | marks |
+| `passages.marks.lifted_stood` | Marks lifted by the body standing on the place (`News::Reached`) | marks |
+| `passages.marks.lifted_heard` | Marks lifted by hearing a passage to the place at the fire: the way now known | marks |
+| `passages.found` | Passages found: a body stood on a place of its notebook that a straight walk from its camp could not reach (water or rock in the way) and kept the elbows of the way it came | passages |
+| `passages.told` | Passages told at a fire, a telling each (its new ones, then those of the places it told that night; `passages.told_per_night` at most) | tellings |
+| `passages.heard` | Passages heard and held: a present who knew the place and held no passage to it | listeners |
+| `passages.walks.begun` | Walks to a place begun through a passage: the place not on a clear line from where the body stood | walks |
+| `passages.walks.arrived` | Of them, those that stood on the place at the end | walks |
+| `passages.walks.dropped` | Passages dropped, a walk there barred by water or rock (the place then marked seen, not reached) | passages |
+| `passages.beyond_reached` | Places of their notebooks the bodies stood on, the first time a day, that a straight walk from their camp could not reach, water or rock in the way, whether through a passage or not | body-place-days |
+| `passages.farthest_through_minutes_x10` | The farthest place reached through a passage: the straight walk from the walker's home to where it stood, at its own pace (`Mind::walk_milliminutes`); 0 when none | tenths of a game minute |
 
 ## Beside the data: the lab's series file
 
