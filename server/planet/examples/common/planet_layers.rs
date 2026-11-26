@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use sim::plan::planet::{
+use planet::{
     self, Edge, Kind, Line, OldKind, Planet, Setting, ZOOM_SIDE, Zoom, chamfer, open_sea,
 };
 

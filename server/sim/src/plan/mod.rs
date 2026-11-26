@@ -63,7 +63,6 @@ mod kept;
 pub mod measure;
 #[cfg(test)]
 mod net;
-pub mod planet;
 pub mod region;
 pub mod relief;
 pub mod vivarium;

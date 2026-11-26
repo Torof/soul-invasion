@@ -1,12 +1,12 @@
 //! Step 0 of the new world (probe): for a few seeds, the planet's plates
-//! and continents (`sim::plan::planet`), our continent on its margin at
+//! and continents (the `planet` crate), our continent on its margin at
 //! three widths, drawn for the project lead to judge
 //! (`content/ai-reserve/review/monde-nouveau/etape-0/`). Nothing here
 //! enters the game.
 //!
 //! ```text
-//! cargo run --release -p sim --example planet
-//! PLANET_OUT=some/folder PLANET_SEEDS=1,4 cargo run --release -p sim --example planet
+//! cargo run --release -p planet --example planet
+//! PLANET_OUT=some/folder PLANET_SEEDS=1,4 cargo run --release -p planet --example planet
 //! ```
 //!
 //! Writes per seed `planete-graine-N.png` (equirectangular, 1,024 × 512),
@@ -31,10 +31,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use serde_json::json;
-use sim::plan::planet::{
+use planet::{
     self, CELLS, Kind, Line, OldKind, Planet, Setting, Site, V3, ZOOM_PX_KM, ZOOM_SIDE, Zoom,
 };
+use serde_json::json;
 
 use png::{Rgb, png};
 

@@ -43,13 +43,18 @@
     clippy::too_many_lines,
     clippy::similar_names,
     clippy::too_many_arguments,
-    reason = "a probe's geometry: values bounded by the grid and the planet; long functions read as one story"
+    clippy::many_single_char_names,
+    clippy::needless_range_loop,
+    clippy::cast_possible_wrap,
+    reason = "a probe's geometry: values bounded by the grid and the planet; long functions read as one story; short names follow the maths (the lints `sim::plan` allows, inherited when it lived there)"
 )]
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use crate::r#gen::hash;
+mod hash;
+
+use hash::hash;
 
 // ---------------------------------------------------------------- numbers
 
