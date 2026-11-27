@@ -491,7 +491,6 @@ fn random_unit(seed: u64, purpose: u64, k: u64) -> V3 {
 /// Draw purposes.
 const P_PLATES: u64 = 0x0c50_0010;
 const P_OLD: u64 = 0x0c50_0020;
-const P_HOTSPOTS: u64 = 0x0c50_0030;
 const P_RELIEF: u64 = 0x0c50_0040;
 const P_ZOOM: u64 = 0x0c50_0050;
 
@@ -824,9 +823,13 @@ pub struct Planet {
     pub hotspots: Vec<Hotspot>,
     /// Each cell's height above the sea, m.
     pub elevation: Vec<i32>,
-    /// The sea level every step is drawn against, in the raw heights' metres:
-    /// today's, kept for the whole history.
+    /// Today's sea level, in the raw heights' metres: the one that leaves
+    /// the settings' share of land dry.
     sea: i64,
+    /// How much higher than today's the sea stands at this step, m: it
+    /// follows the ocean floor's age (a young floor is shallow, and the sea
+    /// spills over the continents' edges).
+    pub sea_rise_m: i64,
     /// The pieces of land, largest first.
     pub lands: Vec<Landmass>,
     /// Cells reshaped for our continent (none until [`Planet::shape`]).
@@ -873,6 +876,26 @@ fn range_of(h: &History, t: usize, now_my: u16, c: usize) -> Option<(i64, i64)> 
 /// Ocean floor older than this, millions of years, sinks no more.
 const FLAT_FLOOR_MY: i64 = 120;
 
+/// How far the ocean floor has sunk at an age, millions of years, m: it
+/// cools, ~350 m per square root of a million years (Parsons and
+/// Sclater), flat past [`FLAT_FLOOR_MY`].
+fn sinking(age: i64) -> i64 {
+    350 * (age.min(FLAT_FLOOR_MY) * 1_000_000).isqrt() / 1000
+}
+
+/// How far the ocean floor has sunk on average at step `t`, m.
+fn floor_sinking(sphere: &Sphere, h: &History, t: usize) -> i64 {
+    let (mut sum, mut area) = (0_i64, 0_i64);
+    for c in 0..CELLS {
+        if h.class[t][c] == history::OCEAN {
+            let a = i64::from(sphere.area_km2[c]);
+            sum += sinking(i64::from(h.age[t][c])) * a;
+            area += a;
+        }
+    }
+    sum / area.max(1)
+}
+
 /// A hotspot's island or seamount sinks as it ages: gone after this,
 /// millions of years.
 const TRACK_MYR: i64 = 120;
@@ -916,18 +939,7 @@ impl Planet {
             .map(|&k| k == Some(OldKind::Suture))
             .collect();
         // 2. The history: the supercontinent, its break-up, the drift.
-        let count = draw(
-            seed,
-            P_HOTSPOTS,
-            0,
-            settings.hotspots.0,
-            settings.hotspots.1,
-        ) as u64;
-        let plumes: Vec<V3> = (0..count)
-            .map(|k| random_unit(seed, P_HOTSPOTS + 1, k))
-            .collect();
-        let history =
-            std::sync::Arc::new(history::run(seed, settings, &sphere, &old_suture, &plumes));
+        let history = std::sync::Arc::new(history::run(seed, settings, &sphere, &old_suture));
         let last = history.last();
         Self::build(
             seed,
@@ -1119,8 +1131,7 @@ impl Planet {
                     // The floor sinks as it cools: ~2,500 m at a ridge,
                     // ~350 m more per square root of a million years
                     // (Parsons and Sclater), flat past [`FLAT_FLOOR_MY`].
-                    let age = i64::from(h.age[t][c]).min(FLAT_FLOOR_MY);
-                    -2_500 - 350 * (age * 1_000_000).isqrt() / 1000 + rough
+                    -2_500 - sinking(i64::from(h.age[t][c])) + rough
                 };
                 let (d, src) = near[c];
                 if d != u32::MAX {
@@ -1175,14 +1186,18 @@ impl Planet {
                 e
             })
             .collect();
-        // One sea level for the whole history: today's, which gives the
-        // settings' share of land. In the past the share of land varies, as
-        // on Earth (27 November 2026: a range rising somewhere no longer
-        // drowns lowlands everywhere).
+        // The sea level is anchored today: it leaves the settings' share
+        // of land dry. In the past it follows the ocean floor's age: where
+        // the floor was younger than today's on average it stood higher,
+        // and the sea with it (27 November 2026, version 6; a range rising
+        // somewhere never drowns lowlands everywhere).
         let sea =
             sea.unwrap_or_else(|| quantile(&sphere, &elevation, 1000 - settings.land_per_mille));
+        let sea_rise_m = (floor_sinking(&sphere, h, h.last()) - floor_sinking(&sphere, h, t))
+            * settings.sea_follows_floor
+            / 1000;
         for e in &mut elevation {
-            *e -= sea;
+            *e -= sea + sea_rise_m;
         }
         let elevation: Vec<i32> = elevation
             .iter()
@@ -1204,6 +1219,7 @@ impl Planet {
             hotspots,
             elevation,
             sea,
+            sea_rise_m,
             lands: Vec::new(),
             ours: vec![false; CELLS],
             settings: *settings,
@@ -2541,6 +2557,33 @@ mod tests {
             .collect();
         let young = ocean.iter().filter(|&&a| a <= 20).count();
         assert!(young * 20 > ocean.len(), "{young} of {}", ocean.len());
+    }
+
+    #[test]
+    fn the_mantle_is_warm_under_the_supercontinent_and_the_sea_is_anchored_today() {
+        let world = Planet::new(3);
+        let h = &world.history;
+        // At the start the supercontinent is a lid: the mantle under it is
+        // warmer than under the ocean, and most plumes rise under it.
+        let mean = |land: bool| {
+            let cells: Vec<i64> = (0..CELLS)
+                .filter(|&c| (h.class[0][c] != history::OCEAN) == land)
+                .map(|c| i64::from(h.heat_at[0][c]))
+                .collect();
+            cells.iter().sum::<i64>() / cells.len() as i64
+        };
+        assert!(
+            mean(true) > mean(false) + 300,
+            "{} {}",
+            mean(true),
+            mean(false)
+        );
+        assert!(h.hotspots.len() >= 14);
+        // Slabs have cooled it somewhere since.
+        assert!(h.heat_at[h.last()].iter().any(|&v| v < -200));
+        // The sea is today's at the last step, and moved in the past.
+        assert_eq!(world.sea_rise_m, 0);
+        assert!((0..h.last()).any(|t| world.at_step(t).sea_rise_m != 0));
     }
 
     #[test]

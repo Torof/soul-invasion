@@ -10,13 +10,21 @@
 //!    the sphere. At every step each cell belongs to exactly one plate;
 //!    each plate turns about its own Euler pole and carries all its crust,
 //!    oceanic and continental, with the crust's record.
-//! 3. **Forces, not scripts.** A plate's turn at each step comes from the
-//!    forces on its cells, summed as a torque and slowed by continental
-//!    keels: the upwelling under the supercontinent pushes its plates
-//!    away from the rift axis (fading); later rifts push their two halves
-//!    apart; downwellings draw; ridges push; and slab pull, the strongest,
-//!    draws a plate toward every trench where it sinks, so plates with
-//!    long subducting edges move fastest.
+//! 3. **Forces, a balance on each plate at each step** (version 6). A
+//!    plate's turn comes from the forces on its cells, summed as a
+//!    torque: slab pull, the strongest, draws a plate toward every trench
+//!    where it sinks, the more the older (heavier) its floor there; the
+//!    same slab draws the plate riding over it toward the trench (trench
+//!    suction: the pull a plate all continent has); ridges push, a
+//!    little; the mantle carries the continents down the slope of its
+//!    heat; a collision's front resists. Against them the mantle's drag,
+//!    which grows with speed and is stronger under continental keels.
+//!    **The mantle's heat** is one layer on the grid: warm under a large
+//!    continent (a lid), cold where slabs sink, with the deep mantle's
+//!    own provinces; it lingers and spreads. The heat under the
+//!    supercontinent is what breaks it (no scripted upwelling), and
+//!    plumes rise where it is hottest. Later rifts push their two halves
+//!    apart.
 //! 4. **Divergent boundaries** leave gaps: new oceanic crust of age 0
 //!    fills them from both sides, so the ocean floor carries symmetric age
 //!    stripes.
@@ -67,7 +75,8 @@ pub struct Settings {
     /// The planet's radius, km. Fixed at the Earth's for now: the grid and
     /// the zoom are measured on it.
     pub radius_km: i64,
-    /// Share left dry by the sea, per mille (the lead's 15–20 %).
+    /// Share left dry by the sea today, per mille (130: an ice-free planet,
+    /// its seas high; the lead's 27 November).
     pub land_per_mille: i64,
     /// Share of the surface carried by continental crust, per mille: the
     /// supercontinent's size (the land, plus the shelves).
@@ -91,9 +100,6 @@ pub struct Settings {
     pub plate_inequality: i64,
     /// Oceanic plates at the start, around the supercontinent.
     pub ocean_plates: (i64, i64),
-    /// How far the first rift axis may turn from north–south, tenths of a
-    /// degree.
-    pub rift_turn: i64,
     /// Steps a later rift waits after the start; a plate younger than
     /// twice this does not weld.
     pub rift_steps: usize,
@@ -120,21 +126,23 @@ pub struct Settings {
     /// Two colliding plates weld once they have moved against each other
     /// slower than this, mm a year, for four steps.
     pub weld_stop_mm: i64,
-    /// The upwelling's push under the supercontinent, mm a year at
-    /// [`EXPANSION_KM`] from the rift axis (later rifts push at
-    /// `rift_open_mm`).
-    pub upwelling_push: i64,
-    /// A push keeps this much of its strength per step, per mille.
-    pub push_keep: i64,
-    /// Downwellings, where cold mantle sinks and draws the plates.
-    pub downwellings: (i64, i64),
-    /// A downwelling's draw on continents, mm a year near it (fading to 0
-    /// at [`DOWN_REACH_KM`]): cold sinking mantle gathers them.
-    pub downwelling_draw: i64,
+    /// The mantle's heat moves the continents: mm a year down a slope of
+    /// the heat field as steep as under a supercontinent's edge (hot
+    /// under a large continent, cold where slabs sink).
+    pub heat_push: i64,
     /// Slab pull, the strongest force: mm a year per trench cell, shared
     /// by all the plate's cells (a plate's speed is about this times its
-    /// trench cells over its cells).
+    /// trench cells over its cells), for a floor of
+    /// [`Settings::slab_age_my`].
     pub slab_pull: i64,
+    /// The floor's age, millions of years, at which a slab pulls at full
+    /// strength: an older one pulls more (up to half as much again), a
+    /// younger one less, one under [`SLAB_YOUNG_MY`] not at all.
+    pub slab_age_my: i64,
+    /// Trench suction: the sinking slab draws the plate riding over it
+    /// toward the trench, mm a year per trench cell (as `slab_pull`). It
+    /// is the pull a plate all continent has.
+    pub slab_suction: i64,
     /// Ridge push, mm a year per ridge cell, shared the same way.
     pub ridge_push: i64,
     /// How much a continental keel slows its plate, per mille of drag
@@ -155,18 +163,22 @@ pub struct Settings {
     pub terranes: (i64, i64),
     /// A terrane's length, cells of ~100 km.
     pub terrane_cells: (i64, i64),
-    /// Hotspots.
+    /// Hotspots: plumes rise where the mantle is hottest.
     pub hotspots: (i64, i64),
-    /// The upwelling and downwellings stay within this latitude, tenths of
-    /// a degree.
-    pub mantle_latitude: i64,
+    /// A range loses this much of its height above a plain continent each
+    /// step, per mille (its silt builds the coasts out).
+    pub mountain_wear: i64,
+    /// The sea follows the ocean floor's age: of each metre the floor
+    /// stood higher than today's on average (a younger floor), the sea
+    /// stood this much higher, per mille.
+    pub sea_follows_floor: i64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             radius_km: RADIUS_KM,
-            land_per_mille: 175,
+            land_per_mille: 130,
             crust_per_mille: 240,
             supercontinent_warp: 1000,
             supercontinent_fray: 1000,
@@ -175,7 +187,6 @@ impl Default for Settings {
             continent_plates: (14, 18),
             plate_inequality: 100_000,
             ocean_plates: (5, 8),
-            rift_turn: 300,
             rift_steps: 4,
             steps: 40,
             step_my: 5,
@@ -184,11 +195,10 @@ impl Default for Settings {
             rift_open_mm: 30,
             collision_resist: 3,
             weld_stop_mm: 5,
-            upwelling_push: 150,
-            push_keep: 960,
-            downwellings: (2, 3),
-            downwelling_draw: 12,
+            heat_push: 150,
             slab_pull: 7_500,
+            slab_age_my: 80,
+            slab_suction: 2_500,
             ridge_push: 300,
             continent_drag: 800,
             pole_flight: 35,
@@ -198,7 +208,8 @@ impl Default for Settings {
             terranes: (18, 28),
             terrane_cells: (1, 5),
             hotspots: (14, 20),
-            mantle_latitude: 350,
+            mountain_wear: 100,
+            sea_follows_floor: 400,
         }
     }
 }
@@ -359,12 +370,12 @@ pub struct Lip {
 
 /// The whole history.
 pub struct History {
-    /// The upwelling that broke the supercontinent.
+    /// The supercontinent's middle.
     pub upwelling: V3,
-    /// The normal of its rift axis (a great circle through the upwelling).
-    pub rift_normal: V3,
-    /// The downwellings that draw.
-    pub downwellings: Vec<V3>,
+    /// Per step, the mantle's heat under each cell (0: its mean; about a
+    /// thousand under a large continent's heart, negative where slabs
+    /// sink).
+    pub heat_at: Vec<Vec<i16>>,
     /// Plates at the start: on the supercontinent, and in all.
     pub plates_at_start: (usize, usize),
     /// Terranes placed in the ocean at the start.
@@ -392,7 +403,8 @@ pub struct History {
     pub orogeny_at: Vec<Vec<u16>>,
     /// Per step, each cell's crust thickness, tenths of a km.
     pub thick_at: Vec<Vec<u16>>,
-    /// The hotspots, fixed under the plates.
+    /// The hotspots, fixed under the plates: plumes risen where the mantle
+    /// was hottest at the start.
     pub hotspots: Vec<V3>,
     /// Per step, the hotspots' marks on the crust: where, which hotspot,
     /// and when it was made, millions of years ago.
@@ -447,8 +459,8 @@ impl History {
 const P_UP: u64 = 0x0c50_0101;
 const P_SUPER: u64 = 0x0c50_0102;
 const P_FRAG: u64 = 0x0c50_0103;
-const P_DOWN: u64 = 0x0c50_0104;
-const P_MOVE: u64 = 0x0c50_0105;
+const P_HEAT: u64 = 0x0c50_0104;
+const P_HOT: u64 = 0x0c50_010d;
 const P_TERRANE: u64 = 0x0c50_0106;
 const P_AGE: u64 = 0x0c50_0107;
 const P_OCEAN: u64 = 0x0c50_0108;
@@ -465,20 +477,41 @@ const SUPER_FRAY: [(i64, i64); 3] = [(600_000, 4), (250_000, 2), (100_000, 1)];
 const FRAY: i64 = 600;
 /// The plates' borders' warp: wandering edges, not a Voronoi's lines.
 const RIFT_WARP: [(i64, i64); 3] = [(400_000, 140_000), (150_000, 45_000), (60_000, 15_000)];
-/// A downwelling is at least this far from the upwelling, km.
-const DOWN_FROM_UP_KM: i64 = 10_000;
-/// The upwelling's push grows with the distance from the rift axis up to
-/// this, km: the opening is an expansion, every rift widens.
-pub const EXPANSION_KM: i64 = 5_000;
-/// The upwelling pushes this far from it (straight line), km.
-const UP_REACH_KM: i64 = 8_000;
+/// The mantle's heat, one layer on the grid (0: the mantle's mean). A
+/// continent is a lid: the mantle under it warms toward a thousand at
+/// [`HEAT_LID_KM`] from the sea, and on at that slope up to
+/// [`HEAT_LID_REACH_KM`] (a supercontinent's heart is the hottest place
+/// of the planet).
+const HEAT_LID_KM: i64 = 2_000;
+const HEAT_LID_REACH_KM: i64 = 4_000;
+/// A sinking slab cools the mantle by this at its trench, fading to
+/// nothing this far from it, km.
+const HEAT_SLAB: i64 = 600;
+const HEAT_SLAB_KM: i64 = 800;
+/// The deep mantle's own warm and cold provinces, at most (they stay
+/// where they are: plumes rise from the warm ones).
+const HEAT_DEEP: i64 = 300;
+const HEAT_DEEP_GRAIN: [(i64, i64); 2] = [(900_000, 2), (400_000, 1)];
+/// Each step the mantle goes this much of the way to what the crust
+/// above makes of it, per mille (heat lingers where a continent stood).
+const HEAT_RATE: i64 = 150;
+/// And spreads to its neighbours, this many times.
+const HEAT_SWEEPS: usize = 2;
+/// Plumes rise where the mantle is hottest, give or take this much heat
+/// drawn for each cell, and stand at least this far apart, km.
+const PLUME_LUCK: u64 = 2_000;
+const PLUME_APART_KM: i64 = 1_800;
+/// A slab younger than this, millions of years, is too light to pull.
+pub const SLAB_YOUNG_MY: i64 = 10;
+/// The most an old slab pulls, per mille of the pull at
+/// [`Settings::slab_age_my`].
+const SLAB_MOST: i64 = 1_500;
+/// A rift's or an escape's push keeps this much of its strength per step,
+/// per mille.
+const PUSH_KEEP: i64 = 960;
 /// A later rift's push: its expansion and reach, km.
 const RIFT_EXPANSION_KM: i64 = 1_500;
 const RIFT_REACH_KM: i64 = 3_500;
-/// A downwelling draws this far (straight line), km, and less within
-/// [`DOWN_NEAR_KM`] (the plates converge there, they do not orbit it).
-pub const DOWN_REACH_KM: i64 = 9_000;
-const DOWN_NEAR_KM: i64 = 1_000;
 /// Oceanic plates' seeds stay this far apart and from the
 /// supercontinent's plates' seeds, km.
 const OCEAN_SEED_APART_KM: i64 = 3_000;
@@ -494,7 +527,7 @@ const TERRANE_MY: (i64, i64) = (20, 250);
 /// The ocean at the start: its youngest floor, and how fast it spread
 /// from the plates' borders, km per million years on each side.
 const OCEAN_START_MY: i64 = 5;
-const OCEAN_START_KM_MY: i64 = 50;
+const OCEAN_START_KM_MY: i64 = 25;
 /// The older sutures' last mountain building, My ago.
 const OLD_OROGENY_MY: (i64, i64) = (300, 700);
 /// A plate keeps this much of its last motion each step, per mille (the
@@ -504,12 +537,6 @@ const INERTIA: i64 = 400;
 const FORCE_LEAST_UM: i64 = 2_000;
 /// Share of an arc's riding edge that becomes arc crust, per mille.
 const ARC_SHARE: u64 = 200;
-/// An upwelling's push outward from its centre, per mille of its push
-/// away from its axis.
-const RADIAL: i64 = 500;
-/// The radial push's north–south part, per mille: the supercontinent
-/// opens mostly east–west, as the Atlantic did.
-const RADIAL_NORTH: i64 = 300;
 
 type M3 = [[i64; 3]; 3];
 
@@ -585,9 +612,10 @@ struct Mark {
     my: u16,
 }
 
-/// A push from the mantle: away from a great circle (`normal`), growing
+/// A push on two plates, a later rift's halves or an escaping block and
+/// the plate it leaves: away from a great circle (`normal`), growing
 /// with the distance from it up to `expansion_km`, within `reach_km` of
-/// `centre`; on two plates only, for a later rift or an escaping block.
+/// `centre`.
 #[derive(Debug, Clone, Copy)]
 struct Push {
     centre: V3,
@@ -596,11 +624,12 @@ struct Push {
     expansion_km: i64,
     /// µm a year.
     strength: i64,
-    plates: Option<(u8, u8)>,
+    plates: (u8, u8),
 }
 
-/// A cell where a force acts on its plate, and the force's direction.
-type Spot = (usize, u8, V3);
+/// A cell where a force acts on its plate, the force's direction and its
+/// weight, per mille.
+type Spot = (usize, u8, V3, i64);
 
 /// A cell on a collision's front: its plate, the plate it meets, the
 /// normal toward it, and how fast they close, µm a year.
@@ -617,19 +646,20 @@ const THICK_MAX: i64 = 700;
 /// Two plates in a collision and its front's length, cells.
 type Grip = (u8, u8, i64);
 
-/// Each step, a pile spreads this much toward its neighbours, ‰.
-const THICK_SPREAD: i64 = 400;
-/// Each step a continent loses this much of its thickness above a
-/// continent's, ‰ (wear); the silt builds its plate's margins out, a
-/// shore cell at a time once there is enough for this thickness there (no
-/// continental crust is ever lost, 27 November, version 5.1).
+/// Each step, a pile spreads this much toward its neighbours, ‰ (slowly:
+/// a range stays a range, version 6).
+const THICK_SPREAD: i64 = 120;
+/// Each step a continent loses [`Settings::mountain_wear`] of its
+/// thickness above a continent's (wear); the silt builds its plate's
+/// margins out, a shore cell at a time once there is enough for
+/// [`SPILL_THICK`] there (no continental crust is ever lost, 27 November,
+/// version 5.1).
 /// A continental mass larger than this, km², splits (version 5.1): the
 /// lead's largest land is 16–28 M km², a mass's crust is a third more.
 const SPLIT_KM2: i64 = 40_000_000;
 const SPLIT_EVERY: usize = 3;
 /// Steps a hidden spare of a plate's own waits before it piles up.
 const SPARE_STEPS: u8 = 3;
-const WEAR: i64 = 500;
 const SPILL_THICK: i64 = 200;
 /// Two colliding plates weld once they have stood still this many steps.
 const WELD_QUIET: usize = 4;
@@ -727,6 +757,58 @@ struct Drive {
     group: [u8; MAXP],
 }
 
+/// The forces at the plates' edges, read at the last step: the slabs
+/// (on the plate that sinks), their suction (on the plate riding over
+/// them), the ridges, and the collisions' fronts.
+#[derive(Clone, Copy)]
+struct Edges<'a> {
+    slab: &'a [Spot],
+    suction: &'a [Spot],
+    ridge: &'a [Spot],
+    grips: &'a [Grip],
+}
+
+/// The mantle's heat a step later: it goes part of the way to what the
+/// crust above makes of it (warm under a continent, the more the farther
+/// from the sea: a lid; cold around the slabs that sink; the deep
+/// mantle's own provinces), and spreads.
+fn warm(sphere: &Sphere, rock: &[Rock], slab: &[Spot], deep: &[i32], heat: &mut [i32], rate: i64) {
+    let sea: Vec<(usize, u32)> = (0..CELLS)
+        .filter(|&c| rock[c].class == OCEAN)
+        .map(|c| (c, 0))
+        .collect();
+    let (inland, _) = sphere.spread(
+        &sea,
+        |_, b| rock[b].class != OCEAN,
+        HEAT_LID_REACH_KM as u32,
+    );
+    let trench: Vec<(usize, u32)> = slab.iter().map(|s| (s.0, 0)).collect();
+    let (sinking, _) = sphere.spread(&trench, |_, _| true, HEAT_SLAB_KM as u32);
+    for c in 0..CELLS {
+        let mut goal = i64::from(deep[c]);
+        if rock[c].class != OCEAN {
+            let d = i64::from(inland[c]).min(HEAT_LID_REACH_KM);
+            goal += d * 1000 / HEAT_LID_KM;
+        }
+        if sinking[c] != u32::MAX {
+            goal -= HEAT_SLAB * (HEAT_SLAB_KM - i64::from(sinking[c])) / HEAT_SLAB_KM;
+        }
+        let now = i64::from(heat[c]);
+        heat[c] = (now + (goal - now) * rate / 1000) as i32;
+    }
+    for _ in 0..HEAT_SWEEPS {
+        let before = heat.to_vec();
+        for c in 0..CELLS {
+            let around: i64 = sphere.links[c]
+                .iter()
+                .map(|&(n, _)| i64::from(before[n as usize]))
+                .sum();
+            let mean = around / sphere.links[c].len().max(1) as i64;
+            heat[c] = i64::midpoint(i64::from(before[c]), mean) as i32;
+        }
+    }
+}
+
 /// The plates' turns from the forces on them. Plates whose continents
 /// touch and have not parted (`held`) are held together while the forces
 /// press them together: a boundary inside a continent exists only once
@@ -738,8 +820,8 @@ fn drive(
     rock: &[Rock],
     pushes: &[Push],
     alias: &[u8; MAXP],
-    downwellings: &[V3],
-    (slab, ridge, grips): (&[Spot], &[Spot], &[Grip]),
+    heat: &[i32],
+    edges: Edges,
     prev: Option<&[V3]>,
     held: &[[bool; MAXP]],
 ) -> Drive {
@@ -749,15 +831,12 @@ fn drive(
     let pushes: Vec<Push> = pushes
         .iter()
         .filter(|p| p.strength > 0)
-        .filter_map(|p| match p.plates {
-            None => Some(*p),
-            Some((a, b)) => {
-                let (a, b) = (alias_of(alias, a), alias_of(alias, b));
-                (a != b).then_some(Push {
-                    plates: Some((a, b)),
-                    ..*p
-                })
-            }
+        .filter_map(|p| {
+            let (a, b) = (alias_of(alias, p.plates.0), alias_of(alias, p.plates.1));
+            (a != b).then_some(Push {
+                plates: (a, b),
+                ..*p
+            })
         })
         .collect();
     for c in 0..CELLS {
@@ -769,7 +848,7 @@ fn drive(
         }
         let mut f = [0_i64; 3];
         for push in &pushes {
-            if push.plates.is_some_and(|(a, b)| p != a && p != b) {
+            if p != push.plates.0 && p != push.plates.1 {
                 continue;
             }
             let d = km_between(x, push.centre);
@@ -781,20 +860,6 @@ fn drive(
             let fade = ((push.reach_km - d) * 2000 / push.reach_km).min(1000);
             let dir = normalize(tangent(x, push.normal));
             f = add(f, scale(dir, push.strength * away / 1000 * fade / 1000));
-            if push.plates.is_none() {
-                // And outward from the upwelling itself: the pieces along
-                // the axis part too.
-                let out = tangent(x, push.centre).map(|v| -v);
-                let out = normalize([out[0], out[1], out[2] * RADIAL_NORTH / 1000]);
-                let radial = (d * 1000 / push.expansion_km).min(1000);
-                f = add(
-                    f,
-                    scale(
-                        out,
-                        push.strength * RADIAL / 1000 * radial / 1000 * fade / 1000,
-                    ),
-                );
-            }
         }
         if rock[c].class != OCEAN && s.pole_flight != 0 {
             let z = x[2];
@@ -803,24 +868,30 @@ fn drive(
             let dir = normalize(tangent(x, [0, 0, -ONE]));
             f = add(f, scale(dir, m));
         }
-        for &dw in downwellings {
-            if rock[c].class == OCEAN {
-                continue;
+        // The mantle carries a continent down the slope of its heat: away
+        // from where it is warm (under a large continent), toward where
+        // it is cold (where slabs sink).
+        if rock[c].class != OCEAN && s.heat_push != 0 {
+            let mut slope = [0_i64; 3];
+            for &(n, km) in &sphere.links[c] {
+                let d = i64::from(heat[n as usize]) - i64::from(heat[c]);
+                if d != 0 {
+                    let dir = normalize(tangent(x, sub(sphere.centre[n as usize], x)));
+                    slope = add(slope, scale(dir, d * 1000 / i64::from(km).max(1)));
+                }
             }
-            let d = km_between(x, dw);
-            if d >= DOWN_REACH_KM || d == 0 {
-                continue;
-            }
-            let near = (d * 1000 / DOWN_NEAR_KM).min(1000);
-            let dir = normalize(tangent(x, dw));
-            let m = s.downwelling_draw * 1000 * (DOWN_REACH_KM - d) / DOWN_REACH_KM * near / 1000;
-            f = add(f, scale(dir, m));
+            let n = sphere.links[c].len() as i64 * 1000;
+            f = add(f, slope.map(|v| -v * 2 * HEAT_LID_KM * s.heat_push / n));
         }
         torque[p as usize] = add(torque[p as usize], cross(x, f));
     }
-    for (spots, strength) in [(slab, s.slab_pull), (ridge, s.ridge_push)] {
-        for &(c, p, dir) in spots {
-            let f = scale(dir, strength * 1000);
+    for (spots, strength) in [
+        (edges.slab, s.slab_pull),
+        (edges.suction, s.slab_suction),
+        (edges.ridge, s.ridge_push),
+    ] {
+        for &(c, p, dir, weight) in spots {
+            let f = scale(dir, strength * weight);
             torque[p as usize] = add(torque[p as usize], cross(sphere.centre[c], f));
         }
     }
@@ -888,7 +959,7 @@ fn drive(
     // their relative motion, more as the front grows against the smaller
     // one (they slow, and stop once the front is long).
     let mut grip = vec![0_i64; MAXP * MAXP];
-    for &(p, o, cells) in grips {
+    for &(p, o, cells) in edges.grips {
         let (ra, rb) = (root(&up, p) as usize, root(&up, o) as usize);
         if ra != rb {
             grip[ra.min(rb) * MAXP + ra.max(rb)] += cells;
@@ -965,6 +1036,7 @@ struct Look {
     kind: Vec<u8>,
     margin: Vec<u8>,
     slab: Vec<Spot>,
+    suction: Vec<Spot>,
     ridge: Vec<Spot>,
     front: Vec<Front>,
 }
@@ -976,11 +1048,13 @@ fn look(
     rock: &mut [Rock],
     omega: &[V3],
     event: &[u8],
+    (now_my, full_my): (u16, i64),
 ) -> Look {
     let floor = floor_born(plate, rock);
     let mut kind = vec![0_u8; CELLS];
     let mut margin = vec![Margin::Inland as u8; CELLS];
     let mut slab = Vec::new();
+    let mut suction = Vec::new();
     let mut ridge = Vec::new();
     let mut front = Vec::new();
     let mut active = vec![false; CELLS];
@@ -1044,10 +1118,18 @@ fn look(
                 && 2 * closing >= slide
                 && (theirs_cont || !mine_up)
             {
-                slab.push((c, mine, normal));
+                // An old slab is heavy: it pulls its plate, and draws the
+                // plate riding over it toward the trench.
+                let age = i64::from(rock[c].born_my.saturating_sub(now_my));
+                let weight = ((age - SLAB_YOUNG_MY) * 1000 / (full_my - SLAB_YOUNG_MY).max(1))
+                    .clamp(0, SLAB_MOST);
+                if weight > 0 {
+                    slab.push((c, mine, normal, weight));
+                    suction.push((c, other, normal.map(|v| -v), weight));
+                }
             }
             if !mine_cont && closing <= -FORCE_LEAST_UM && -2 * closing >= slide {
-                ridge.push((c, mine, normal.map(|v| -v)));
+                ridge.push((c, mine, normal.map(|v| -v), 1000));
             }
         }
         if !mine_cont {
@@ -1074,6 +1156,7 @@ fn look(
         kind,
         margin,
         slab,
+        suction,
         ridge,
         front,
     }
@@ -1264,14 +1347,8 @@ fn flood(
     out
 }
 
-/// The history of the planet born from `seed`, with its hotspots.
-pub fn run(
-    seed: u64,
-    s: &Settings,
-    sphere: &Sphere,
-    old_suture: &[bool],
-    hotspots: &[V3],
-) -> History {
+/// The history of the planet born from `seed`.
+pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> History {
     assert_eq!(s.radius_km, RADIUS_KM, "only the Earth's radius for now");
     let total_my = s.steps as i64 * s.step_my;
     let area = |c: usize| i64::from(sphere.area_km2[c]);
@@ -1429,37 +1506,39 @@ pub fn run(
         }
         placed += 1;
     }
-    // The mantle: the upwelling's rift axis, the downwellings.
-    let axis_turn = draw(seed, P_MOVE, 999, -s.rift_turn, s.rift_turn) * TAU / 3600;
-    let (east, north) = (east_at(upwelling), north_at(upwelling, east_at(upwelling)));
-    let rift_normal = normalize(add(
-        scale(east, cos(axis_turn)),
-        scale(north, sin(axis_turn)),
-    ));
-    let downs = draw(seed, P_DOWN, 0, s.downwellings.0, s.downwellings.1) as u64;
-    let downwellings: Vec<V3> = (0..downs)
-        .map(|k| {
-            (0..TRIES)
-                .map(|t| random_unit(seed, P_DOWN + 1, k * 10_000 + t))
-                .find(|&p| {
-                    latitude(p).abs() <= s.mantle_latitude
-                        && km_between(p, upwelling) >= DOWN_FROM_UP_KM
-                })
-                .expect("a point far from the upwelling")
+    // The mantle's heat at the start: the supercontinent has long been a
+    // lid over it. Plumes rise where it is hottest, give or take.
+    let deep: Vec<i32> = sphere
+        .centre
+        .iter()
+        .map(|&x| {
+            ((fbm3(hash(&[seed, P_HEAT]), x, &HEAT_DEEP_GRAIN) - 500) * HEAT_DEEP / 500) as i32
         })
         .collect();
-    let mut pushes = vec![Push {
-        centre: upwelling,
-        normal: rift_normal,
-        reach_km: UP_REACH_KM,
-        expansion_km: EXPANSION_KM,
-        strength: s.upwelling_push * 1000,
-        plates: None,
-    }];
-    // The plumes that may flood a breaking continent: the hotspots and the
-    // upwelling itself.
-    let mut plumes: Vec<V3> = hotspots.to_vec();
-    plumes.push(upwelling);
+    let mut heat = vec![0_i32; CELLS];
+    warm(sphere, &rock, &[], &deep, &mut heat, 1000);
+    let count = draw(seed, P_HOT, 0, s.hotspots.0, s.hotspots.1).max(0) as usize;
+    let mut rising: Vec<(i64, usize)> = (0..CELLS)
+        .map(|c| {
+            let luck = hash(&[seed, P_HOT, 1, c as u64]) % PLUME_LUCK;
+            (i64::from(heat[c]) + luck as i64, c)
+        })
+        .collect();
+    rising.sort_unstable_by_key(|&(h, c)| (std::cmp::Reverse(h), c));
+    let mut hotspots: Vec<V3> = Vec::with_capacity(count);
+    for &(_, c) in &rising {
+        if hotspots.len() == count {
+            break;
+        }
+        let x = sphere.centre[c];
+        if hotspots.iter().all(|&q| km_between(x, q) >= PLUME_APART_KM) {
+            hotspots.push(x);
+        }
+    }
+    let hotspots = &hotspots[..];
+    let mut pushes: Vec<Push> = Vec::new();
+    // The plumes may flood a breaking continent.
+    let plumes: Vec<V3> = hotspots.to_vec();
     // A plume floods once.
     let mut spent = vec![false; plumes.len()];
     // Plates whose continents touch have not parted: they move as one
@@ -1538,6 +1617,7 @@ pub fn run(
     let mut out_orogeny = Vec::with_capacity(s.steps + 1);
     let mut out_thick = Vec::with_capacity(s.steps + 1);
     let mut out_marks = Vec::with_capacity(s.steps + 1);
+    let mut out_heat = Vec::with_capacity(s.steps + 1);
     let mut continental_km2 = Vec::with_capacity(s.steps + 1);
     let mut shortened_km2 = vec![0];
     let mut made_km2 = vec![0];
@@ -1548,8 +1628,13 @@ pub fn run(
         &rock,
         &pushes,
         &alias,
-        &downwellings,
-        (&[], &[], &[]),
+        &heat,
+        Edges {
+            slab: &[],
+            suction: &[],
+            ridge: &[],
+            grips: &[],
+        },
         None,
         &held(&parted, &fresh, 0, young),
     );
@@ -1725,7 +1810,7 @@ pub fn run(
                             reach_km: 2 * ESCAPE_KM,
                             expansion_km: ESCAPE_KM / 2,
                             strength: ESCAPE_MM * 1000,
-                            plates: Some((over as u8, new as u8)),
+                            plates: (over as u8, new as u8),
                         });
                         escapes.push(Escape {
                             my: now_my,
@@ -2210,7 +2295,9 @@ pub fn run(
                 if rock[c].class != CONTINENT {
                     continue;
                 }
-                let worn = (i64::from(rock[c].thick) - i64::from(CONTINENT_THICK)) * WEAR / 1000;
+                let worn = (i64::from(rock[c].thick) - i64::from(CONTINENT_THICK))
+                    * s.mountain_wear
+                    / 1000;
                 if worn > 0 {
                     rock[c].thick -= worn as u16;
                     silt[plate[c] as usize] += worn * area(c);
@@ -2407,7 +2494,7 @@ pub fn run(
                         reach_km: RIFT_REACH_KM,
                         expansion_km: RIFT_EXPANSION_KM,
                         strength: 2 * half,
-                        plates: Some((a, b)),
+                        plates: (a, b),
                     });
                     contact[ua.min(ub)][ua.max(ub)] = 0;
                     broken[ua][ub] = true;
@@ -2558,7 +2645,7 @@ pub fn run(
                         reach_km: RIFT_REACH_KM,
                         expansion_km: RIFT_EXPANSION_KM,
                         strength: 2 * half,
-                        plates: Some((old, new)),
+                        plates: (old, new),
                     });
                     rifts.push(Rift {
                         my: now_my,
@@ -2593,11 +2680,28 @@ pub fn run(
             shortened_km2.push(shortened);
             made_km2.push(made);
             for push in &mut pushes {
-                push.strength = push.strength * s.push_keep / 1000;
+                push.strength = push.strength * PUSH_KEEP / 1000;
             }
         }
         // 12. What the plates do now, and the forces for the next step.
-        let seen = look(sphere, &plate, &group, &mut rock, &omega, &event);
+        let seen = look(
+            sphere,
+            &plate,
+            &group,
+            &mut rock,
+            &omega,
+            &event,
+            (now_my, s.slab_age_my),
+        );
+        // The mantle under the crust as it now lies.
+        if t > 0 {
+            warm(sphere, &rock, &seen.slab, &deep, &mut heat, HEAT_RATE);
+        }
+        out_heat.push(
+            heat.iter()
+                .map(|&v| v.clamp(-30_000, 30_000) as i16)
+                .collect::<Vec<i16>>(),
+        );
         for c in 0..CELLS {
             if seen.margin[c] == Margin::Active as u8 && rock[c].orogeny != now_my {
                 rock[c].orogeny = now_my;
@@ -2730,8 +2834,13 @@ pub fn run(
                 &rock,
                 &pushes,
                 &alias,
-                &downwellings,
-                (&seen.slab, &seen.ridge, &grips),
+                &heat,
+                Edges {
+                    slab: &seen.slab,
+                    suction: &seen.suction,
+                    ridge: &seen.ridge,
+                    grips: &grips,
+                },
                 Some(&omega),
                 &held(&parted, &fresh, t, young),
             );
@@ -2758,7 +2867,7 @@ pub fn run(
                         }
                     }
                     for push in &mut pushes {
-                        if push.plates == Some((r.plate, r.new)) {
+                        if push.plates == (r.plate, r.new) {
                             push.strength = 0;
                         }
                     }
@@ -2785,8 +2894,7 @@ pub fn run(
     }
     History {
         upwelling,
-        rift_normal,
-        downwellings,
+        heat_at: out_heat,
         plates_at_start: (kc, seeds.len()),
         terranes: placed as usize,
         plate: out_plate,

@@ -521,7 +521,7 @@ fn orogeny_colour(ago: i64) -> [u8; 3] {
 /// the planet view draws today's (same palette, same layers), at
 /// 1,024 × 512 and centred as the planet view: `h{seed}-{step}-{name}.png`
 /// for its relief, plates, continental crust, boundaries, motion, grid,
-/// ocean floor's age, and the mantle's upwelling and downwellings.
+/// ocean floor's age, and the mantle's heat with its plumes.
 pub fn step_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
     let (w, hgt) = (PW / 2, PH / 2);
     let lon0 = lon0_of(zoom);
@@ -658,13 +658,22 @@ pub fn step_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         }
     }
     l.write(dir, &name("fond"));
-    // The mantle: the upwelling (orange) and the downwellings (blue).
+    // The mantle's heat: warm (orange to red) under the large continents,
+    // cold (blue) where slabs sink; the plumes as rings.
     let mut l = Layer::new(w, hgt);
-    let (x, y) = at(h.upwelling);
-    l.ring(x, y, 12, 3, [255, 140, 20, 255]);
-    for &d in &h.downwellings {
-        let (x, y) = at(d);
-        l.ring(x, y, 12, 3, [60, 200, 255, 255]);
+    for (i, &c) in cell.iter().enumerate() {
+        let v = i64::from(h.heat_at[t][c]);
+        if v >= 150 {
+            let k = ((v - 150) * 255 / 1350).min(255) as u8;
+            l.px[i] = [255, 170 - k / 2 - k / 8, 40, 60 + k / 2];
+        } else if v <= -100 {
+            let k = ((-v - 100) * 255 / 500).min(255) as u8;
+            l.px[i] = [40, 150 - k / 3, 255, 60 + k / 2];
+        }
+    }
+    for &p in &h.hotspots {
+        let (x, y) = at(p);
+        l.ring(x, y, 5, 2, [255, 240, 120, 255]);
     }
     l.write(dir, &name("manteau"));
 }

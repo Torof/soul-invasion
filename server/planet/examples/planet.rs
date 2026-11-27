@@ -23,6 +23,8 @@
     clippy::cast_possible_wrap,
     clippy::too_many_lines,
     clippy::needless_range_loop,
+    clippy::cast_precision_loss,
+    clippy::type_complexity,
     reason = "drawing code reads as arithmetic over bounded pixels"
 )]
 
@@ -201,6 +203,11 @@ fn main() {
                 .sum::<i64>(),
             "settings": settings,
             "history": history_json(&world),
+            "metrics": if std::env::var_os("PLANET_METRICS").is_some() {
+                metrics(&world)
+            } else {
+                serde_json::Value::Null
+            },
             "land_count_over_1M": world.lands.iter().filter(|l| l.area_km2 > 1_000_000).count(),
             "ours_on_grid_km2": ours.map(|l| l.area_km2),
             "site": site_json,
@@ -272,7 +279,7 @@ fn history_json(world: &Planet) -> serde_json::Value {
         .collect();
     speeds.sort_unstable_by_key(|&(a, _)| std::cmp::Reverse(a));
     json!({"plates_at_start": h.plates_at_start.1, "continent_plates_at_start": h.plates_at_start.0,
-        "plates_at_end": alive(last), "terranes": h.terranes, "downwellings": h.downwellings.len(),
+        "plates_at_end": alive(last), "terranes": h.terranes,
         "welds": h.welds.iter().map(|w| json!([w.my, w.kept, w.absorbed, w.kept_km2,
             w.absorbed_km2, w.parted])).collect::<Vec<_>>(),
         "rifts": h.rifts.iter().map(|r| json!([r.my, r.plate, r.new, r.area_km2, r.aborted]))
@@ -295,6 +302,250 @@ fn history_json(world: &Planet) -> serde_json::Value {
             "young_per_mille": young_km2 * 1000 / floor_km2.max(1)},
         "plates_today": speeds.iter().map(|&(a, v)| json!([a, v])).collect::<Vec<_>>(),
         "my": last as i64 * world.settings.step_my, "largest_lands": welded})
+}
+
+/// The model's behaviour in numbers (with `PLANET_METRICS`): whether a
+/// rift's halves stay apart, how long a range lasts, how much the coasts
+/// change inside the plates from a step to the next, how fast the plates
+/// go. Crust is followed by its home cell.
+fn metrics(world: &Planet) -> serde_json::Value {
+    use planet::history::{CONTINENT_THICK, OCEAN};
+    let h = &world.history;
+    let s = &world.sphere;
+    let last = h.last();
+    let step_my = world.settings.step_my as usize;
+    // The continental masses at a step: each cell's mass (0: ocean).
+    let masses = |t: usize| {
+        let mut mass = vec![0_u32; CELLS];
+        let mut next = 0;
+        for start in 0..CELLS {
+            if mass[start] != 0 || h.class[t][start] == OCEAN {
+                continue;
+            }
+            next += 1;
+            mass[start] = next;
+            let mut stack = vec![start];
+            while let Some(c) = stack.pop() {
+                for &(n, _) in &s.links[c] {
+                    let n = n as usize;
+                    if mass[n] == 0 && h.class[t][n] != OCEAN {
+                        mass[n] = next;
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+        mass
+    };
+    // 1. Rifts: do the halves part, and are they apart five steps later?
+    let (mut never, mut back, mut apart, mut unknown) = (0, 0, 0, 0);
+    for r in &h.rifts {
+        let t0 = last - r.my as usize / step_my;
+        // The halves as drawn at the rift's step, or the next (plates
+        // moving as one are drawn as one).
+        let mut side = vec![0_u8; CELLS];
+        let mut n = [0_usize; 3];
+        for t in t0..=(t0 + 1).min(last) {
+            side.fill(0);
+            n = [0; 3];
+            for c in 0..CELLS {
+                if h.class[t][c] == OCEAN {
+                    continue;
+                }
+                let k = if h.plate[t][c] == r.plate {
+                    1
+                } else if h.plate[t][c] == r.new {
+                    2
+                } else {
+                    continue;
+                };
+                side[h.home_at[t][c] as usize] = k;
+                n[k as usize] += 1;
+            }
+            if n[1] > 0 && n[2] > 0 {
+                break;
+            }
+        }
+        if t0 + 5 > last {
+            unknown += 1;
+            continue;
+        }
+        if n[1] == 0 || n[2] == 0 {
+            never += 1;
+            continue;
+        }
+        let (mut parted, mut rejoined) = (false, false);
+        for t in t0 + 1..=t0 + 5 {
+            let mass = masses(t);
+            let mut tally: std::collections::BTreeMap<u32, [usize; 3]> =
+                std::collections::BTreeMap::new();
+            for c in 0..CELLS {
+                let k = side[h.home_at[t][c] as usize];
+                if mass[c] != 0 && k != 0 {
+                    tally.entry(mass[c]).or_insert([0; 3])[k as usize] += 1;
+                }
+            }
+            let most = |k: usize| tally.iter().max_by_key(|(_, v)| v[k]).map(|(&m, _)| m);
+            if most(1) == most(2) {
+                rejoined |= parted;
+            } else {
+                parted = true;
+            }
+        }
+        if !parted {
+            never += 1;
+        } else if rejoined {
+            back += 1;
+        } else {
+            apart += 1;
+        }
+    }
+    // 2. Ranges: from a pile's peak (at least 1,000 m above a plain
+    // continent) to the step it stands under 300 m.
+    let mut peak = vec![0_i64; CELLS];
+    let mut peak_t = vec![0_usize; CELLS];
+    let mut gone_t = vec![usize::MAX; CELLS];
+    let mut dropped = vec![false; CELLS];
+    for t in 0..=last {
+        let mut cur = vec![i64::MIN; CELLS];
+        for c in 0..CELLS {
+            if h.class[t][c] != OCEAN {
+                let e = i64::from(h.thick_at[t][c]) - i64::from(CONTINENT_THICK);
+                let home = h.home_at[t][c] as usize;
+                cur[home] = cur[home].max(e);
+            }
+        }
+        for home in 0..CELLS {
+            if cur[home] == i64::MIN {
+                dropped[home] |= peak[home] > 0 && gone_t[home] == usize::MAX;
+            } else if cur[home] > peak[home] {
+                peak[home] = cur[home];
+                peak_t[home] = t;
+                gone_t[home] = usize::MAX;
+            } else if cur[home] < 30 && gone_t[home] == usize::MAX && peak[home] >= 100 {
+                gone_t[home] = t;
+            }
+        }
+    }
+    let room = 100 / step_my;
+    let mut lives: Vec<usize> = Vec::new();
+    let mut shown_100 = 0;
+    for home in 0..CELLS {
+        if peak[home] < 100 || dropped[home] || peak_t[home] + room > last {
+            continue;
+        }
+        let life = gone_t[home].min(last) - peak_t[home];
+        lives.push(life * step_my);
+        shown_100 += usize::from(life >= room);
+    }
+    lives.sort_unstable();
+    // 3. Coasts inside the plates (over 300 km from a boundary): the share
+    // of coast cells whose crust is on the other side of the shore a step
+    // later.
+    let inside_km: u32 = std::env::var("PLANET_COAST_KM")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let (mut coast, mut changed) = (0_i64, 0_i64);
+    let mut land_share = Vec::new();
+    let mut sea_rise = Vec::new();
+    let mut before = world.at_step(0);
+    for t in 0..=last {
+        let now = if t == 0 { None } else { Some(world.at_step(t)) };
+        if let Some(now) = &now {
+            let mut cell_of = vec![u32::MAX; CELLS];
+            for c in 0..CELLS {
+                if h.class[t][c] != OCEAN {
+                    let home = h.home_at[t][c] as usize;
+                    if cell_of[home] == u32::MAX {
+                        cell_of[home] = c as u32;
+                    }
+                }
+            }
+            for c in 0..CELLS {
+                if h.class[t - 1][c] == OCEAN || before.near[c].0 <= inside_km {
+                    continue;
+                }
+                let dry = before.elevation[c] > 0;
+                if !s.links[c]
+                    .iter()
+                    .any(|&(n, _)| (before.elevation[n as usize] > 0) != dry)
+                {
+                    continue;
+                }
+                let to = cell_of[h.home_at[t - 1][c] as usize];
+                if to == u32::MAX {
+                    continue;
+                }
+                coast += 1;
+                changed += i64::from((now.elevation[to as usize] > 0) != dry);
+            }
+        }
+        if let Some(now) = now {
+            before = now;
+        }
+        let land: i64 = (0..CELLS)
+            .filter(|&c| before.elevation[c] > 0)
+            .map(|c| i64::from(s.area_km2[c]))
+            .sum();
+        land_share.push(land * 1000 / 510_064_472);
+        sea_rise.push(before.sea_rise_m);
+    }
+    // 4. Speeds: each plate's mean speed over its surface, at every step.
+    let mut plate_steps: Vec<(f64, f64, f64)> = Vec::new();
+    for t in 1..=last {
+        let mut sum = vec![0_f64; planet::history::MAXP];
+        let mut cells = vec![0_f64; planet::history::MAXP];
+        let mut cont = vec![0_f64; planet::history::MAXP];
+        for c in 0..CELLS {
+            let p = h.plate[t][c] as usize;
+            let m = h.motion[t][p];
+            let (a, b) = (
+                m.pole.map(|v| v as f64 / 1e6),
+                s.centre[c].map(|v| v as f64 / 1e6),
+            );
+            let x = [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ];
+            sum[p] += m.speed_mm as f64 * (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
+            cells[p] += 1.0;
+            cont[p] += f64::from(u8::from(h.class[t][c] != OCEAN));
+        }
+        for p in 0..planet::history::MAXP {
+            if cells[p] >= 300.0 {
+                plate_steps.push((sum[p] / cells[p], cont[p] / cells[p], cells[p]));
+            }
+        }
+    }
+    let mean = |f: &dyn Fn(f64) -> bool| {
+        let (mut a, mut w) = (0.0, 0.0);
+        for &(v, share, n) in &plate_steps {
+            if f(share) {
+                a += v * n;
+                w += n;
+            }
+        }
+        if w > 0.0 { (a / w).round() } else { -1.0 }
+    };
+    let mut v: Vec<i64> = plate_steps.iter().map(|p| p.0.round() as i64).collect();
+    v.sort_unstable();
+    let q = |k: usize| v.get(v.len() * k / 100).copied().unwrap_or(0);
+    let area = &h.continental_km2;
+    json!({
+        "rifts": {"never_parted": never, "rejoined": back, "apart": apart, "unknown": unknown},
+        "ranges": {"count": lives.len(), "median_my": lives.get(lives.len() / 2),
+            "shown_after_100_my_per_mille": shown_100 * 1000 / lives.len().max(1)},
+        "coast": {"cells": coast, "changed": changed},
+        "land_share_steps": land_share,
+        "sea_rise_m": sea_rise,
+        "speed_mm": {"mean": mean(&|_| true), "continental": mean(&|c| c >= 0.4),
+            "oceanic": mean(&|c| c < 0.1), "p10": q(10), "p50": q(50), "p90": q(90),
+            "max": v.last()},
+        "crust_ratio": [*area.iter().min().expect("steps") as f64 / area[0] as f64,
+            *area.iter().max().expect("steps") as f64 / area[0] as f64],
+    })
 }
 
 fn write(path: &Path, w: usize, h: usize, pixels: &[Rgb]) {
