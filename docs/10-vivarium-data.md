@@ -63,6 +63,7 @@ clock, the only field no seed decides.
 | `meta.settings.moves` | Moving home as a consequence (amended 24 November 2026); `false`: the control run, `--no-moves`, nobody is surprised nor moves home | boolean |
 | `meta.settings.passages` | The passages remembered and told (D53, amended 26 November 2026); `false`: the control run, `--no-passages`, nobody keeps, tells or walks through a passage | boolean |
 | `meta.settings.learning` | Learning causes, believe without acting (D59, 27 November 2026); `false`: the control run, `--no-learning`, the content's `learning` section replaced by none and the problems it marks (`ill_gut`, `ill_chest`) taken out: behaviour bit for bit the run's before the change | boolean |
+| `meta.settings.learning_act` | Learning causes, acting (D59, amended 27 November 2026); `false`: `--learning-believe-only`, the content's `learning.acting` replaced by none: beliefs come to, told and taken, no lever, no weight on moves, no trial | boolean |
 | `meta.settings.old_illness` | The control run of illness as episodes (`--old-illness`, D49, amended 26 November 2026): the old rule, a background death by age alone, the content's `illness` section replaced by none; a run without the key is of the old rule when its content had no such section | bool |
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
@@ -647,6 +648,26 @@ clock, the only field no seed decides.
 | `learning.seasons[].children_tradition` | Of those, held by a child now (under `child_years`) | count |
 | `learning.seasons[].by_verdict.*` | Beliefs held, by verdict | count |
 | `learning.seasons[].by_content` | The twelve beliefs most held, with their holders | `[[text, count], …]` |
+| `learning.acting.on` | Acting (D59, amended 27 November 2026): whether the content's `learning` section holds `acting`; `false` in `--learning-believe-only`, where only `moves` and `seasons` still count | bool |
+| `learning.acting.minded` | Marks that agreed with a belief of a place (every suspect there) whose holder's will made it mean to leave (the chance a distressed body tries) | count |
+| `learning.acting.would.*` | Marks that agreed with a belief whose suspects give a lever not built yet, by lever (`prepare`, `keep_apart`, `avoid`, `drink_elsewhere`, `otherwise`): where it would apply | count |
+| `learning.acting.called` | Moves called from a belief, at a free nightfall, to the best place its caller's notes know that its belief does not accuse, no worse for food than `worse_permille` | count |
+| `learning.acting.waited` | Times one meant to leave and knew no such place | count |
+| `learning.acting.stayed` | Calls from a belief dropped: the caller stayed (its spouse would not go and its own balance said no) | count |
+| `learning.acting.lessons_told` | Beliefs told at a fire as a lesson: a trial from them was kept | count |
+| `learning.acting.mourned` | Episodes held at their gravest by a kin when their sick died of it | count |
+| `learning.acting.trials.belief.*` | Trials from a belief's call: `begun`, then their end, `kept` (the ills its holder perceived in the season after at most `keep_percent` of the season before), `abandoned` (not fewer: its belief countered), `unjudged` (fewer than `judge_nights` dawns away, no ill before, or a new move ended it) | count |
+| `learning.acting.trials.chance.*` | The same for trials by chance: a move for another reason by one carrying an ill problem; kept, it leaves a belief of the camp left | count |
+| `learning.acting.moves.belief` | Moves home by grown bodies (their home's place changed) from a belief's call, the caller's or one followed | count |
+| `learning.acting.moves.other` | Moves home by grown bodies for any other reason | count |
+| `learning.acting.seasons[].day` | Each season's first day (from 0) | day |
+| `learning.acting.seasons[].moves_belief` | Moves from a belief in the season | count |
+| `learning.acting.seasons[].moves_other` | Moves for other reasons in the season | count |
+| `learning.acting.seasons[].nights_at_leaving_belief` | The nights in a row the movers from a belief had slept at the camp they left, summed: divided by `moves_belief`, the camp's age at leaving | nights |
+| `learning.acting.seasons[].nights_at_leaving_other` | The same for the other moves | nights |
+| `learning.acting.seasons[].gut_ills` | Gut ills lived in the season (own marks) | count |
+| `learning.acting.seasons[].person_days` | The living counted each day of the season, summed | body-days |
+| `learning.acting.seasons[].gut_per_10k_person_days` | `gut_ills` per ten thousand `person_days`, rounded down | rate |
 
 ## Beside the data: the lab's series file
 

@@ -92,6 +92,17 @@ impl Clue {
     }
 }
 
+/// The sign a belief is held by (D59, amended 27 November 2026; the
+/// project lead: a belief is held through fear or reward).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Sign {
+    /// Something bad happens here or then: it pushes away.
+    Fear,
+    /// Something good happens here or then: it pulls toward (no source
+    /// yet).
+    Reward,
+}
+
 /// A suspect of a belief (D59): a circumstance, and the kind of cause the
 /// content gives it (an index of `content::CLUE_KINDS`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -231,6 +242,8 @@ pub enum Record {
         day: u32,
         /// The problem: its index in `problems.kinds`.
         kind: u8,
+        /// Held through fear or reward.
+        sign: Sign,
         /// What it accuses, one or a few.
         suspects: Vec<Suspect>,
     },
@@ -315,8 +328,9 @@ impl Record {
                 body,
                 day,
                 kind,
+                sign,
                 suspects,
-            } => Key::Belief(*body, *day, *kind, suspects.clone()),
+            } => Key::Belief(*body, *day, *kind, *sign, suspects.clone()),
             Record::Reputed { who, activity, day } => Key::Reputed(*who, *activity, *day),
         }
     }
@@ -334,7 +348,7 @@ enum Key {
     Night(Pos, u32),
     Reputed(BodyId, u8, u32),
     Episode(BodyId, u32, u8),
-    Belief(BodyId, u32, u8, Vec<Suspect>),
+    Belief(BodyId, u32, u8, Sign, Vec<Suspect>),
 }
 
 /// An access a body holds to a record: the number, who it has it from

@@ -102,6 +102,10 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            episode, no belief (the content's learning
                            section replaced by none, the problems it marks
                            taken out)
+  --learning-believe-only  learning causes believed without acting (D59,
+                           amended 27 November 2026): no lever, no weight
+                           on moves, no trial (the content's
+                           learning.acting replaced by none)
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
@@ -218,6 +222,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--old-illness" => settings.old_illness = true,
             "--no-passages" => settings.passages = false,
             "--no-learning" => settings.learning = false,
+            "--learning-believe-only" => settings.learning_act = false,
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,
             "--prepare-land" => prepare = true,

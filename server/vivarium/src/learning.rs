@@ -3,15 +3,19 @@
 //! beliefs come to by what they accuse and whether that is true (the
 //! vivarium knows the illness rule: a measure, never a perception), the
 //! tales told and the beliefs taken (by the tradition too), the beliefs
-//! forgotten, and the beliefs held season by season. Section `learning`
-//! of the JSON (`docs/10`), new keys only; `on` false and nothing else
-//! without the content's `learning` section.
+//! forgotten, and the beliefs held season by season. Acting (D59,
+//! amended 27 November 2026): who meant to act and the levers that would
+//! apply, the calls and the trials, from a belief and by chance, kept or
+//! abandoned, the moves by their cause and the nights at the camp left,
+//! and season by season the gut ills lived against the living days.
+//! Section `learning` of the JSON (`docs/10`), new keys only; `on` false
+//! and nothing else without the content's `learning` section.
 
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use sim::brain::{Brains, Forgot, LearnStep, News};
-use sim::content::{CLUE_KINDS, Content, Illness};
+use sim::brain::{Brains, Forgot, LearnStep, News, TrialEnd};
+use sim::content::{CLUE_KINDS, Content, Illness, LEVERS};
 use sim::memory::{Clue, Record, RecordId, Suspect};
 use sim::{Ailment, World};
 
@@ -158,10 +162,45 @@ struct Sample {
     by_content: BTreeMap<String, u32>,
 }
 
+/// A season's acting (D59, amended 27 November 2026).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ActSeason {
+    /// Moves home by grown bodies from a belief's call (or following
+    /// one), and for other reasons.
+    moves: [u32; 2],
+    /// Their nights in a row at the camp left, summed.
+    nights: [u64; 2],
+    /// Gut ills lived (own marks).
+    gut: u32,
+    /// The living's days.
+    person_days: u64,
+}
+
+/// The trials' ends, in this order after `begun`.
+const ENDS: [&str; 4] = ["begun", "kept", "abandoned", "unjudged"];
+
 /// The probe.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LearningProbe {
     on: bool,
+    /// Acting is played.
+    acting: bool,
+    /// The gut's problem index.
+    gut: Option<u8>,
+    minded: u32,
+    /// The levers that would apply, by index.
+    would: BTreeMap<u8, u32>,
+    called: u32,
+    waited: u32,
+    stayed: u32,
+    lessons: u32,
+    mourned: u32,
+    /// The trials, from a belief and by chance: begun, kept, abandoned,
+    /// unjudged.
+    trials: [[u32; 4]; 2],
+    /// By season index.
+    act_seasons: BTreeMap<u64, ActSeason>,
+    season_len: u64,
     /// The problems' refusals, by index.
     problems: Vec<String>,
     /// The ailment of each problem index, if it marks.
@@ -217,8 +256,14 @@ impl LearningProbe {
                 Some((u8::try_from(i).ok()?, *a))
             })
             .collect();
+        let gut = problems
+            .iter()
+            .position(|r| r == "ill_gut")
+            .and_then(|i| u8::try_from(i).ok());
         Self {
             on: true,
+            acting: learning.acting.is_some(),
+            gut,
             problems,
             ailments,
             illness: content.needs.illness.clone(),
@@ -244,9 +289,13 @@ impl LearningProbe {
                 continue;
             };
             let b = band(*will);
+            let season = self.last_day.unwrap_or(0) / self.season_len.max(1);
             match *step {
                 LearnStep::Marked { kind, own } => {
                     self.marks.entry(kind).or_default()[usize::from(!own)] += 1;
+                    if own && Some(kind) == self.gut {
+                        self.act_seasons.entry(season).or_default().gut += 1;
+                    }
                 }
                 LearnStep::Noticed { .. } => self.noticed[b] += 1,
                 LearnStep::SawNothing { .. } => self.saw_nothing[b] += 1,
@@ -282,8 +331,13 @@ impl LearningProbe {
                     }
                 }
                 LearnStep::Countered { .. } => self.countered += 1,
-                LearnStep::Told { record, listeners } => {
+                LearnStep::Told {
+                    record,
+                    listeners,
+                    lesson,
+                } => {
                     self.told += 1;
+                    self.lessons += u32::from(lesson);
                     self.listeners += u64::from(listeners);
                     if let Some(c) = self.content_of(record) {
                         c.told += 1;
@@ -310,7 +364,36 @@ impl LearningProbe {
                         c.forgotten += 1;
                     }
                 }
+                _ => self.act_step(*step, season),
             }
+        }
+    }
+
+    /// An acting step of `season` (D59, amended 27 November 2026).
+    fn act_step(&mut self, step: LearnStep, season: u64) {
+        match step {
+            LearnStep::Mourned { .. } => self.mourned += 1,
+            LearnStep::Minded { .. } => self.minded += 1,
+            LearnStep::Would { lever } => *self.would.entry(lever).or_default() += 1,
+            LearnStep::Called { .. } => self.called += 1,
+            LearnStep::Waited { .. } => self.waited += 1,
+            LearnStep::Stayed { .. } => self.stayed += 1,
+            LearnStep::Moved { belief, nights } => {
+                let s = self.act_seasons.entry(season).or_default();
+                let cause = usize::from(!belief);
+                s.moves[cause] += 1;
+                s.nights[cause] += u64::from(nights);
+            }
+            LearnStep::TrialBegan { chance, .. } => self.trials[usize::from(chance)][0] += 1,
+            LearnStep::TrialEnded { chance, end, .. } => {
+                let at = match end {
+                    TrialEnd::Kept => 1,
+                    TrialEnd::Abandoned => 2,
+                    TrialEnd::Unjudged => 3,
+                };
+                self.trials[usize::from(chance)][at] += 1;
+            }
+            _ => {}
         }
     }
 
@@ -330,6 +413,16 @@ impl LearningProbe {
         }
         self.last_day = Some(day);
         let season = u64::from(world.calendar().days_per_cycle() / 4).max(1);
+        self.season_len = season;
+        let living = world
+            .bodies()
+            .iter()
+            .filter(|b| b.condition().vitality.points() > 0)
+            .count();
+        self.act_seasons
+            .entry(day / season)
+            .or_default()
+            .person_days += u64::try_from(living).unwrap_or(u64::MAX);
         if !day.is_multiple_of(season) {
             return;
         }
@@ -442,6 +535,58 @@ impl LearningProbe {
             "forgotten": self.forgotten,
             "beliefs": contents,
             "seasons": samples,
+            "acting": self.acting_json(),
+        })
+    }
+
+    /// The acting's part of the section (D59, amended 27 November 2026).
+    fn acting_json(&self) -> Value {
+        let ends = |t: &[u32; 4]| -> Value {
+            ENDS.iter()
+                .zip(t)
+                .map(|(e, n)| ((*e).to_owned(), json!(n)))
+                .collect::<serde_json::Map<_, _>>()
+                .into()
+        };
+        let would: serde_json::Map<String, Value> = self
+            .would
+            .iter()
+            .map(|(l, n)| {
+                let name = LEVERS.get(usize::from(*l)).copied().unwrap_or("?");
+                (name.to_owned(), json!(n))
+            })
+            .collect();
+        let (mut belief, mut other) = (0, 0);
+        let seasons: Vec<Value> = self
+            .act_seasons
+            .iter()
+            .map(|(i, s)| {
+                belief += s.moves[0];
+                other += s.moves[1];
+                json!({
+                    "day": i * self.season_len.max(1),
+                    "moves_belief": s.moves[0],
+                    "moves_other": s.moves[1],
+                    "nights_at_leaving_belief": s.nights[0],
+                    "nights_at_leaving_other": s.nights[1],
+                    "gut_ills": s.gut,
+                    "person_days": s.person_days,
+                    "gut_per_10k_person_days": u64::from(s.gut) * 10_000 / s.person_days.max(1),
+                })
+            })
+            .collect();
+        json!({
+            "on": self.acting,
+            "minded": self.minded,
+            "would": would,
+            "called": self.called,
+            "waited": self.waited,
+            "stayed": self.stayed,
+            "lessons_told": self.lessons,
+            "mourned": self.mourned,
+            "trials": {"belief": ends(&self.trials[0]), "chance": ends(&self.trials[1])},
+            "moves": {"belief": belief, "other": other},
+            "seasons": seasons,
         })
     }
 }

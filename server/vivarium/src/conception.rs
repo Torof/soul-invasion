@@ -499,6 +499,7 @@ mod tests {
             old_illness: false,
             passages: true,
             learning: true,
+            learning_act: true,
             continents: None,
             helpers: 0,
         };

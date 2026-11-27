@@ -94,6 +94,7 @@ use crate::map::{CHUNK_SIZE, ChunkPos, FinePos, Map, Pos, Terrain};
 use crate::memory::{self, Access, Fared, Record, RecordId, Store};
 use crate::{Blockage, Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
+mod acting;
 mod handwork;
 mod learning;
 mod pooling;
@@ -101,7 +102,7 @@ mod problems;
 #[cfg(test)]
 mod wake_tests;
 pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
-pub use learning::{BeliefHeld, Forgot, LearnStep, Learner};
+pub use learning::{BeliefHeld, Forgot, LearnStep, Learner, TrialEnd};
 pub use problems::{Problem, ProblemAim, ProblemStep};
 
 /// Thirst from which a body goes to drink: half a game day without
@@ -11103,6 +11104,18 @@ fn change_or_move(
         mind.changed_day = Some(day);
         return called;
     }
+    // A move called from a belief it means to act on (D59, amended 27
+    // November 2026).
+    if grown {
+        let called = acting::belief_call(world, rules, memory, (id, day, now), mind);
+        if mind.calling.is_some() || mind.trial.is_some() {
+            mind.changed_day = Some(day);
+            return called;
+        }
+        if !called.is_empty() {
+            return called;
+        }
+    }
     // A free moment for its things to think about (D50, amended 26
     // November 2026, the project lead's design): its top problem, tried
     // when something new lies around.
@@ -11777,15 +11790,19 @@ fn weigh_move(
         Some(own) if caller != id => (own, 100),
         _ => (gain, trust),
     };
+    // What its beliefs of a place weigh (D59, amended 27 November 2026):
+    // 0 without acting.
+    let feared = acting::move_weight(world, rules, memory, mind, to);
     let balance = gain * i64::from(trust) / 100 - cost + lack(here) - lack(there)
-        + family_left(world, rules, (id, spouse), going);
+        + family_left(world, rules, (id, spouse), going)
+        + feared;
     Some(Weighed {
         body: id,
         balance,
         trust,
         home_fare: home_fare(rules, mind),
         joined: balance > MARGIN_PERMILLE,
-        worth: gain * i64::from(trust) / 100 - cost,
+        worth: gain * i64::from(trust) / 100 - cost + feared,
     })
 }
 

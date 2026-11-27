@@ -223,10 +223,13 @@ pub(crate) mod purpose {
     pub(crate) const LEARN_NOTICE: u64 = 0x0d59_0071;
     /// See `LEARN_NOTICE`.
     pub(crate) const LEARN_SUSPECT: u64 = 0x0d59_5005;
+    /// Learning causes, acting (D59, amended 27 November 2026): whether a
+    /// body whose belief agrees with its mark means to act on it.
+    pub(crate) const LEARN_ACT: u64 = 0x0d59_ac75;
 
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 81] = [
+    pub(crate) const ALL: [u64; 82] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -308,6 +311,7 @@ pub(crate) mod purpose {
         GIVER_CARE,
         LEARN_NOTICE,
         LEARN_SUSPECT,
+        LEARN_ACT,
     ];
 }
 
