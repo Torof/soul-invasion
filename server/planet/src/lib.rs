@@ -945,6 +945,9 @@ pub struct Planet {
     pub history: std::sync::Arc<History>,
     /// The step this planet shows (the history's last: today).
     pub step: usize,
+    /// The index of this step's pieces of continent, to read them at any
+    /// point.
+    index: history::Pieces,
     /// The older plates at each cell where the supercontinent's crust
     /// stood, and their seams.
     old_at: Vec<u8>,
@@ -1211,6 +1214,7 @@ impl Planet {
             .iter()
             .map(|&e| e.clamp(-11_000, 9_000) as i32)
             .collect();
+        let index = history::Pieces::new(&sphere, &history.pieces_at[t]);
         let mut planet = Self {
             seed,
             sphere,
@@ -1231,6 +1235,7 @@ impl Planet {
             lands: Vec::new(),
             ours: vec![false; CELLS],
             settings: *settings,
+            index,
             history,
             step: t,
             old_at,
@@ -1238,6 +1243,66 @@ impl Planet {
         };
         planet.lands = planet.landmasses();
         planet
+    }
+
+    /// The continents as they are kept at this step: rigid pieces, each
+    /// in its own lattice (version 10).
+    #[must_use]
+    pub fn pieces(&self) -> &[history::Piece] {
+        &self.history.pieces_at[self.step]
+    }
+
+    /// The continental crust at a point, read in the pieces themselves:
+    /// its piece and its cell in the piece.
+    #[must_use]
+    pub fn tile_at(&self, p: V3) -> Option<(usize, usize)> {
+        self.index.at(&self.sphere, self.pieces(), p)
+    }
+
+    /// A cell of crust's height above this step's sea, m: what it
+    /// carries, its home's grain, its pile's lift, its flood basalts.
+    #[must_use]
+    pub fn tile_height(&self, tile: &history::Tile) -> i32 {
+        let h = &self.history;
+        let home = tile.home as usize;
+        let pile = (i64::from(tile.thick) - i64::from(history::CONTINENT_THICK)).max(0)
+            * history::ISOSTASY_M
+            / 10;
+        let lip = if tile.margins & history::LIP != 0 {
+            350
+        } else {
+            0
+        };
+        (i64::from(tile.high)
+            + i64::from(h.rough[home])
+            + i64::from(h.broad[home]) / 2
+            + pile
+            + lip
+            - self.sea
+            - self.sea_rise_m)
+            .clamp(-11_000, 9_000) as i32
+    }
+
+    /// What a point of the planet shows: its height above the sea, m, and
+    /// whether continental crust lies there. The continents are read in
+    /// their pieces, finer than the grid (whose cells show only what lies
+    /// at their centre); the ocean floor on the grid.
+    #[must_use]
+    pub fn surface(&self, p: V3) -> (i32, bool) {
+        if let Some((k, i)) = self.tile_at(p) {
+            return (self.tile_height(&self.pieces()[k].tiles[i]), true);
+        }
+        let c = self.sphere.cell_of(p);
+        if !self.continental[c] {
+            return (self.elevation[c], false);
+        }
+        // Floor between a piece's edge and the grid cell that draws it.
+        let beside = self.sphere.links[c]
+            .iter()
+            .filter(|&&(m, _)| !self.continental[m as usize])
+            .map(|&(m, km)| (km, self.elevation[m as usize]))
+            .min();
+        (beside.map_or(-200, |b| b.1), false)
     }
 
     /// The pieces of land, largest first (ties by their first cell).
@@ -2572,41 +2637,101 @@ mod tests {
 
     #[test]
     fn a_crust_changes_height_only_by_a_named_cause() {
-        // Version 9: every bit of continental crust is followed by its
-        // name; from a step to the next its carried height moves by what
-        // its causes say (a rift's stretch, cooling, an arc, a docking, a
-        // plume, wear, levelling, infill), never by the grid's redrawing.
+        // Every cell of continental crust is followed by its name in its
+        // piece (version 10: all of them, none is hidden by a grid); from
+        // a step to the next its carried height moves by what its causes
+        // say (a rift's stretch, cooling, an arc, a docking, a plume,
+        // wear, levelling, infill), and it stays the same cell of the
+        // same lattice.
         let planet = Planet::new(14);
         let h = &planet.history;
-        let (mut followed, mut hidden, mut crust) = (0_u64, 0_u64, 0_u64);
+        let (mut followed, mut crust) = (0_u64, 0_u64);
         for t in 1..=h.last() {
             let mut was = std::collections::HashMap::new();
-            for c in 0..CELLS {
-                if h.class[t - 1][c] != history::OCEAN && h.id_at[t - 1][c] != u32::MAX {
-                    was.insert(h.id_at[t - 1][c], h.high_at[t - 1][c]);
+            for piece in &h.pieces_at[t - 1] {
+                for tile in &piece.tiles {
+                    was.insert(tile.id, (tile.high, tile.at));
                 }
             }
-            for c in 0..CELLS {
-                if h.class[t][c] == history::OCEAN {
-                    continue;
-                }
-                crust += 1;
-                if let Some(&before) = was.get(&h.id_at[t][c]) {
-                    let by: i64 = h.cause_at[t][c].iter().map(|&m| i64::from(m)).sum();
-                    assert_eq!(
-                        i64::from(h.high_at[t][c]) - i64::from(before),
-                        by,
-                        "step {t}, cell {c}"
-                    );
-                    followed += 1;
+            for piece in &h.pieces_at[t] {
+                for tile in &piece.tiles {
+                    crust += 1;
+                    if let Some(&(before, at)) = was.get(&tile.id) {
+                        let by: i64 = tile.why.iter().map(|&m| i64::from(m)).sum();
+                        assert_eq!(
+                            i64::from(tile.high) - i64::from(before),
+                            by,
+                            "step {t}, crust {}",
+                            tile.id
+                        );
+                        assert_eq!(tile.at, at, "step {t}, crust {}", tile.id);
+                        followed += 1;
+                    }
                 }
             }
-            hidden += u64::from(h.hidden_at[t][1]);
         }
-        assert!(followed * 10 > crust * 9, "{followed} of {crust}");
-        // With cells of one size the grid hides little of a moving
-        // continent (4.3 % of its crust a step on the equal-angle grid).
-        assert!(hidden * 100 < crust * 4, "{hidden} of {crust}");
+        assert!(followed * 100 > crust * 97, "{followed} of {crust}");
+    }
+
+    #[test]
+    fn a_piece_of_continent_is_rigid() {
+        // Version 10: a piece of continent is never redrawn. Over twenty
+        // steps, every cell a piece keeps is the same cell of the piece's
+        // lattice, lies at the same place once both ends are turned back,
+        // and stays as far from the piece's other cells. A piece nothing
+        // happened to (the same cells at both ends) has the same outline
+        // at both ends.
+        let planet = Planet::new(14);
+        let h = &planet.history;
+        let sphere = &planet.sphere;
+        let back = |p: &history::Piece, x: V3| -> V3 {
+            let m = p.turn;
+            normalize([0, 1, 2].map(|j| dot([m[0][j], m[1][j], m[2][j]], x)))
+        };
+        let outline = |p: &history::Piece| -> Vec<(u32, u32)> {
+            let mut cells: Vec<(u32, u32)> = p.tiles.iter().map(|x| (x.id, x.at)).collect();
+            cells.sort_unstable();
+            cells
+        };
+        let (mut kept, mut untouched) = (0, 0);
+        for (span, every) in [(20, 4), (5, 1)] {
+            for t in (0..=h.last() - span).step_by(every) {
+                for a in h.pieces_at[t].iter().filter(|a| a.tiles.len() >= 30) {
+                    let Some(b) = h.pieces_at[t + span].iter().find(|b| b.frame == a.frame) else {
+                        continue;
+                    };
+                    if outline(a) == outline(b) {
+                        untouched += 1;
+                    }
+                    if span != 20 {
+                        continue;
+                    }
+                    let then: std::collections::HashMap<u32, usize> =
+                        a.tiles.iter().enumerate().map(|(i, x)| (x.id, i)).collect();
+                    let mut last: Option<(usize, usize)> = None;
+                    for (j, x) in b.tiles.iter().enumerate() {
+                        let Some(&i) = then.get(&x.id) else {
+                            continue;
+                        };
+                        assert_eq!(a.tiles[i].at, x.at, "step {t}: crust {} moved", x.id);
+                        let (pa, pb) = (a.place(sphere, i), b.place(sphere, j));
+                        let off = km_between(back(a, pa), back(b, pb));
+                        assert!(off <= 1, "step {t}: {off} km off its place in the piece");
+                        if let Some((i0, j0)) = last {
+                            let da = km_between(pa, a.place(sphere, i0));
+                            let db = km_between(pb, b.place(sphere, j0));
+                            assert!((da - db).abs() <= 1, "step {t}: {da} km became {db}");
+                        }
+                        last = Some((i, j));
+                        kept += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            kept >= 5_000 && untouched >= 3,
+            "{kept} cells, {untouched} pieces"
+        );
     }
 
     #[test]

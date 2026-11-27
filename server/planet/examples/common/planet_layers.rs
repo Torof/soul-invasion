@@ -147,6 +147,59 @@ fn map_xy(v: planet::V3, lon0: i64) -> (i64, i64) {
     )
 }
 
+/// The relief with the sea's depth, and the continental crust, drawn
+/// from the pieces of continent themselves (version 10): four samples a
+/// pixel, each read in the lattice of the piece lying there, so a piece
+/// that only turns keeps its drawn outline (the planet's grid, as coarse
+/// as the crust, shows only what lies at its cells' centres).
+fn fine_layers(world: &Planet, w: usize, h: usize, lon0: i64) -> (Layer, Layer) {
+    const FINE: usize = 2;
+    let (fw, fh) = (w * FINE, h * FINE);
+    let mut surface = Vec::with_capacity(fw * fh);
+    for y in 0..fh {
+        let lat = 900 - (2 * y as i64 + 1) * 1800 / (2 * fh as i64);
+        for x in 0..fw {
+            let lon = lon0 - 1800 + (2 * x as i64 + 1) * 3600 / (2 * fw as i64);
+            surface.push(world.surface(planet::from_lat_lon(lat, lon)));
+        }
+    }
+    let right = |i: usize| (i / fw) * fw + (i % fw + 1) % fw;
+    let down = |i: usize| (i + fw).min(fw * fh - 1);
+    let (mut relief, mut crust) = (Layer::new(w, h), Layer::new(w, h));
+    for y in 0..h {
+        for x in 0..w {
+            let (mut sum, mut cont, mut edge) = ([0_u32; 3], 0_u32, false);
+            for k in 0..FINE * FINE {
+                let i = (y * FINE + k / FINE) * fw + x * FINE + k % FINE;
+                let (e, continental) = surface[i];
+                let mut col = hypsometric(i64::from(e));
+                if e <= 0 && continental {
+                    col = mix(col, [150, 190, 210], 350);
+                }
+                let land = e > 0;
+                if land != (surface[right(i)].0 > 0) || land != (surface[down(i)].0 > 0) {
+                    col = [25, 25, 25];
+                }
+                for c in 0..3 {
+                    sum[c] += u32::from(col[c]);
+                }
+                cont += u32::from(continental);
+                edge |= continental != surface[right(i)].1 || continental != surface[down(i)].1;
+            }
+            let n = (FINE * FINE) as u32;
+            relief.px[y * w + x] = rgba(sum.map(|v| (v / n) as u8), 255);
+            if cont > 0 {
+                crust.px[y * w + x] = if edge {
+                    [120, 70, 20, 255]
+                } else {
+                    [240, 200, 110, 150]
+                };
+            }
+        }
+    }
+    (relief, crust)
+}
+
 /// The planet view's layers for one seed, as `p{seed}-{name}.png`,
 /// centred on our continent's longitude (a whole degree), and
 /// `p{seed}-donnees.js` for the cursor readout.
@@ -170,20 +223,9 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
             cell[i]
         }
     };
-    // Relief and the sea's depth.
-    let mut l = Layer::new(PW, PH);
-    for (i, &c) in cell.iter().enumerate() {
-        let e = i64::from(world.elevation[c]);
-        let mut col = hypsometric(e);
-        if e <= 0 && world.continental[c] {
-            col = mix(col, [150, 190, 210], 350);
-        }
-        let land = e > 0;
-        if land != (world.elevation[right(i)] > 0) || land != (world.elevation[down(i)] > 0) {
-            col = [25, 25, 25];
-        }
-        l.px[i] = rgba(col, 255);
-    }
+    // Relief and the sea's depth, and the continental crust: read in the
+    // pieces of continent.
+    let (l, crust) = fine_layers(world, PW, PH, lon0);
     l.write(dir, &format!("p{seed}-relief.png"));
     // Plates.
     let mut l = Layer::new(PW, PH);
@@ -242,19 +284,7 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         }
     }
     l.write(dir, &format!("p{seed}-mouvement.png"));
-    // Continental crust.
-    let mut l = Layer::new(PW, PH);
-    for (i, &c) in cell.iter().enumerate() {
-        if world.continental[c] {
-            let edge = !world.continental[right(i)] || !world.continental[down(i)];
-            l.px[i] = if edge {
-                [120, 70, 20, 255]
-            } else {
-                [240, 200, 110, 150]
-            };
-        }
-    }
-    l.write(dir, &format!("p{seed}-croute.png"));
+    crust.write(dir, &format!("p{seed}-croute.png"));
     // Old sutures and failed rifts, inside the continents.
     let mut l = Layer::new(PW, PH);
     for i in 0..PW * PH {
@@ -544,22 +574,9 @@ pub fn step_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
     }
     let right_i = |i: usize| (i / w) * w + (i % w + 1) % w;
     let down_i = |i: usize| (i + w).min(w * hgt - 1);
-    // Relief and the sea's depth.
-    let mut l = Layer::new(w, hgt);
-    for (i, &c) in cell.iter().enumerate() {
-        let e = i64::from(world.elevation[c]);
-        let mut col = hypsometric(e);
-        if e <= 0 && world.continental[c] {
-            col = mix(col, [150, 190, 210], 350);
-        }
-        let land = e > 0;
-        if land != (world.elevation[cell[right_i(i)]] > 0)
-            || land != (world.elevation[cell[down_i(i)]] > 0)
-        {
-            col = [25, 25, 25];
-        }
-        l.px[i] = rgba(col, 255);
-    }
+    // Relief and the sea's depth, and the continental crust: read in the
+    // pieces of continent.
+    let (l, crust) = fine_layers(world, w, hgt, lon0);
     l.write(dir, &name("relief"));
     // Plates.
     let mut l = Layer::new(w, hgt);
@@ -567,19 +584,7 @@ pub fn step_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         l.px[i] = rgba(PLATE_COLOURS[world.plate[c] as usize % 16], 255);
     }
     l.write(dir, &name("plaques"));
-    // Continental crust.
-    let mut l = Layer::new(w, hgt);
-    for (i, &c) in cell.iter().enumerate() {
-        if world.continental[c] {
-            let edge = !world.continental[cell[right_i(i)]] || !world.continental[cell[down_i(i)]];
-            l.px[i] = if edge {
-                [120, 70, 20, 255]
-            } else {
-                [240, 200, 110, 150]
-            };
-        }
-    }
-    l.write(dir, &name("croute"));
+    crust.write(dir, &name("croute"));
     // Boundaries.
     let mut l = Layer::new(w, hgt);
     for i in 0..w * hgt {

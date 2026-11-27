@@ -649,12 +649,21 @@ fn draw_planet(world: &Planet, zoom: Option<&Zoom>) -> Vec<Rgb> {
             cell[y * MAP_W + x] = world.sphere.cell_of(planet::from_lat_lon(lat, lon));
         }
     }
-    let mut px: Vec<Rgb> = cell
+    // The relief is read in the pieces of continent themselves (version
+    // 10), finer than the grid.
+    let mut surface = Vec::with_capacity(MAP_W * MAP_H);
+    for y in 0..MAP_H {
+        let lat = 900 - (2 * y as i64 + 1) * 1800 / (2 * MAP_H as i64);
+        for x in 0..MAP_W {
+            let lon = -1800 + (2 * x as i64 + 1) * 3600 / (2 * MAP_W as i64);
+            surface.push(world.surface(planet::from_lat_lon(lat, lon)));
+        }
+    }
+    let mut px: Vec<Rgb> = surface
         .iter()
-        .map(|&c| {
-            let e = i64::from(world.elevation[c]);
-            let mut col = hypsometric(e);
-            if e <= 0 && world.continental[c] {
+        .map(|&(e, continental)| {
+            let mut col = hypsometric(i64::from(e));
+            if e <= 0 && continental {
                 // Continental shelf: drowned continent, paler.
                 col = mix(col, [150, 190, 210], 350);
             }
@@ -667,8 +676,12 @@ fn draw_planet(world: &Planet, zoom: Option<&Zoom>) -> Vec<Rgb> {
             let c = cell[i];
             let right = cell[y * MAP_W + (x + 1) % MAP_W];
             let down = if y + 1 < MAP_H { cell[i + MAP_W] } else { c };
-            let land = world.elevation[c] > 0;
-            if land != (world.elevation[right] > 0) || land != (world.elevation[down] > 0) {
+            let land = surface[i].0 > 0;
+            let beside = (
+                y * MAP_W + (x + 1) % MAP_W,
+                (i + MAP_W).min(MAP_W * MAP_H - 1),
+            );
+            if land != (surface[beside.0].0 > 0) || land != (surface[beside.1].0 > 0) {
                 px[i] = [20, 20, 20];
             }
             if let Some(e) = world.edge[c]
