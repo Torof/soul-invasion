@@ -98,6 +98,10 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
   --no-passages            the control run of the passages: nobody keeps,
                            tells or walks through a passage (the content's
                            passages section replaced by none)
+  --no-learning            the control run of learning causes (D59): no
+                           episode, no belief (the content's learning
+                           section replaced by none, the problems it marks
+                           taken out)
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
@@ -213,6 +217,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--old-wakes" => settings.old_wakes = true,
             "--old-illness" => settings.old_illness = true,
             "--no-passages" => settings.passages = false,
+            "--no-learning" => settings.learning = false,
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,
             "--prepare-land" => prepare = true,

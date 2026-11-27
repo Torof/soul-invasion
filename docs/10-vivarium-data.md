@@ -62,6 +62,7 @@ clock, the only field no seed decides.
 | `meta.settings.decisions` | The decisions at the evening fire, D56 (false: `--no-decisions`); since 23 November 2026 | boolean |
 | `meta.settings.moves` | Moving home as a consequence (amended 24 November 2026); `false`: the control run, `--no-moves`, nobody is surprised nor moves home | boolean |
 | `meta.settings.passages` | The passages remembered and told (D53, amended 26 November 2026); `false`: the control run, `--no-passages`, nobody keeps, tells or walks through a passage | boolean |
+| `meta.settings.learning` | Learning causes, believe without acting (D59, 27 November 2026); `false`: the control run, `--no-learning`, the content's `learning` section replaced by none and the problems it marks (`ill_gut`, `ill_chest`) taken out: behaviour bit for bit the run's before the change | boolean |
 | `meta.settings.old_illness` | The control run of illness as episodes (`--old-illness`, D49, amended 26 November 2026): the old rule, a background death by age alone, the content's `illness` section replaced by none; a run without the key is of the old rule when its content had no such section | bool |
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
@@ -86,6 +87,7 @@ clock, the only field no seed decides.
 | `meta.timing.ground_kept` | Chunks of trees and of bearers read from the file kept on this world with this content (`--no-land-cache`: none) | `[count, count]` |
 | `meta.timing.land_checked` | Chunks of land, then of trees and bearers, the run held before taking the kept files and found the same as theirs: the check that lets a file written by another build be read (D51 amended 25 November 2026) | `[count, count]` |
 | `meta.timing.land_prepared_s` | Seconds on the wall the run spent preparing the whole land, then its trees and plants, on all cores, when no whole file was kept; 0 when it read them | `[seconds, seconds]` |
+| `meta.timing.learning_s` | Seconds on the wall the brains spent in their learning (D59): the ailments' marks, the episodes and beliefs, the tales of beliefs at dawn; 0 without it | seconds |
 | `meta.memory.written` | Records written to the common memory over the run (D55) | count |
 | `meta.memory.freed` | Records freed, their last access dropped | count |
 | `meta.memory.held` | Records held at the end, those of `records` | count |
@@ -612,6 +614,39 @@ clock, the only field no seed decides.
 | `illness.moves_with_sick` | Of them, those whose place left had sick members at the dawn before | moves |
 | `illness.moves_columns` | The columns of `illness.moves`: `day`, `from_x`, `from_y`, `to_x`, `to_y`, `movers`, `members_before`, `sick_gut_before`, `sick_chest_before`, `fouling_left`, `fouling_reached` | names |
 | `illness.moves` | Every camp moved, in order: the dawn, the places left and reached, the bodies whose home moved so, the place left's members and sick at the dawn before, and the fouling of both places then (body-nights): to read, later, whether those who leave a fouled camp fare better | rows |
+| `learning.on` | Learning causes, believe without acting (D59, 27 November 2026), its own block, last: whether the content holds a `learning` section (`content/needs.ron`); `false`, and no other key, without it (or in the control run `--no-learning`). Its bands of will: `timid` under 20, `middle` 20 to 49, `willing` 50 and more, the will of the body at the step | bool |
+| `learning.marks.*.own` | Marks lived, by problem (`ill_gut`, `ill_chest`): falling ill (`Event::FellIll`) | count |
+| `learning.marks.*.kin` | The same: a kin (spouse, child under 16, parent) seen sick at its fire at dawn | count |
+| `learning.noticed.*` | Times a body marked noticed its problem comes back (the draw by will), by band | count |
+| `learning.saw_nothing.*` | Of them, the times nothing was there in each episode it laid side by side, by band | count |
+| `learning.believed.*` | Beliefs come to by cross-checking (new, or another than the one held), by band of the one who came to it | count |
+| `learning.living_by_band.*` | The living with a mind, by band, counted at each sample of `learning.seasons` and summed: what `noticed` and `believed` are read against | body-samples |
+| `learning.born_by_verdict.*` | Beliefs come to, by verdict against the illness rule (the vivarium reads it; no body does): `true` (each suspect true or partly, one true), `partly`, `false` (no suspect true). A suspect is true when the content makes it raise the ailment: an old or settled camp for the gut (its fouling), the season whose percent is over 100, many at the fire for the chest, a cold night for the chest, someone sick at the fire (contagion); partly: the camp itself and the place drunk at for the gut (where the fouling is, but leaving for good is not the cure), some at the fire for the chest, many for the gut; false: what was eaten, and every other | count |
+| `learning.renewed.lived` | Beliefs renewed by a mark whose episode held all their suspects, or by coming to the same again | count |
+| `learning.renewed.heard` | Beliefs renewed by hearing the same told at the fire | count |
+| `learning.countered` | Episodes lived without a held belief's suspects, short of making it fall | count |
+| `learning.told` | Beliefs told at a fire (each teller, each belief, each night) | count |
+| `learning.listeners` | The others present at those tellings, summed | count |
+| `learning.copied` | Beliefs taken by a listener | count |
+| `learning.copied_tradition` | Of them, taken without carrying the problem: by a child, the tradition | count |
+| `learning.forgotten.*` | Beliefs let go, by why: `faded` (not renewed in `whole_seasons` + `half_seasons`), `countered` (`counter_examples` episodes without its suspects), `replaced` (by its holder's own new one, or one heard believed more). Beliefs gone with their holder's death are not counted | count |
+| `learning.beliefs[].belief` | A belief by its content, the problem then its suspects joined by ` + `: `camp` (its camp, whichever), `camp_age:new`/`settled`/`old`, `season:spring` … `winter`, `crowd:few`/`some`/`many`, `cold_night`, `sick_at_fire`, `ate:<material>`, `drank_there` (where it drank, whichever); the most born first | text |
+| `learning.beliefs[].verdict` | Its verdict, as in `born_by_verdict` | `true`, `partly`, `false` |
+| `learning.beliefs[].kinds` | The kind of cause of each suspect, from the content (`place`, `season`, `weather`, `company`, `food`, `water`, `gesture`): recorded, read by no rule yet | names |
+| `learning.beliefs[].born.*` | Times it was come to, by band | count |
+| `learning.beliefs[].told` | Times it was told | count |
+| `learning.beliefs[].copied` | Times it was taken | count |
+| `learning.beliefs[].copied_tradition` | Of them, by the tradition | count |
+| `learning.beliefs[].forgotten` | Times it was let go | count |
+| `learning.seasons[].day` | A sample at each season's first day: the day (from 0) | day |
+| `learning.seasons[].living` | The living then | count |
+| `learning.seasons[].holders` | Of them, holding at least one belief | count |
+| `learning.seasons[].own` | Beliefs held that their holder came to | count |
+| `learning.seasons[].heard` | Beliefs held that their holder took from a teller | count |
+| `learning.seasons[].tradition` | Of those heard, taken without carrying the problem | count |
+| `learning.seasons[].children_tradition` | Of those, held by a child now (under `child_years`) | count |
+| `learning.seasons[].by_verdict.*` | Beliefs held, by verdict | count |
+| `learning.seasons[].by_content` | The twelve beliefs most held, with their holders | `[[text, count], …]` |
 
 ## Beside the data: the lab's series file
 

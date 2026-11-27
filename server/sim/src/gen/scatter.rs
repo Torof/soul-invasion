@@ -218,9 +218,15 @@ pub(crate) mod purpose {
     /// body feeds a young one of its hearth this game day, by its care.
     pub(crate) const GIVER_CARE: u64 = 0x0d58_ca8e;
 
+    /// Learning causes (D59): whether a body marked notices that its
+    /// problem comes back, and which suspects it keeps among more.
+    pub(crate) const LEARN_NOTICE: u64 = 0x0d59_0071;
+    /// See `LEARN_NOTICE`.
+    pub(crate) const LEARN_SUSPECT: u64 = 0x0d59_5005;
+
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 79] = [
+    pub(crate) const ALL: [u64; 81] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -300,6 +306,8 @@ pub(crate) mod purpose {
         TRIP_TURN,
         HUNGER_BAR,
         GIVER_CARE,
+        LEARN_NOTICE,
+        LEARN_SUSPECT,
     ];
 }
 

@@ -252,7 +252,13 @@ fn may_begin(world: &World, rules: &Content, kind: u8, mind: &Mind) -> bool {
 /// `mind`'s things to think about (the project lead's design): already
 /// there, it moves up and its count grows; a list over `mind_slots` lets
 /// its oldest drop off. Faded entries go first ([`fade`]).
-fn push(world: &World, rules: &Content, mind: &mut Mind, kind: u8, (at, day): (Pos, u64)) {
+pub(super) fn push(
+    world: &World,
+    rules: &Content,
+    mind: &mut Mind,
+    kind: u8,
+    (at, day): (Pos, u64),
+) {
     fade(rules, world.calendar().days_per_cycle(), day, mind);
     let entry = match mind.problems.iter().position(|p| p.kind == kind) {
         Some(i) => {
