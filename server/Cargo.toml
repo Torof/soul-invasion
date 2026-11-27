@@ -41,3 +41,17 @@ opt-level = 2
 # like sim's (a planet is born in ~1.5 s in release).
 [profile.dev.package.planet]
 opt-level = 2
+
+# The try build of the planet's rounds of work (`--profile essai`, for
+# `cargo run` and `cargo test --lib` alike): release at opt-level 1 with
+# incremental compilation, and the dev profile's overflow checks and
+# debug assertions. Measured 27 November 2026 on a one-line change of
+# the model: the example rebuilt in 2.8 s (release: 4 s), the tests in
+# 2.3 s; a planet born in 4.3 s (release: 3.6 s). The worlds are the same
+# under both (integers only); the final runs use release.
+[profile.essai]
+inherits = "release"
+opt-level = 1
+incremental = true
+overflow-checks = true
+debug-assertions = true

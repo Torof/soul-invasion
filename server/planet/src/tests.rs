@@ -4,6 +4,13 @@
 
 use super::*;
 
+/// The planet of a seed, made once for all the tests that read it (a
+/// planet takes seconds, and thirteen tests read seven of them).
+fn made(seed: u64) -> &'static Planet {
+    static MADE: [std::sync::OnceLock<Planet>; 32] = [const { std::sync::OnceLock::new() }; 32];
+    MADE[seed as usize].get_or_init(|| Planet::new(seed))
+}
+
 #[test]
 fn the_grid_finds_its_own_cells_and_covers_the_sphere() {
     let s = Sphere::new();
@@ -40,8 +47,8 @@ fn integer_trigonometry_holds() {
 
 #[test]
 fn a_seed_gives_the_same_planet() {
-    let a = Planet::new(3);
-    let b = Planet::new(3);
+    let a = made(3);
+    let b = &Planet::new(3);
     assert_eq!(a.elevation, b.elevation);
     assert_eq!(a.plate, b.plate);
     assert_eq!(a.history.plate, b.history.plate);
@@ -58,7 +65,7 @@ fn a_seed_gives_the_same_planet() {
 fn lands_come_from_the_history_large_but_not_gigantic() {
     let seed = 14;
     {
-        let world = Planet::new(seed);
+        let world = made(seed);
         let biggest = &world.lands[0];
         assert!(
             (14_000_000..=30_000_000).contains(&biggest.area_km2),
@@ -85,7 +92,7 @@ fn continental_crust_is_kept_through_the_history() {
     // of the start at every step (its area does not: a rift's
     // thinned crust stands for a wider one, version 11).
     for seed in [1, 9] {
-        let world = Planet::new(seed);
+        let world = made(seed);
         let volume: Vec<i64> = world
             .history
             .pieces_at
@@ -114,7 +121,7 @@ fn a_continent_carries_its_relief() {
     // unless something happens to it: little of it crosses the level
     // of the start's sea in a step (a height recomputed at each step
     // sent a tenth of it across).
-    let world = Planet::new(9);
+    let world = made(9);
     let h = &world.history;
     let height = |t: usize, c: usize| {
         let home = h.home_at[t][c] as usize;
@@ -154,7 +161,7 @@ fn a_crust_changes_height_only_by_a_named_cause() {
     // say (a rift's stretch, cooling, an arc, a docking, a plume,
     // wear, levelling, infill), and it stays the same cell of the
     // same lattice.
-    let planet = Planet::new(14);
+    let planet = made(14);
     let h = &planet.history;
     let (mut followed, mut crust) = (0_u64, 0_u64);
     for t in 1..=h.last() {
@@ -192,7 +199,7 @@ fn a_piece_of_continent_is_rigid() {
     // and stays as far from the piece's other cells. A piece nothing
     // happened to (the same cells at both ends) has the same outline
     // at both ends.
-    let planet = Planet::new(14);
+    let planet = made(14);
     let h = &planet.history;
     let sphere = &planet.sphere;
     let back = |p: &history::Piece, x: V3| -> V3 {
@@ -247,7 +254,7 @@ fn a_piece_of_continent_is_rigid() {
 
 #[test]
 fn the_history_breaks_the_supercontinent_and_keeps_its_records() {
-    let world = Planet::new(11);
+    let world = made(11);
     let h = &world.history;
     // At the start, one supercontinent of the settings' crust share.
     let first = &h.class[0];
@@ -287,7 +294,7 @@ fn the_history_breaks_the_supercontinent_and_keeps_its_records() {
 
 #[test]
 fn the_mantle_is_warm_under_the_supercontinent_and_the_sea_is_anchored_today() {
-    let world = Planet::new(3);
+    let world = made(3);
     let h = &world.history;
     // At the start the supercontinent is a lid: the mantle under it is
     // warmer than under the ocean, and most plumes rise under it.
@@ -321,7 +328,7 @@ fn a_plate_is_one_piece_and_no_small_plate_sits_inside_another() {
     // plate's in its piece's own lattice (version 11).
     let mut strays = 0;
     for seed in [14, 17] {
-        let world = Planet::new(seed);
+        let world = made(seed);
         let h = &world.history;
         for t in 1..=h.last() {
             let plate = &h.plate[t];
@@ -393,7 +400,7 @@ fn a_plate_is_one_piece_and_no_small_plate_sits_inside_another() {
 #[test]
 fn every_cell_is_on_exactly_one_plate_at_every_step() {
     for seed in [11, 17] {
-        let world = Planet::new(seed);
+        let world = made(seed);
         let h = &world.history;
         for t in 0..=h.last() {
             // One plate per cell, a plate id (never "none"), whose
