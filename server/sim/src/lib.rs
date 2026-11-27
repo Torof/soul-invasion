@@ -778,9 +778,19 @@ pub struct Item {
     /// the world) or left by a death.
     made: Tick,
     place: Place,
+    /// The hollow it was folded into, in millilitres (D57, amended 27
+    /// November 2026: a form of the thing, no material of its own); 0:
+    /// as it came.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    hollow_ml: u32,
 }
 
 impl Item {
+    /// The hollow it was folded into, in millilitres; 0: none.
+    pub fn hollow_ml(&self) -> u32 {
+        self.hollow_ml
+    }
+
     /// The item's id.
     pub fn id(&self) -> ItemId {
         self.id
@@ -830,6 +840,7 @@ impl Item {
             mass_g: grams,
             made: self.made,
             place: self.place,
+            hollow_ml: 0,
         })
     }
 
@@ -839,12 +850,13 @@ impl Item {
     /// make the old ones fresh, so a store cannot be kept young by topping
     /// it up (a mass-weighted date would allow just that), and the date
     /// stays exact, never rounded. Gives `other` back, untouched, when the
-    /// materials differ or the mass would overflow.
+    /// materials differ, one of them is folded into a hollow (a thing of
+    /// its own, no pile) or the mass would overflow.
     ///
     /// # Errors
     /// `other` itself, when it cannot be merged.
     pub fn merge(&mut self, other: Item) -> Result<(), Item> {
-        if other.material != self.material {
+        if other.material != self.material || other.hollow_ml > 0 || self.hollow_ml > 0 {
             return Err(other);
         }
         let Some(mass) = self.mass_g.checked_add(other.mass_g) else {
@@ -1282,8 +1294,8 @@ pub enum Event {
     },
     /// A body finished a gesture (D57): a cut or a fold, on `item` (the
     /// tool it cut with, or what it folded), and what came of it: a new
-    /// item cut, the item folded into another material, or nothing.
-    /// Seen by all.
+    /// item cut, the item folded into a hollow, nothing, or the item
+    /// broken and lost (amended 27 November 2026). Seen by all.
     Gestured {
         /// Who.
         body: BodyId,
@@ -1291,8 +1303,13 @@ pub enum Event {
         gesture: hands::Gesture,
         /// The tool it cut with, or what it folded.
         item: ItemId,
+        /// What it was done on: the material folded, or the species of
+        /// the tree cut (content ids).
+        on: String,
         /// What came of it, if anything.
         gave: Option<ItemId>,
+        /// The thing folded broke: it is gone.
+        broke: bool,
     },
     /// A body could not begin a gesture (D57). Told to the pilot.
     GestureRefused {
@@ -2578,12 +2595,13 @@ impl World {
         let (mut load, mut food, mut holds) = (0_u32, 0_u32, 0_u32);
         for item in body.inventory().filter_map(|id| self.item(id)) {
             load = load.saturating_add(item.mass_g);
-            if let Some(material) = rules.material(&item.material) {
-                if material.food.is_some() {
-                    food = food.saturating_add(item.mass_g);
-                }
-                holds = holds.saturating_add(material.holds_g);
+            if rules
+                .material(&item.material)
+                .is_some_and(|m| m.food.is_some())
+            {
+                food = food.saturating_add(item.mass_g);
             }
+            holds = holds.saturating_add(rules.needs.hands.holds_g(item.hollow_ml));
         }
         let body = &mut self.bodies[index];
         (body.load_g, body.food_g, body.holds_g) = (load, food, holds);
@@ -2612,6 +2630,7 @@ impl World {
                 mass_g: mass_g.max(1),
                 made: self.tick,
                 place: Place::Ground { pos },
+                hollow_ml: 0,
             },
         );
         self.lay(id, pos.chunk());
@@ -2633,6 +2652,7 @@ impl World {
                 mass_g: mass_g.max(1),
                 made: self.tick,
                 place: Place::Ground { pos },
+                hollow_ml: 0,
             },
         );
         self.kept_in.entry(pos.chunk()).or_default().insert(id);
@@ -3817,6 +3837,7 @@ impl World {
                     mass_g: grams,
                     made: self.tick,
                     place: Place::Carried { body: id },
+                    hollow_ml: 0,
                 },
             );
             let body = &mut self.bodies[index];
@@ -3863,8 +3884,8 @@ impl World {
     }
 
     /// Has `item` spoiled (D16, D45)? Food does, its content's keeping
-    /// after it was made; a material that wears tears its wear after
-    /// (D57); anything else never. Keeping and wear written in seasons
+    /// after it was made; a thing folded of a material that wears tears
+    /// its wear after the fold (D57); anything else never. Keeping and wear written in seasons
     /// follow this world's cycle (D09).
     fn spoiled(&self, item: &Item, rules: &Content) -> bool {
         self.spoils_at(item, rules)
@@ -3892,6 +3913,8 @@ impl World {
         let per_cycle = self.calendar.days_per_cycle();
         let days = match material.food {
             Some(food) => food.days_kept(per_cycle),
+            // Only a thing folded wears: at its folds, from the fold.
+            None if item.hollow_ml == 0 => return None,
             None => match material.days_worn(per_cycle) {
                 0 => return None,
                 worn => worn,

@@ -84,6 +84,33 @@ pub struct Look {
 }
 
 impl Material {
+    /// What comes of folding a piece of it (D57, amended 27 November
+    /// 2026), by what it is: nothing when it is no sheet; a sheet at
+    /// least `fold_suppleness` supple takes a hollow, the open box of
+    /// the most volume a square sheet of its face folds into (2/27 of
+    /// its side cubed); a stiffer sheet breaks.
+    #[must_use]
+    pub fn folded(&self, fold_suppleness: u8) -> Folded {
+        if self.form != Form::Sheet || self.area_dm2 == 0 {
+            return Folded::Nothing;
+        }
+        if self.suppleness < fold_suppleness {
+            return Folded::Breaks;
+        }
+        // Its side in millimetres, then 2/27 of its cube: mm³ to ml.
+        let side_mm = u64::from(self.area_dm2 * 10_000).isqrt();
+        let ml = side_mm * side_mm * side_mm * 2 / 27 / 1000;
+        Folded::Hollow(u32::try_from(ml).unwrap_or(u32::MAX).max(1))
+    }
+
+    /// Whether a piece of `self` in hand works a piece of `other` loose
+    /// (D57, amended 27 November 2026): it has an edge, at least as keen
+    /// as `other` is tough, and is the harder of the two.
+    #[must_use]
+    pub fn works(&self, other: &Material) -> bool {
+        self.edge > 0 && self.edge >= other.toughness && self.hardness > other.hardness
+    }
+
     /// Mass of one piece, in grams.
     // Not generation: content gives masses in kilograms, read once.
     #[allow(
@@ -129,22 +156,31 @@ pub struct Material {
     pub flammable: bool,
     /// Can it be eaten?
     pub food: Option<Food>,
-    /// Its edge cuts what a body cuts with it in hand (D57).
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub sharp: bool,
-    /// The material it becomes when folded, its grams kept (D57).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub folds_into: Option<String>,
-    /// A container (D57): the grams of loose food it keeps together, on
-    /// top of what the arms hold (`movement.hands_g`). 0: none.
+    /// How keen its edge is, 0 (none) to 10 (D57): a thing worked with
+    /// it comes away when the edge is at least as keen as that thing is
+    /// tough, and the stuff harder.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub edge: u8,
+    /// How far it bends before it breaks, 0 (not at all) to 10 (D57).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub suppleness: u8,
+    /// How it holds together against an edge, a tear, a crumbling, 0
+    /// (falls apart) to 10 (D57).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub toughness: u8,
+    /// The shape of a piece (D57).
+    #[serde(default, skip_serializing_if = "Form::is_block")]
+    pub form: Form,
+    /// The face of a piece that is a sheet, in square decimetres: what a
+    /// fold has to make a hollow of. 0 otherwise.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
-    pub holds_g: u32,
-    /// The days after it was made that it tears and is gone (D57): a
-    /// short wear, written in days. 0: not in days (food spoils by its
-    /// own keeping).
+    pub area_dm2: u32,
+    /// The days after it was folded that it tears at its folds and is
+    /// gone (D57): a short wear, written in days. 0: not in days (food
+    /// spoils by its own keeping).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub wears_days: u32,
-    /// The seasons after it was made that it tears and is gone: a long
+    /// The seasons after it was folded that it tears and is gone: a long
     /// wear, written in seasons so it follows the world's cycle (D09).
     /// 0: not in seasons; never both; neither, it never wears.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
@@ -154,8 +190,45 @@ pub struct Material {
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
-fn is_false(b: &bool) -> bool {
-    !*b
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
+}
+
+/// The shape of a piece of a material (D57): what a body sees of it, and
+/// what a fold can make of it. It says what the piece is, never what it
+/// is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Form {
+    /// A lump: a stone, a bone, a piece of meat.
+    #[default]
+    Block,
+    /// Flat and wide: a bark, a hide, a big leaf.
+    Sheet,
+    /// Long and stiff: a branch, a log.
+    Stick,
+    /// Long and limp: fibres.
+    Strand,
+    /// Many small things together: berries, nuts, small leaves.
+    Bits,
+}
+
+impl Form {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
+    fn is_block(&self) -> bool {
+        *self == Form::Block
+    }
+}
+
+/// What comes of folding a piece (D57), computed from what it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Folded {
+    /// Nothing: it is no sheet, or too small a one.
+    Nothing,
+    /// It breaks: a sheet too stiff to bend. The piece is lost.
+    Breaks,
+    /// It takes a hollow of so many millilitres, by its face.
+    Hollow(u32),
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
@@ -1345,9 +1418,11 @@ impl Learning {
 
 /// The gestures of the hands (D57; the project lead, 24 November 2026:
 /// "C'est parfait"): picking up, cutting with what is in hand, folding.
-/// No recipe: what comes of a gesture is what the materials are
-/// (`sharp`, `folds_into`, `holds_g`, a tree's `bark`). D30 placeholders,
-/// named and explained in `content/needs.ron`.
+/// No recipe: what comes of a gesture is computed from what the
+/// materials are on the scales they all share (hardness, edge,
+/// suppleness, toughness, form), never from what they are for (amended
+/// 27 November 2026). D30 placeholders, named and explained in
+/// `content/needs.ron`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hands {
     /// The game minutes a cut or a fold takes.
@@ -1358,6 +1433,22 @@ pub struct Hands {
     /// The gestures a body in a trial of its hands tries a day, at most.
     /// 0: nobody tries one, and the hands are never a trial.
     pub tries_per_day: u32,
+    /// The suppleness from which a sheet folded takes a hollow; a
+    /// stiffer one breaks.
+    #[serde(default = "Hands::default_fold_suppleness")]
+    pub fold_suppleness: u8,
+    /// The grams of loose food a litre of hollow keeps together.
+    #[serde(default = "Hands::default_loose_g_per_litre")]
+    pub loose_g_per_litre: u32,
+    /// What a body sees (the project lead, 25 November 2026: "on ne coupe
+    /// pas avec une baie"): the edge from which a thing looks like it
+    /// could cut.
+    #[serde(default = "Hands::default_edge_seen")]
+    pub edge_seen: u8,
+    /// The suppleness from which a thing that is no sheet feels in hand
+    /// like it could bend.
+    #[serde(default = "Hands::default_supple_seen")]
+    pub supple_seen: u8,
 }
 
 impl Default for Hands {
@@ -1367,6 +1458,7 @@ impl Default for Hands {
             gesture_minutes: 10,
             near_tiles: 4,
             tries_per_day: 0,
+            ..Self::placeholders()
         }
     }
 }
@@ -1379,7 +1471,34 @@ impl Hands {
             gesture_minutes: 10,
             near_tiles: 4,
             tries_per_day: 4,
+            fold_suppleness: Self::default_fold_suppleness(),
+            loose_g_per_litre: Self::default_loose_g_per_litre(),
+            edge_seen: Self::default_edge_seen(),
+            supple_seen: Self::default_supple_seen(),
         }
+    }
+
+    fn default_fold_suppleness() -> u8 {
+        5
+    }
+
+    fn default_loose_g_per_litre() -> u32 {
+        500
+    }
+
+    fn default_edge_seen() -> u8 {
+        3
+    }
+
+    fn default_supple_seen() -> u8 {
+        5
+    }
+
+    /// The grams of loose food a hollow of `hollow_ml` keeps together.
+    #[must_use]
+    pub fn holds_g(&self, hollow_ml: u32) -> u32 {
+        u32::try_from(u64::from(hollow_ml) * u64::from(self.loose_g_per_litre) / 1000)
+            .unwrap_or(u32::MAX)
     }
 
     /// Whether anybody tries a gesture.
@@ -1392,6 +1511,15 @@ impl Hands {
         if !(1..=24 * 60).contains(&self.gesture_minutes) || !(1..=16).contains(&self.near_tiles) {
             return Err(ContentError::Needs(
                 "hands: gesture_minutes 1 to a day, near_tiles 1 to 16",
+            ));
+        }
+        if self.fold_suppleness > 10
+            || self.edge_seen > 10
+            || self.supple_seen > 10
+            || !(1..=2000).contains(&self.loose_g_per_litre)
+        {
+            return Err(ContentError::Needs(
+                "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000",
             ));
         }
         Ok(())
@@ -3893,19 +4021,28 @@ impl Content {
         Ok(())
     }
 
-    /// Checks what the gestures of the hands name (D57): a material's
-    /// fold and a tree's bark are materials.
+    /// Checks what the gestures of the hands read (D57): the scales of
+    /// a material, and that a tree's bark is a material.
     fn validate_gestures(&self, ids: &BTreeSet<&str>) -> Result<(), ContentError> {
+        if self.materials.len() >= usize::from(crate::brain::HOLLOW) {
+            return Err(ContentError::Needs("too many materials"));
+        }
         for material in &self.materials {
-            if material
-                .folds_into
-                .as_ref()
-                .is_some_and(|into| !ids.contains(into.as_str()) || *into == material.id)
+            let invalid = |what| ContentError::InvalidValue {
+                id: material.id.clone(),
+                what,
+            };
+            if material.edge > 10 || material.suppleness > 10 || material.toughness > 10 {
+                return Err(invalid("edge, suppleness and toughness are 0 to 10"));
+            }
+            if (material.form == Form::Sheet) != (material.area_dm2 > 0) || material.area_dm2 > 400
             {
-                return Err(ContentError::InvalidValue {
-                    id: material.id.clone(),
-                    what: "folds_into names another material",
-                });
+                return Err(invalid(
+                    "a sheet has an area_dm2 of 1 to 400, nothing else has one",
+                ));
+            }
+            if material.days_worn(4) > 0 && material.food.is_some() {
+                return Err(invalid("food spoils by its keeping, it does not wear"));
             }
         }
         for species in &self.species {
@@ -3956,9 +4093,6 @@ impl Content {
             }
             if !is_hex_colour(&material.look.colour) {
                 return Err(invalid("look.colour must be #rrggbb"));
-            }
-            if material.holds_g > 0 && material.food.is_some() {
-                return Err(invalid("food is no container"));
             }
         }
         self.validate_gestures(&ids)?;
@@ -4342,6 +4476,16 @@ impl Content {
     /// A material by id.
     pub fn material(&self, id: &str) -> Option<&Material> {
         self.materials.iter().find(|m| m.id == id)
+    }
+
+    /// The bark a cut of a tree of `species` gives with a piece of `tool`
+    /// in hand (D57, amended 27 November 2026): the tree's bark, when it
+    /// has one that comes away and the tool works it loose
+    /// ([`Material::works`]); nothing otherwise.
+    #[must_use]
+    pub fn cut_gives(&self, tool: &Material, species: &Species) -> Option<&Material> {
+        let bark = self.material(species.bark.as_deref()?)?;
+        tool.works(bark).then_some(bark)
     }
 
     /// A small, valid content for tests: a stone, a branch and a berry.

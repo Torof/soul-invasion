@@ -31,4 +31,14 @@
     (material: "flint", terrain: ford, per_thousand: 150),
     (material: "flint", terrain: grass, per_thousand: 150, near: Some((terrain: rock, within: 3))),
     (material: "flint", terrain: forest, per_thousand: 80, near: Some((terrain: rock, within: 3))),
+    // More of what the ground drops (D57, amended 27 November 2026), added
+    // after the rules above so that their things keep their ids: quartz in
+    // the river gravels, slate and sandstone fallen at the foot of the
+    // rock, the big leaves of the butterbur on the banks. Placeholders, of
+    // the pebbles' order.
+    (material: "quartz", terrain: grass, per_thousand: 80, near: Some((terrain: water, within: 3))),
+    (material: "quartz", terrain: ford, per_thousand: 80),
+    (material: "slate", terrain: grass, per_thousand: 80, near: Some((terrain: rock, within: 3))),
+    (material: "sandstone", terrain: grass, per_thousand: 80, near: Some((terrain: rock, within: 3))),
+    (material: "butterbur_leaf", terrain: grass, per_thousand: 80, near: Some((terrain: water, within: 2))),
 ]

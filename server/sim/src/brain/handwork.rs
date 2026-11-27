@@ -2,13 +2,16 @@
 //! practises. A deed is a gesture on a kind of thing (a material, or a
 //! tree's species for a cut), with a kind of thing in hand for a cut. No
 //! recipe: a body in a trial of its hands draws a gesture and a thing from
-//! the run's seed among what it carries and what lies around it, and the
-//! world says what comes of it; what came of something is learnt, judged
+//! the run's seed among what it carries and what lies around it, as far
+//! as what it sees of them makes the gesture plausible (an edge, a sheet,
+//! a thing that gives in hand), and the world says what comes of it,
+//! which may be nothing, or the thing broken (amended 27 November 2026);
+//! what came of something is learnt, judged
 //! with the trial (D50), and told at the fire (D55). A body redoes the
 //! deeds it knows when it lacks what they gave: the plain minimum, never
 //! a goal.
 
-use crate::content::Content;
+use crate::content::{Content, Folded, Form};
 use crate::r#gen::scatter::{self, purpose};
 use crate::hands::Gesture;
 use crate::map::{ChunkPos, FinePos, Pos};
@@ -23,6 +26,31 @@ pub const DEEDS: usize = 6;
 
 /// No thing: a deed done with nothing in hand.
 pub const NOTHING: u16 = u16::MAX;
+
+/// A kind of thing, as the hands name it: a material's index in the
+/// content, with this bit when the thing is folded into a hollow (D57,
+/// amended 27 November 2026: the hollow is a form of the thing, no
+/// material of its own).
+pub const HOLLOW: u16 = 0x8000;
+
+/// The material's index of a kind of thing, its form left out.
+#[must_use]
+pub fn kind_material(kind: u16) -> usize {
+    usize::from(kind & !HOLLOW)
+}
+
+/// Whether a kind of thing is one folded into a hollow.
+#[must_use]
+pub fn kind_hollow(kind: u16) -> bool {
+    kind != NOTHING && kind & HOLLOW != 0
+}
+
+/// The material of a kind of thing.
+fn stuff(rules: &Content, kind: u16) -> Option<&crate::content::Material> {
+    (kind != NOTHING)
+        .then(|| rules.materials.get(kind_material(kind)))
+        .flatten()
+}
 
 /// A deed of the hands (D57): a gesture on a kind of thing, with a kind
 /// of thing in hand when it cuts.
@@ -324,43 +352,42 @@ pub(super) fn will_chance(rules: &Content, mind: &Mind) -> u64 {
     .max(u64::from(trials.try_floor_permille))
 }
 
-/// A material's index in the content.
-/// The deeds that make a container, read from the content alone: take a
-/// sharp material, cut a tree whose bark folds into a container with it,
-/// fold that bark. Not the experiment's: its diagnostic (the vivarium's
+/// The deeds that make a hollow, read from the content alone: take a
+/// material, cut with it a tree whose bark it works loose and which takes
+/// a hollow when folded, fold that bark; the first such chain in the
+/// content's order. Not the experiment's: its diagnostic (the vivarium's
 /// `--hands-known`), founders who know them from birth. Empty when the
 /// content holds no such chain.
 #[must_use]
 pub fn container_deeds(rules: &Content) -> Deeds {
     let mut deeds = Deeds::default();
-    let index = |id: &str| material_index(rules, id);
-    let Some(sharp) = rules.materials.iter().position(|m| m.sharp) else {
-        return deeds;
-    };
-    let Ok(sharp) = u16::try_from(sharp) else {
-        return deeds;
-    };
     for (s, species) in rules.species.iter().enumerate() {
-        let Some(bark) = species.bark.as_deref().and_then(index) else {
-            continue;
-        };
-        let holds = folds_into(rules, bark)
-            .and_then(|m| rules.materials.get(usize::from(m)))
-            .is_some_and(|m| m.holds_g > 0);
         let Ok(s) = u16::try_from(s) else {
             continue;
         };
-        if holds {
+        for (t, tool) in rules.materials.iter().enumerate() {
+            let Ok(t) = u16::try_from(t) else {
+                continue;
+            };
+            let Some(bark) = rules
+                .cut_gives(tool, species)
+                .and_then(|bark| material_index(rules, &bark.id))
+            else {
+                continue;
+            };
+            if folds_into(rules, bark).is_none() {
+                continue;
+            }
             for deed in [
                 Deed {
                     gesture: Gesture::PickUp,
-                    on: sharp,
+                    on: t,
                     with: NOTHING,
                 },
                 Deed {
                     gesture: Gesture::Cut,
                     on: s,
-                    with: sharp,
+                    with: t,
                 },
                 Deed {
                     gesture: Gesture::Fold,
@@ -376,6 +403,7 @@ pub fn container_deeds(rules: &Content) -> Deeds {
     deeds
 }
 
+/// A material's index in the content.
 fn material_index(rules: &Content, id: &str) -> Option<u16> {
     rules
         .materials
@@ -384,24 +412,26 @@ fn material_index(rules: &Content, id: &str) -> Option<u16> {
         .and_then(|i| u16::try_from(i).ok())
 }
 
-/// What `material` folds into, as an index.
-fn folds_into(rules: &Content, material: u16) -> Option<u16> {
-    let into = rules
-        .materials
-        .get(usize::from(material))?
-        .folds_into
-        .as_deref()?;
-    material_index(rules, into)
+/// What a thing of the kind `kind` becomes when folded: itself with a
+/// hollow, when it has none and is a sheet supple enough.
+fn folds_into(rules: &Content, kind: u16) -> Option<u16> {
+    if kind_hollow(kind) {
+        return None;
+    }
+    let folded = stuff(rules, kind)?.folded(rules.needs.hands.fold_suppleness);
+    matches!(folded, Folded::Hollow(_)).then_some(kind | HOLLOW)
 }
 
-/// The thing a deed gives: the thing picked, the bark cut, the thing
-/// folded into.
+/// The kind of thing a deed gives, as the world computes it: the thing
+/// picked, the bark cut, the thing folded into a hollow. What a body that
+/// did the deed, or heard it told, knows of it.
 fn product(rules: &Content, deed: Deed) -> Option<u16> {
     match deed.gesture {
         Gesture::PickUp => Some(deed.on),
         Gesture::Cut => {
-            let bark = rules.species.get(usize::from(deed.on))?.bark.as_deref()?;
-            material_index(rules, bark)
+            let species = rules.species.get(usize::from(deed.on))?;
+            let bark = rules.cut_gives(stuff(rules, deed.with)?, species)?;
+            material_index(rules, &bark.id)
         }
         Gesture::Fold => folds_into(rules, deed.on),
     }
@@ -444,15 +474,17 @@ fn used(rules: &Content, deeds: &Deeds) -> Vec<u16> {
     out
 }
 
-/// What a body carries: each item with its material's index.
+/// What a body carries: each item with its kind, its material's index
+/// and its form ([`HOLLOW`]).
 fn carried(world: &World, rules: &Content, id: BodyId) -> Vec<(ItemId, u16)> {
     let Some(body) = world.body(id) else {
         return Vec::new();
     };
     body.inventory()
         .filter_map(|item| {
-            let m = material_index(rules, world.item(item)?.material())?;
-            Some((item, m))
+            let thing = world.item(item)?;
+            let m = material_index(rules, thing.material())?;
+            Some((item, if thing.hollow_ml() > 0 { m | HOLLOW } else { m }))
         })
         .collect()
 }
@@ -518,17 +550,16 @@ fn nearest_of(
 /// Whether the bark a cut of a tree of `species` gives would go on the
 /// body (D57, amended 25 November 2026): a body feels its load, and does
 /// not cut what it could not carry away (the world lets such a bark fall
-/// at its feet, and it still lacked bark, and cut again). True when the
-/// tree has no bark: nothing would fall.
-fn bark_fits(world: &World, rules: &Content, id: BodyId, species: usize) -> bool {
+/// at its feet, and it still lacked bark, and cut again). Only for a cut
+/// it knows or heard, whose bark it knows the weight of: a cut drawn is
+/// of a tree it knows nothing of (amended 27 November 2026). True when
+/// the cut gives nothing: nothing would fall.
+fn bark_fits(world: &World, rules: &Content, id: BodyId, deed: Deed) -> bool {
     let Some(body) = world.body(id) else {
         return false;
     };
-    let Some(mass_g) = rules
-        .species
-        .get(species)
-        .and_then(|s| s.bark.as_deref())
-        .and_then(|bark| rules.material(bark))
+    let Some(mass_g) = product(rules, deed)
+        .and_then(|bark| stuff(rules, bark))
         .map(|m| m.mass_g().max(1))
     else {
         return true;
@@ -626,11 +657,7 @@ pub(super) fn hands_turn(
     // would: the body lives it, nothing tells it.
     if body.food_g() > body.arms_g(&rules.movement) {
         for &(_, m) in &have {
-            if rules
-                .materials
-                .get(usize::from(m))
-                .is_some_and(|m| m.holds_g > 0)
-            {
+            if kind_hollow(m) {
                 mind.handwork.serve(m);
             }
         }
@@ -639,12 +666,7 @@ pub(super) fn hands_turn(
     // trial given up leaves what it brought.
     if !trying {
         let keep = used(rules, &mind.ways.hands);
-        let food = |m: u16| {
-            rules
-                .materials
-                .get(usize::from(m))
-                .is_some_and(|m| m.food.is_some())
-        };
+        let food = |m: u16| stuff(rules, m).is_some_and(|m| m.food.is_some());
         let served = &mind.handwork;
         if let Some(&(item, _)) = have
             .iter()
@@ -712,10 +734,11 @@ pub(super) fn hands_turn(
 }
 
 /// A gesture drawn in a trial of the hands on nothing heard (D57): one of
-/// the three the things allow, on a thing drawn among those it carries or
-/// that lie around it, at most the content's tries a day. A cut only with
-/// a sharp thing and only on a tree with bark, a fold only of what folds
-/// (amended 25 November 2026); no suggestion of which gesture.
+/// the three, on a thing drawn among those it carries or that lie around
+/// it, at most the content's tries a day. Only what a body sees makes a
+/// gesture plausible ([`cuts_to_the_eye`], [`bends_to_the_eye`]; amended
+/// 27 November 2026): the world may still answer nothing, or break the
+/// thing. No suggestion of which gesture.
 fn draw(
     world: &World,
     rules: &Content,
@@ -741,34 +764,29 @@ fn draw(
         );
         usize::try_from(r % u64::try_from(n.max(1)).unwrap_or(1)).unwrap_or(0)
     };
-    // Only what the things allow (the project lead, 25 November 2026:
-    // "on ne coupe pas avec une baie"): a body sees truly that a stone is
-    // sharp, that a sheet bends, that a tree has bark to cut. It cuts with
-    // a sharp thing only, a tree with bark only; it folds what folds. The
-    // gesture stays drawn at random among those the things allow: nothing
-    // says which.
-    let material = |m: u16| rules.materials.get(usize::from(m));
+    // Only what a body sees (the project lead, 25 November 2026: "on ne
+    // coupe pas avec une baie"): that a thing has an edge, that a thing
+    // is a sheet or gives in hand, on the scales every thing has. Whether
+    // the edge is keen enough for this tree, whether this tree's bark
+    // comes away, whether the sheet bends or snaps, it does not see: it
+    // tries, and the world answers (amended 27 November 2026). The
+    // gesture stays drawn at random among the plausible: nothing says
+    // which.
     let tools: Vec<(ItemId, u16)> = have
         .iter()
         .copied()
-        .filter(|&(_, m)| material(m).is_some_and(|m| m.sharp))
+        .filter(|&(_, m)| cuts_to_the_eye(rules, m))
         .collect();
     let folding: Vec<(ItemId, u16)> = have
         .iter()
         .copied()
-        .filter(|&(_, m)| material(m).is_some_and(|m| m.folds_into.is_some()))
+        .filter(|&(_, m)| bends_to_the_eye(rules, m))
         .collect();
     let things = things_near(world, here, near, mind);
     let trees: Vec<_> = if tools.is_empty() {
         Vec::new()
     } else {
         trees_near(world, here, near, mind)
-            .into_iter()
-            .filter(|t| {
-                rules.species.get(t.3).is_some_and(|s| s.bark.is_some())
-                    && bark_fits(world, rules, id, t.3)
-            })
-            .collect()
     };
     let open: Vec<Gesture> = Gesture::ALL
         .into_iter()
@@ -807,6 +825,23 @@ fn draw(
     }
 }
 
+/// Whether a thing of the kind `kind` looks like it could cut: it shows
+/// an edge (the content's `edge_seen`). How keen against what, a body
+/// finds by trying.
+fn cuts_to_the_eye(rules: &Content, kind: u16) -> bool {
+    stuff(rules, kind).is_some_and(|m| m.edge >= rules.needs.hands.edge_seen.max(1))
+}
+
+/// Whether a thing of the kind `kind` looks like it could be folded: it
+/// is a sheet, stiff or not, or gives in hand (the content's
+/// `supple_seen`), and is not folded already.
+fn bends_to_the_eye(rules: &Content, kind: u16) -> bool {
+    !kind_hollow(kind)
+        && stuff(rules, kind).is_some_and(|m| {
+            m.form == Form::Sheet || m.suppleness >= rules.needs.hands.supple_seen.max(1)
+        })
+}
+
 /// Whether `id` at `here` could begin a gesture its hands do not know
 /// (D50 and D57, amended 26 November 2026): among the gestures the things
 /// around allow, as [`draw`] sees them, one whose deed is not among its
@@ -820,10 +855,9 @@ pub(super) fn something_new(
 ) -> bool {
     let near = i32::try_from(rules.needs.hands.near_tiles).unwrap_or(4);
     let have = carried(world, rules, id);
-    let material = |m: u16| rules.materials.get(usize::from(m));
     let new = |deed: Deed| !mind.ways.hands.contains(deed);
     let fold = have.iter().any(|&(_, m)| {
-        material(m).is_some_and(|m| m.folds_into.is_some())
+        bends_to_the_eye(rules, m)
             && new(Deed {
                 gesture: Gesture::Fold,
                 on: m,
@@ -850,23 +884,21 @@ pub(super) fn something_new(
     let tools: Vec<u16> = have
         .iter()
         .map(|&(_, m)| m)
-        .filter(|&m| material(m).is_some_and(|m| m.sharp))
+        .filter(|&m| cuts_to_the_eye(rules, m))
         .collect();
     if tools.is_empty() {
         return false;
     }
     trees_near(world, here, near, mind).iter().any(|t| {
-        rules.species.get(t.3).is_some_and(|s| s.bark.is_some())
-            && bark_fits(world, rules, id, t.3)
-            && u16::try_from(t.3).is_ok_and(|on| {
-                tools.iter().any(|&with| {
-                    new(Deed {
-                        gesture: Gesture::Cut,
-                        on,
-                        with,
-                    })
+        u16::try_from(t.3).is_ok_and(|on| {
+            tools.iter().any(|&with| {
+                new(Deed {
+                    gesture: Gesture::Cut,
+                    on,
+                    with,
                 })
             })
+        })
     })
 }
 
@@ -948,7 +980,7 @@ fn needed(
                     };
                     if let Some(&(chunk, key, at, _)) = trees_near(world, here, near, mind)
                         .iter()
-                        .find(|t| usize::from(deed.on) == t.3 && bark_fits(world, rules, id, t.3))
+                        .find(|t| usize::from(deed.on) == t.3 && bark_fits(world, rules, id, deed))
                     {
                         return Some((
                             (
@@ -1172,6 +1204,7 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
 mod tests {
     use super::super::{Brains, HeardDays, Lately, News, Trial, Ways, start_trial};
     use super::*;
+    use crate::Event;
     use crate::memory::{Access, Record};
     use crate::time::Calendar;
     use std::collections::BTreeSet;
@@ -1325,7 +1358,8 @@ mod tests {
             hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new())),
             HandsTurn::Free
         );
-        assert_eq!(world.item(item).unwrap().material(), "folded_birch_bark");
+        assert_eq!(world.item(item).unwrap().material(), "birch_bark");
+        assert!(world.item(item).unwrap().hollow_ml() > 0, "folded");
         // Practised, outside any trial: nothing learnt.
         let cut = Deed {
             gesture: Gesture::Cut,
@@ -1362,14 +1396,17 @@ mod tests {
         // bark would fall at its feet, and it would lack bark still).
         set_load(&mut world, bark_g - 1);
         assert!(!cuts(&world, mind), "no cut it cannot carry");
-        // Nor drawn in a trial.
+        // A cut drawn in a trial is of a tree it knows nothing of: it
+        // cannot foresee a bark, and may cut (amended 27 November 2026).
         mind.ways.hands = Deeds::default();
+        let mut drawn_cuts = 0;
         for day in 0..200 {
             mind.handwork.tries = (day, 0);
             if let Some((_, deed)) = draw(&world, &rules, (id, here), mind, (day, &sharp, 4)) {
-                assert_ne!(deed.gesture, Gesture::Cut, "day {day}");
+                drawn_cuts += u32::from(deed.gesture == Gesture::Cut);
             }
         }
+        assert!(drawn_cuts > 0);
         // Room for the bark: it cuts.
         mind.ways.hands = bark_deeds(&rules, birch);
         set_load(&mut world, bark_g);
@@ -1436,8 +1473,13 @@ mod tests {
     fn a_container_that_held_food_beyond_the_arms_served() {
         let (rules, mut world, mut brains, id, _) = by_a_birch();
         let here = world.body(id).unwrap().pos();
-        picked(&mut world, &rules, id, "folded_birch_bark");
-        let container = material(&rules, "folded_birch_bark");
+        let hollow = world.spawn_hollow("birch_bark", 200, here, &rules);
+        world.queue(Intention::PickUp {
+            body: id,
+            item: hollow,
+        });
+        world.advance(1, &rules, &mut Vec::new());
+        let container = material(&rules, "birch_bark") | HOLLOW;
         let mind = brains.minds.get_mut(&id).unwrap();
         let _ = hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()));
         assert!(!mind.handwork.served(container), "empty, it served nothing");
@@ -1478,23 +1520,135 @@ mod tests {
         let flint_m = material(&rules, "flint");
         let sharp = [(berries, berries_m), (flint, flint_m)];
         let mut cuts = 0;
+        let mut species = BTreeSet::new();
         for day in 0..200 {
             mind.handwork.tries = (day, 0);
             if let Some((_, deed)) = draw(&world, &rules, (id, here), mind, (day, &sharp, 4))
                 && deed.gesture == Gesture::Cut
             {
                 cuts += 1;
-                assert_eq!(deed.with, flint_m, "only the sharp thing cuts");
-                assert!(
-                    rules.species[usize::from(deed.on)].bark.is_some(),
-                    "a tree with bark"
-                );
+                assert_eq!(deed.with, flint_m, "only the thing with an edge cuts");
+                species.insert(deed.on);
             }
         }
+        // Any tree near is tried: whether its bark comes away is not seen.
+        let near: BTreeSet<u16> = trees_near(&world, here, 4, mind)
+            .iter()
+            .map(|t| u16::try_from(t.3).unwrap())
+            .collect();
+        assert_eq!(species, near);
         assert!(
             cuts > 0,
             "the flint beside the birch {birch} is drawn to cut"
         );
+    }
+
+    #[test]
+    fn what_a_body_sees_makes_a_gesture_plausible_and_it_may_be_wrong() {
+        let (rules, ..) = by_a_birch();
+        let kind = |id: &str| material(&rules, id);
+        // An edge is seen, keen enough for this bark or not.
+        for edged in ["flint", "quartz", "slate"] {
+            assert!(cuts_to_the_eye(&rules, kind(edged)), "{edged}");
+        }
+        for blunt in ["pebble", "sandstone", "branch", "berries", "bone"] {
+            assert!(!cuts_to_the_eye(&rules, kind(blunt)), "{blunt}");
+        }
+        // A sheet is seen, supple or stiff; so is what gives in hand.
+        for bends in [
+            "birch_bark",
+            "oak_bark",
+            "pine_outer_bark",
+            "butterbur_leaf",
+            "hide",
+            "fibres",
+            "nettle_leaves",
+        ] {
+            assert!(bends_to_the_eye(&rules, kind(bends)), "{bends}");
+        }
+        for stiff in ["flint", "branch", "berries", "hazelnuts"] {
+            assert!(!bends_to_the_eye(&rules, kind(stiff)), "{stiff}");
+        }
+        assert!(!bends_to_the_eye(&rules, kind("birch_bark") | HOLLOW));
+        // Of the plausible, some give nothing: no product to learn.
+        let fold = |id: &str| Deed {
+            gesture: Gesture::Fold,
+            on: kind(id),
+            with: NOTHING,
+        };
+        assert_eq!(
+            product(&rules, fold("birch_bark")),
+            Some(kind("birch_bark") | HOLLOW)
+        );
+        assert_eq!(
+            product(&rules, fold("butterbur_leaf")),
+            Some(kind("butterbur_leaf") | HOLLOW)
+        );
+        for fails in ["oak_bark", "pine_outer_bark", "fibres", "nettle_leaves"] {
+            assert_eq!(product(&rules, fold(fails)), None, "{fails}");
+        }
+        let species = |id: &str| {
+            u16::try_from(rules.species.iter().position(|s| s.id == id).unwrap()).unwrap()
+        };
+        let cut = |tree: &str, with: &str| Deed {
+            gesture: Gesture::Cut,
+            on: species(tree),
+            with: kind(with),
+        };
+        assert_eq!(
+            product(&rules, cut("birch", "quartz")),
+            Some(kind("birch_bark"))
+        );
+        assert_eq!(product(&rules, cut("birch", "slate")), None);
+        assert_eq!(product(&rules, cut("oak", "quartz")), None);
+        assert_eq!(product(&rules, cut("hazel", "flint")), None);
+    }
+
+    #[test]
+    fn a_fold_drawn_that_breaks_the_thing_is_lived_and_nothing_is_learnt() {
+        let (rules, mut world, mut brains, id, _) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let oak = picked(&mut world, &rules, id, "oak_bark");
+        let oak_m = material(&rules, "oak_bark");
+        let day = today(&world);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        in_a_trial(mind, &[], day);
+        // The stiff bark is a sheet: folding it is drawn sooner or later.
+        let have = [(oak, oak_m)];
+        let mut drawn = None;
+        for seed in 0..200 {
+            mind.handwork.tries = (day, 0);
+            if let Some((target, deed)) = draw(&world, &rules, (id, here), mind, (seed, &have, 4))
+                && deed.gesture == Gesture::Fold
+            {
+                drawn = Some((target, deed));
+                break;
+            }
+        }
+        let (target, deed) = drawn.expect("a fold of the oak bark drawn");
+        assert_eq!(deed.on, oak_m);
+        let decision = go_do(&world, &rules, (id, here), (target, deed), mind);
+        assert!(
+            mind.handwork.gestured,
+            "a gesture new to its hands: it tried"
+        );
+        let mut events = Vec::new();
+        world.queue(decision.intention);
+        world.advance(12, &rules, &mut events);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::Gestured { broke: true, gave: None, on, .. } if on == "oak_bark"
+        )));
+        assert!(world.item(oak).is_none(), "the bark is lost");
+        brains.notice(&events, &world, &rules);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let _ = hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()));
+        assert!(
+            mind.ways.hands.is_empty(),
+            "nothing came of it: nothing learnt"
+        );
+        assert_eq!(mind.handwork.practised(deed), 0);
+        assert!(mind.handwork.novel.is_empty(), "nothing to tell");
     }
 
     #[test]
@@ -1572,8 +1726,8 @@ mod tests {
 
     #[test]
     fn a_trial_begun_on_a_tale_draws_a_gesture_when_no_gesture_heard_can_be_made() {
-        // D57, amended 25 November 2026: it heard of taking a folded
-        // bark, none lies here; a pebble lies at its feet. Before, its
+        // D57, amended 25 November 2026: it heard of taking a hide, none
+        // lies here; a pebble lies at its feet. Before, its
         // hands rested; now it draws as any trial does.
         let (rules, mut world, mut brains, id, _) = by_a_birch();
         let here = world.body(id).unwrap().pos();
@@ -1582,7 +1736,7 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         let heard = Deed {
             gesture: Gesture::PickUp,
-            on: material(&rules, "folded_birch_bark"),
+            on: material(&rules, "hide"),
             with: NOTHING,
         };
         in_a_trial(mind, &[heard], day);

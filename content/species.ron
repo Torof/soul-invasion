@@ -19,8 +19,10 @@
 //           or without it, the tree is drawn bare; in it, laden, or as
 //           much as is left of its crop when one of crops.ron is in
 //           season. The windows below are placeholders, to tune by eye.
-// bark:     the material a body cuts from its trunk with an edge in hand
-//           (D57), when its bark comes away; absent, cutting gives nothing.
+// bark:     the material a body cuts from its trunk with a thing in hand
+//           (D57), when its bark comes away in pieces and the thing's edge
+//           is keen enough for that bark (materials.ron); absent, cutting
+//           gives nothing.
 //
 // Within a habitat, one kind dominates each stand of a few hundred metres
 // (the weight here times a power of its stand's strength at the place;
@@ -30,17 +32,21 @@
     (id: "oak", name: "Oak", height_m: 22.0, big: true, spread_m: 12,
         habitats: { heart: 50, wood: 45, edge: 20, copse: 50, lone: 60 },
         // Acorns.
-        fruit: Some((from: (autumn, 0), until: (winter, 0)))),
+        fruit: Some((from: (autumn, 0), until: (winter, 0))),
+        // Its bark, thick and stiff (D57, amended 27 November 2026).
+        bark: Some("oak_bark")),
     (id: "pine", name: "Scots pine", height_m: 25.0, big: true, spread_m: 28,
         habitats: { heart: 15, wood: 15, edge: 5, cliff_foot: 100, lone: 10 },
         // Cones.
-        fruit: Some((from: (autumn, 0), until: (winter, 50)))),
+        fruit: Some((from: (autumn, 0), until: (winter, 50))),
+        // Its outer bark, in crumbly plates (D57, amended 27 November 2026).
+        bark: Some("pine_outer_bark")),
     // On the banks too (D37, amended 25 November 2026, the project lead:
     // "Ok, va pour ça"): a pioneer of the river gravels, half the
     // willow's weight there, so it forms its own stands by the water.
     (id: "birch", name: "Birch", height_m: 18.0, spread_m: 34, pioneer: true,
         habitats: { heart: 5, wood: 10, edge: 45, cliff_foot: 20, lone: 35, riverside: 50 },
-        // Its bark, cut with an edge (D57).
+        // Its bark, thin and supple (D57).
         bark: Some("birch_bark")),
     (id: "hazel", name: "Hazel", height_m: 5.0, spread_m: 10,
         habitats: { heart: 6, wood: 12, edge: 35, copse: 15, lone: 10 },

@@ -608,6 +608,14 @@ mod tests {
         world.advance(1, rules, &mut Vec::new());
     }
 
+    /// Has it take a birch bark folded into a hollow.
+    fn take_hollow(world: &mut World, rules: &Content, id: BodyId) {
+        let pos = world.body(id).unwrap().pos();
+        let item = world.spawn_hollow("birch_bark", 200, pos, rules);
+        world.queue(Intention::PickUp { body: id, item });
+        world.advance(1, rules, &mut Vec::new());
+    }
+
     /// Lays a flint at its feet: something new to take.
     fn flint_here(world: &mut World, id: BodyId) {
         let pos = world.body(id).unwrap().pos();
@@ -710,7 +718,7 @@ mod tests {
     fn carrying_beyond_the_arms_or_without_the_section_is_no_problem() {
         let (mut rules, mut world, mut brains, id) = valley();
         willing(&mut brains, id, 100);
-        take(&mut world, &rules, id, "folded_birch_bark", 100);
+        take_hollow(&mut world, &rules, id);
         take(&mut world, &rules, id, "berries", 3000);
         let body = world.body(id).unwrap();
         assert!(body.food_g() > body.arms_g(&rules.movement));
@@ -767,7 +775,7 @@ mod tests {
         mind.handwork.gestured = true;
         mind.ways.hands.add(deed);
         let _ = brains.news();
-        take(&mut world, &rules, id, "folded_birch_bark", 100);
+        take_hollow(&mut world, &rules, id);
         take(&mut world, &rules, id, "berries", 2000);
         stopped(&mut world, &rules, &mut brains, id);
         let mind = &brains.minds[&id];

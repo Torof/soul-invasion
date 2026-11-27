@@ -39,7 +39,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 19;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 20;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -875,6 +875,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             16 => migrate_v16_to_v17(data),
             17 => migrate_v17_to_v18(&data)?,
             18 => migrate_v18_to_v19(data),
+            19 => migrate_v19_to_v20(&data, content)?,
             _ => return Err(unsupported()),
         };
         version += 1;
@@ -1166,6 +1167,49 @@ fn migrate_v17_to_v18(data: &str) -> Result<String, StorageError> {
 /// is what the fields read as when absent: the data is the same.
 fn migrate_v18_to_v19(data: String) -> String {
     data
+}
+
+/// The hollow the repository's birch bark took when folded, in
+/// millilitres, when v20 came: for a content that holds no birch bark.
+const LEGACY_FOLDED_BARK_ML: u32 = 4740;
+
+/// v20: a fold gives a thing a hollow, a form of the thing, instead of
+/// turning it into another material (D57, amended 27 November 2026): an
+/// item may carry `hollow_ml`. A world saved before holds its folded
+/// barks as items of the material `folded_birch_bark`, which is gone:
+/// each becomes a birch bark with the hollow a fold gives it today.
+fn migrate_v19_to_v20(data: &str, content: &Content) -> Result<String, StorageError> {
+    fn walk(value: &mut serde_json::Value, hollow_ml: u32) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.get("material").and_then(serde_json::Value::as_str)
+                    == Some("folded_birch_bark")
+                {
+                    map.insert("material".to_owned(), "birch_bark".into());
+                    map.insert("hollow_ml".to_owned(), hollow_ml.into());
+                }
+                for inner in map.values_mut() {
+                    walk(inner, hollow_ml);
+                }
+            }
+            serde_json::Value::Array(list) => {
+                for inner in list {
+                    walk(inner, hollow_ml);
+                }
+            }
+            _ => {}
+        }
+    }
+    let hollow_ml = match content
+        .material("birch_bark")
+        .map(|m| m.folded(content.needs.hands.fold_suppleness))
+    {
+        Some(sim::content::Folded::Hollow(ml)) => ml,
+        _ => LEGACY_FOLDED_BARK_ML,
+    };
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    walk(&mut old, hollow_ml);
+    Ok(old.to_string())
 }
 
 fn standard_world_at_old_tick(data: &str, content: &Content) -> Result<String, StorageError> {
@@ -1962,6 +2006,32 @@ mod tests {
         let today = storage.latest_world().unwrap().unwrap();
         assert_eq!(today.calendar(), &quick);
         assert_eq!(today.calendar().days_per_age_year(), 4);
+    }
+
+    #[test]
+    fn a_v19_folded_bark_becomes_a_birch_bark_with_a_hollow() {
+        let content = content();
+        let mut world = World::with_valley(Calendar::new(2, 3).unwrap(), &content, 256);
+        let material = content.materials[0].id.clone();
+        let item = world.spawn_item(&material, 200, sim::Pos::new(3, 3));
+        let old = serde_json::to_string(&world).unwrap().replace(
+            &format!("\"material\":\"{material}\""),
+            "\"material\":\"folded_birch_bark\"",
+        );
+        assert!(old.contains("folded_birch_bark"));
+        let mut storage = Sqlite::in_memory(content).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (0, 19, ?1)",
+                [old],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        let folded = back.item(item).expect("the item kept");
+        assert_eq!(folded.material(), "birch_bark");
+        assert!(folded.hollow_ml() > 0, "folded: it holds");
+        assert_eq!(folded.mass_g(), 200);
     }
 
     #[test]

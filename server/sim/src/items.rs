@@ -184,6 +184,7 @@ impl Item {
             mass_g: spawn.piece_g.max(1),
             made: Tick(0),
             place: Place::Ground { pos: tile },
+            hollow_ml: 0,
         }
     }
 }

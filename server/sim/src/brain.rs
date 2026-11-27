@@ -104,7 +104,9 @@ mod search;
 mod search_tests;
 #[cfg(test)]
 mod wake_tests;
-pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
+pub use handwork::{
+    DEEDS, Deed, Deeds, HOLLOW, Handwork, NOTHING, container_deeds, kind_hollow, kind_material,
+};
 pub use learning::{BeliefHeld, Forgot, LearnStep, Learner, TrialEnd};
 pub use problems::{Problem, ProblemAim, ProblemStep};
 pub use search::{Quiet, SearchStep, Stayed, Tie};

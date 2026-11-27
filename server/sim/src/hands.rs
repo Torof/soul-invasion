@@ -1,9 +1,13 @@
 //! The gestures of the hands (D57; the project lead, 24 November 2026:
 //! "C'est parfait"): picking up (the act of D35), cutting a tree with what
 //! is in hand, folding what is carried. No recipe: what comes of a
-//! gesture is what the materials are (`sharp`, `folds_into`, a tree's
-//! `bark`, `content/`), and a gesture that meets nothing to work on still
-//! takes its time and gives nothing.
+//! gesture is computed from what the materials are on the scales they all
+//! share (hardness, edge, suppleness, toughness, form, `content/`; amended
+//! 27 November 2026), never from a result written for them. A gesture
+//! that meets nothing to work on still takes its time and gives nothing,
+//! and a fold of a stiff sheet breaks it.
+
+use crate::content::Folded;
 
 use serde::{Deserialize, Serialize};
 
@@ -172,6 +176,27 @@ impl World {
         out
     }
 
+    /// Lays on the ground at `pos` a thing of `material` folded into the
+    /// hollow a fold gives it, made now: for the tests.
+    #[cfg(test)]
+    pub(crate) fn spawn_hollow(
+        &mut self,
+        material: &str,
+        mass_g: u32,
+        pos: Pos,
+        rules: &Content,
+    ) -> ItemId {
+        let Some(Folded::Hollow(ml)) = rules
+            .material(material)
+            .map(|m| m.folded(rules.needs.hands.fold_suppleness))
+        else {
+            panic!("{material} takes no hollow");
+        };
+        let id = self.spawn_item(material, mass_g, pos);
+        self.items.get_mut(&id).expect("just laid").hollow_ml = ml;
+        id
+    }
+
     /// The ticks of a gesture: the content's minutes.
     fn gesture_ticks(&self, rules: &Content) -> u64 {
         (self.calendar.ticks_per_day() * u64::from(rules.needs.hands.gesture_minutes) / (24 * 60))
@@ -292,10 +317,10 @@ impl World {
 
     /// Moves every gesture on (D57): one whose body walks or sleeps ends
     /// with nothing; one whose time is up ends with what the materials
-    /// give. A cut with a sharp thing in hand at a tree with a bark gives
-    /// a piece of that bark, on the body (on the ground when too heavy for
-    /// it); a fold of a thing that folds turns it into what it folds
-    /// into, made now. Anything else gives nothing.
+    /// give. A cut gives a piece of the tree's bark, on the body (on the
+    /// ground when too heavy for it), when the thing in hand works it
+    /// loose; a fold gives the thing itself a hollow, made now, breaks
+    /// it, or does nothing, by what it is. Anything else gives nothing.
     pub(crate) fn make(&mut self, rules: &Content, events: &mut Vec<Event>) {
         for index in 0..self.bodies.len() {
             let body = &self.bodies[index];
@@ -310,21 +335,34 @@ impl World {
                 continue;
             }
             let making = self.bodies[index].making.take().expect("a gesture");
-            let gave = match making.gesture {
-                Gesture::Cut => self.cut_gives(index, &making, rules, events),
+            let on = match making.gesture {
+                Gesture::Cut => making.tree.and_then(|(chunk, key)| {
+                    let species = self.trees_in(chunk).iter().find(|t| t.key == key)?.species;
+                    Some(self.species.get(species)?.id.clone())
+                }),
+                Gesture::Fold | Gesture::PickUp => {
+                    self.item(making.item).map(|i| i.material.clone())
+                }
+            }
+            .unwrap_or_default();
+            let (gave, broke) = match making.gesture {
+                Gesture::Cut => (self.cut_gives(index, &making, rules, events), false),
                 Gesture::Fold => self.fold_gives(index, making.item, rules, events),
-                Gesture::PickUp => None,
+                Gesture::PickUp => (None, false),
             };
             events.push(Event::Gestured {
                 body: self.bodies[index].id,
                 gesture: making.gesture,
                 item: making.item,
+                on,
                 gave,
+                broke,
             });
         }
     }
 
-    /// What a cut gives: the tree's bark, when the thing in hand is sharp.
+    /// What a cut gives: the tree's bark, when the thing in hand has an
+    /// edge keen enough for it and is the harder ([`Content::cut_gives`]).
     fn cut_gives(
         &mut self,
         index: usize,
@@ -337,20 +375,15 @@ impl World {
         if body.held != Some(making.item) {
             return None;
         }
-        let tool = self.item(making.item)?;
-        if !rules.material(&tool.material).is_some_and(|m| m.sharp) {
-            return None;
-        }
+        let tool = rules.material(&self.item(making.item)?.material)?;
         let tree = self
             .trees_in(chunk)
             .iter()
             .find(|t| t.key == key)
             .copied()?;
-        let bark = self
-            .species
-            .get(tree.species)
-            .and_then(|s| s.bark.clone())?;
-        let mass_g = rules.material(&bark)?.mass_g().max(1);
+        let bark = rules.cut_gives(tool, self.species.get(tree.species)?)?;
+        let mass_g = bark.mass_g().max(1);
+        let bark = bark.id.clone();
         let (id, pos) = (body.id, body.pos());
         if body.load_g.saturating_add(mass_g) > body.capacity_g(&rules.movement) {
             return Some(self.spawn_item(&bark, mass_g, pos));
@@ -365,6 +398,7 @@ impl World {
                 mass_g,
                 made: self.tick,
                 place: Place::Carried { body: id },
+                hollow_ml: 0,
             },
         );
         self.bodies[index].carried.push(item);
@@ -372,28 +406,53 @@ impl World {
         Some(item)
     }
 
-    /// What a fold gives: the thing itself, turned into what it folds
-    /// into, made now; nothing when it does not fold.
+    /// What a fold gives, and whether it broke the thing
+    /// ([`crate::content::Material::folded`]): the thing itself with a
+    /// hollow, made now; the thing broken, gone from the world; nothing
+    /// when it is no sheet or is folded already.
     fn fold_gives(
         &mut self,
         index: usize,
         item: ItemId,
         rules: &Content,
         events: &mut Vec<Event>,
-    ) -> Option<ItemId> {
+    ) -> (Option<ItemId>, bool) {
         if !self.carries(index, item) {
-            return None;
+            return (None, false);
         }
-        let into = rules
-            .material(&self.item(item)?.material)?
-            .folds_into
-            .clone()?;
-        let now = self.tick;
-        let folded = self.items.get_mut(&item)?;
-        folded.material = into;
-        folded.made = now;
-        self.inventory_changed(index, rules, events);
-        Some(item)
+        let Some(folded) = self
+            .item(item)
+            .filter(|i| i.hollow_ml == 0)
+            .and_then(|i| rules.material(&i.material))
+            .map(|m| m.folded(rules.needs.hands.fold_suppleness))
+        else {
+            return (None, false);
+        };
+        match folded {
+            Folded::Nothing => (None, false),
+            Folded::Breaks => {
+                self.remove_item(item);
+                let was_held = self.bodies[index].held == Some(item);
+                self.bodies[index].let_go(item);
+                self.inventory_changed(index, rules, events);
+                if was_held {
+                    events.push(Event::BodyHolds {
+                        body: self.bodies[index].id,
+                        item: None,
+                    });
+                }
+                (None, true)
+            }
+            Folded::Hollow(ml) => {
+                let now = self.tick;
+                if let Some(thing) = self.items.get_mut(&item) {
+                    thing.hollow_ml = ml;
+                    thing.made = now;
+                }
+                self.inventory_changed(index, rules, events);
+                (Some(item), false)
+            }
+        }
     }
 }
 
@@ -423,8 +482,13 @@ mod tests {
     /// A valley of minute ticks, a body standing beside a birch: the
     /// world, the body, the birch's chunk and key.
     fn by_a_birch(rules: &Content) -> (World, BodyId, ChunkPos, TreeKey) {
+        by_a(rules, "birch")
+    }
+
+    /// The same beside a tree of `species`.
+    fn by_a(rules: &Content, species: &str) -> (World, BodyId, ChunkPos, TreeKey) {
         let mut world = World::with_valley(Calendar::new(1, 1440).unwrap(), rules, 768);
-        let birch = rules.species.iter().position(|s| s.id == "birch").unwrap();
+        let birch = rules.species.iter().position(|s| s.id == species).unwrap();
         let side = i32::try_from(world.map().chunks_wide()).unwrap();
         for y in 0..side {
             for x in 0..side {
@@ -446,7 +510,7 @@ mod tests {
                 }
             }
         }
-        panic!("a birch with room beside it");
+        panic!("a {species} with room beside it");
     }
 
     fn body(world: &World, id: BodyId) -> &Body {
@@ -471,23 +535,183 @@ mod tests {
 
     /// Advances until `id` ends a gesture: what came of it.
     fn gesture_ends(world: &mut World, rules: &Content, id: BodyId) -> Option<ItemId> {
+        gesture_outcome(world, rules, id).0
+    }
+
+    /// Advances until `id` ends a gesture: what came of it, and whether
+    /// the thing broke.
+    fn gesture_outcome(world: &mut World, rules: &Content, id: BodyId) -> (Option<ItemId>, bool) {
         let mut events = Vec::new();
         for _ in 0..30 {
             events.clear();
             world.advance(1, rules, &mut events);
             for event in &events {
-                if let Event::Gestured { body, gave, .. } = event
+                if let Event::Gestured {
+                    body, gave, broke, ..
+                } = event
                     && *body == id
                 {
-                    return *gave;
+                    return (*gave, *broke);
                 }
             }
         }
         panic!("no gesture ended");
     }
 
+    /// What a cut of a tree of `species` gives with a piece of `tool`.
+    fn cut(rules: &Content, species: &str, tool: &str) -> Option<String> {
+        let (mut world, id, chunk, tree) = by_a(rules, species);
+        let grams = rules.material(tool).unwrap().mass_g();
+        let with = picked(&mut world, rules, id, tool, grams);
+        world.queue(Intention::Cut {
+            body: id,
+            with,
+            chunk,
+            tree,
+        });
+        gesture_ends(&mut world, rules, id)
+            .map(|bark| world.item(bark).unwrap().material().to_owned())
+    }
+
     #[test]
-    fn a_flint_cuts_a_birchs_bark_and_the_bark_folds_into_a_container() {
+    fn a_keen_stone_detaches_bark_a_blunt_one_does_not_each_bark_by_its_toughness() {
+        let rules = rules();
+        // Flint, the keenest: every bark that comes away.
+        assert_eq!(cut(&rules, "birch", "flint").as_deref(), Some("birch_bark"));
+        assert_eq!(cut(&rules, "oak", "flint").as_deref(), Some("oak_bark"));
+        assert_eq!(
+            cut(&rules, "pine", "flint").as_deref(),
+            Some("pine_outer_bark")
+        );
+        // Quartz, hard but less keen: not the oak's tough bark.
+        assert_eq!(
+            cut(&rules, "birch", "quartz").as_deref(),
+            Some("birch_bark")
+        );
+        assert_eq!(cut(&rules, "oak", "quartz"), None);
+        // Slate has an edge, but a soft one: only the crumbly pine bark.
+        assert_eq!(cut(&rules, "birch", "slate"), None);
+        assert_eq!(cut(&rules, "oak", "slate"), None);
+        assert_eq!(
+            cut(&rules, "pine", "slate").as_deref(),
+            Some("pine_outer_bark")
+        );
+        // No edge to speak of: nothing, however hard.
+        for blunt in ["pebble", "sandstone", "branch"] {
+            for tree in ["birch", "oak", "pine"] {
+                assert_eq!(cut(&rules, tree, blunt), None, "{blunt} on {tree}");
+            }
+        }
+        // A tree whose bark does not come away gives nothing to any edge.
+        assert_eq!(cut(&rules, "hazel", "flint"), None);
+    }
+
+    #[test]
+    fn a_stiff_bark_breaks_when_folded_and_is_lost() {
+        let rules = rules();
+        for stiff in ["oak_bark", "pine_outer_bark"] {
+            let (mut world, id, ..) = by_a_birch(&rules);
+            let bark = picked(&mut world, &rules, id, stiff, 400);
+            let load = body(&world, id).load_g();
+            world.queue(Intention::Fold {
+                body: id,
+                item: bark,
+            });
+            assert_eq!(
+                gesture_outcome(&mut world, &rules, id),
+                (None, true),
+                "{stiff} breaks"
+            );
+            assert!(world.item(bark).is_none(), "the thing is gone");
+            assert!(!body(&world, id).has(bark));
+            assert_eq!(body(&world, id).held(), None);
+            assert_eq!(body(&world, id).load_g(), load - 400);
+            assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 1000);
+        }
+    }
+
+    #[test]
+    fn a_big_leaf_folds_into_a_small_hollow_that_tears_within_a_day() {
+        let mut rules = rules();
+        rules.needs.freezing_per_day = 0;
+        rules.needs.dehydration_per_day = 0;
+        rules.needs.starving_per_day = 0;
+        let (mut world, id, ..) = by_a_birch(&rules);
+        let leaf = picked(&mut world, &rules, id, "butterbur_leaf", 50);
+        world.queue(Intention::Fold {
+            body: id,
+            item: leaf,
+        });
+        assert_eq!(gesture_outcome(&mut world, &rules, id), (Some(leaf), false));
+        // A square of 9 dm2: 2 litres, a kilogram of loose food.
+        assert_eq!(world.item(leaf).unwrap().hollow_ml(), 2000);
+        assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 2000);
+        let mut events = Vec::new();
+        // The world looks at what tore once a day.
+        world.advance(1440 * 2, &rules, &mut events);
+        assert!(world.item(leaf).is_none(), "torn a day after the fold");
+        assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 1000);
+        // Unfolded, a leaf does not wear: only the folds tear.
+        let flat = picked(&mut world, &rules, id, "butterbur_leaf", 50);
+        world.advance(1440 * 3, &rules, &mut events);
+        assert!(world.item(flat).is_some());
+    }
+
+    #[test]
+    fn a_fold_is_computed_from_what_the_thing_is() {
+        use crate::content::Folded;
+        let rules = rules();
+        let fold = |id: &str| {
+            rules
+                .material(id)
+                .unwrap()
+                .folded(rules.needs.hands.fold_suppleness)
+        };
+        assert_eq!(fold("birch_bark"), Folded::Hollow(4740));
+        assert_eq!(fold("butterbur_leaf"), Folded::Hollow(2000));
+        assert_eq!(fold("hide"), Folded::Hollow(74_074));
+        assert_eq!(fold("oak_bark"), Folded::Breaks);
+        assert_eq!(fold("pine_outer_bark"), Folded::Breaks);
+        // No sheet, supple or not: nothing.
+        for other in ["flint", "branch", "fibres", "nettle_leaves", "meat"] {
+            assert_eq!(fold(other), Folded::Nothing, "{other}");
+        }
+        // Nothing in the content names what a fold gives or what holds.
+        let ron = include_str!("../../../content/materials.ron");
+        for word in ["folds_into", "holds_g", "sharp:", "folded_birch_bark"] {
+            assert!(
+                !ron.lines()
+                    .any(|l| !l.trim_start().starts_with("//") && l.contains(word)),
+                "{word}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_thing_folded_is_not_folded_again_nor_poured_into_another() {
+        let rules = rules();
+        let (mut world, id, ..) = by_a_birch(&rules);
+        let bark = picked(&mut world, &rules, id, "birch_bark", 200);
+        world.queue(Intention::Fold {
+            body: id,
+            item: bark,
+        });
+        gesture_ends(&mut world, &rules, id).expect("folded");
+        world.queue(Intention::Fold {
+            body: id,
+            item: bark,
+        });
+        assert_eq!(gesture_outcome(&mut world, &rules, id), (None, false));
+        assert_eq!(world.item(bark).unwrap().hollow_ml(), 4740);
+        let mut flat = world.item(bark).unwrap().clone();
+        flat.hollow_ml = 0;
+        let hollow = world.item(bark).unwrap().clone();
+        assert!(flat.clone().merge(hollow.clone()).is_err());
+        assert!(hollow.clone().merge(flat).is_err());
+    }
+
+    #[test]
+    fn a_flint_cuts_a_birchs_bark_and_the_bark_folds_into_a_hollow() {
         let rules = rules();
         let (mut world, id, chunk, tree) = by_a_birch(&rules);
         // Berries in hand first: the flint goes on the body, and the cut
@@ -517,11 +741,12 @@ mod tests {
         });
         let folded = gesture_ends(&mut world, &rules, id).expect("the bark folded");
         assert_eq!(folded, bark, "the same thing, folded");
-        assert_eq!(world.item(bark).unwrap().material(), "folded_birch_bark");
+        assert_eq!(world.item(bark).unwrap().material(), "birch_bark");
+        assert_eq!(world.item(bark).unwrap().hollow_ml(), 4740);
         assert_eq!(
             body(&world, id).food_capacity_g(&rules.movement),
-            1000 + 4000,
-            "4 kg of loose food more"
+            1000 + 2370,
+            "4.74 litres: 2.37 kg of loose food more"
         );
     }
 
@@ -582,7 +807,7 @@ mod tests {
         let folded = rules
             .materials
             .iter_mut()
-            .find(|m| m.id == "folded_birch_bark")
+            .find(|m| m.id == "birch_bark")
             .unwrap();
         folded.wears_seasons = 0;
         folded.wears_days = 1;
@@ -597,13 +822,13 @@ mod tests {
             item: bark,
         });
         gesture_ends(&mut world, &rules, id).expect("folded");
-        assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 5000);
+        assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 3370);
         let mut events = Vec::new();
         world.advance(1440 * 2, &rules, &mut events);
         assert!(events.iter().any(|e| matches!(
             e,
             Event::Spoiled { item, material, holder: Some(b), .. }
-                if *item == bark && material == "folded_birch_bark" && *b == id
+                if *item == bark && material == "birch_bark" && *b == id
         )));
         assert!(world.item(bark).is_none());
         assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 1000);

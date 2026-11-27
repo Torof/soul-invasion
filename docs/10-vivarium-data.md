@@ -391,7 +391,7 @@ clock, the only field no seed decides.
 | `moving.utility[].mover_drink_tiles_before`, `.mover_drink_tiles_after` | The mover's mean tiles from home to its first drink of the day, the days it drank, over the season before it set off and the season after (24 November 2026, the movers' water); null when it never drank there | tiles |
 | `moving.utility[].stayers_drink_tiles_after` | The stayers' mean of theirs over the season after; null when none drank | tiles |
 | `hands` | The hands (D57, 24 November 2026): the first invention, the container; present in every run, empty without `hands` in the content | object |
-| `hands.first` | The first container made in the run: `day`, `age_year_x10` (its age-year × 10, from 0), `body`, `tribe`, `heard_before` (it had heard a deed of the hands told); null without one | object or null |
+| `hands.first` | The first container made in the run: `day`, `age_year_x10` (its age-year × 10, from 0), `body`, `tribe`, `heard_before` (it had heard a deed of the hands told), `material` (the material folded); null without one | object or null |
 | `hands.first_listener_made` | The first container made by another body after hearing a deed of the hands told: `day`, `body`, `tribe`, `nights_after_first` (days after the first container); null without one | object or null |
 | `hands.made` | Containers made | count |
 | `hands.remakes` | Of them, by a body whose own container had torn before | count |
@@ -401,6 +401,8 @@ clock, the only field no seed decides.
 | `hands.heard_never_tried` | Of them, those that never began a trial of the deeds heard | count |
 | `hands.heard_across_tribes` | Hearings by a listener of the other tribe than its teller (0 while camps do not visit) | count |
 | `hands.gestures.*` | By gesture (`cut`, `fold`): `done` (ended), `gave` (something came of it); a pick-up is D35's act and not counted here | `{done, gave}` |
+| `hands.tried[]` | Every cut and fold ended, grouped by what it was done on and with (D57, amended 27 November 2026: a gesture may give nothing, or break the thing): `gesture` (`cut`, `fold`), `on` (the material folded, or the species of the tree cut), `with` (the material of the tool of a cut; `null` for a fold), and how many `gave` something, gave `nothing`, `broke` the thing | list |
+| `hands.made_of.*` | The containers made, by the material folded (`birch_bark`, `butterbur_leaf`, ...) | count |
 | `hands.known.*` | By deed (`pick up flint`, `cut birch with flint`, `fold birch_bark`, ...): the living past infancy who know it at the run's end | count |
 | `hands.cuts_with.*` | By the material of the tool (`flint`, `pebble`, `branch`, ...): the cuts `done` and those that `gave` something | `{done, gave}` |
 | `hands.barks_dropped` | Cuts whose bark fell at the cutter's feet, its load too full to take it (D57, amended 25 November 2026: a body no longer cuts what it cannot carry, so only a load filled during the gesture counts here) | count |

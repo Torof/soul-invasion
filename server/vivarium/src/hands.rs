@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
-use sim::brain::{Brains, Deed, HOME_TILES, News, Way};
+use sim::brain::{Brains, Deed, HOLLOW, HOME_TILES, News, Way, kind_hollow, kind_material};
 use sim::content::Content;
 use sim::hands::Gesture;
 use sim::memory::{Record, RecordId};
@@ -80,7 +80,7 @@ impl HandsYear {
 }
 
 /// A container made.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Made {
     /// The day.
     pub day: u64,
@@ -92,6 +92,8 @@ pub struct Made {
     pub remake: bool,
     /// It had heard a deed of the hands told before.
     pub heard: bool,
+    /// The material it is folded of.
+    pub material: String,
 }
 
 /// A deed of the hands told at the fire (D55).
@@ -132,6 +134,13 @@ pub struct HandsProbe {
     pub torn_once: BTreeSet<BodyId>,
     /// Each gesture's tries, by gesture: (begun, something came of it).
     pub gestures: BTreeMap<Gesture, (u32, u32)>,
+    /// Every cut and fold ended, by gesture, what it was done on (the
+    /// material folded, the species of the tree cut) and the material of
+    /// the tool of a cut (empty for a fold): how many gave something,
+    /// gave nothing, broke the thing (27 November 2026).
+    pub tried: BTreeMap<(Gesture, String, String), (u32, u32, u32)>,
+    /// The containers made, by the material folded.
+    pub made_of: BTreeMap<String, u32>,
     /// Heard across tribes: a listener of the other tribe than its teller.
     pub heard_across: u32,
     /// The deeds the living past infancy know, by name, with their
@@ -151,17 +160,18 @@ fn tribe(people: &BTreeMap<BodyId, Person>, id: BodyId) -> u8 {
 }
 
 /// Whether `body` carries a container.
-pub fn carries_container(world: &World, content: &Content, body: &sim::Body) -> bool {
-    body.inventory().any(|i| {
-        world
-            .item(i)
-            .and_then(|i| content.material(i.material()))
-            .is_some_and(|m| m.holds_g > 0)
-    })
+pub fn carries_container(world: &World, _content: &Content, body: &sim::Body) -> bool {
+    body.inventory()
+        .any(|i| world.item(i).is_some_and(|i| i.hollow_ml() > 0))
 }
 
-fn is_container(content: &Content, material: &str) -> bool {
-    content.material(material).is_some_and(|m| m.holds_g > 0)
+/// Whether a thing of `material` that spoiled was a container torn: only
+/// a thing folded into a hollow wears (D57, amended 27 November 2026),
+/// and food spoils by its own keeping.
+fn tore(content: &Content, material: &str) -> bool {
+    content
+        .material(material)
+        .is_some_and(|m| m.food.is_none() && m.days_worn(4) > 0)
 }
 
 impl HandsProbe {
@@ -182,11 +192,28 @@ impl HandsProbe {
                 body,
                 gesture,
                 item,
+                on,
                 gave,
+                broke,
             } => {
                 let entry = self.gestures.entry(*gesture).or_default();
                 entry.0 += 1;
                 entry.1 += u32::from(gave.is_some());
+                // Every cut and fold ended, by what it was done on and
+                // with, and what came of it (27 November 2026).
+                let with = if *gesture == Gesture::Cut {
+                    world
+                        .item(*item)
+                        .map_or_else(|| "?".to_owned(), |i| i.material().to_owned())
+                } else {
+                    String::new()
+                };
+                let tried = self.tried.entry((*gesture, on.clone(), with)).or_default();
+                match (gave.is_some(), *broke) {
+                    (true, _) => tried.0 += 1,
+                    (false, false) => tried.1 += 1,
+                    (false, true) => tried.2 += 1,
+                }
                 if *gesture == Gesture::Cut {
                     let tool = world
                         .item(*item)
@@ -202,8 +229,9 @@ impl HandsProbe {
                 let made = *gesture == Gesture::Fold
                     && gave
                         .and_then(|g| world.item(g))
-                        .is_some_and(|i| is_container(content, i.material()));
+                        .is_some_and(|i| i.hollow_ml() > 0);
                 if made {
+                    *self.made_of.entry(on.clone()).or_default() += 1;
                     let t = tribe(people, *body);
                     let remake = self.torn_once.contains(body);
                     let heard = self.heard.get(body).is_some_and(|(d, _)| *d <= day);
@@ -213,6 +241,7 @@ impl HandsProbe {
                         tribe: t,
                         remake,
                         heard,
+                        material: on.clone(),
                     });
                     let y = self.year(t, age_year);
                     y.made += 1;
@@ -223,7 +252,7 @@ impl HandsProbe {
                 material,
                 holder: Some(body),
                 ..
-            } if is_container(content, material) => {
+            } if tore(content, material) => {
                 self.torn_once.insert(*body);
                 let t = tribe(people, *body);
                 self.year(t, age_year).torn += 1;
@@ -417,8 +446,14 @@ impl HandsProbe {
                 served = b.inventory().any(|i| {
                     world
                         .item(i)
-                        .and_then(|i| content.materials.iter().position(|m| m.id == i.material()))
-                        .and_then(|m| u16::try_from(m).ok())
+                        .and_then(|i| {
+                            let m = content
+                                .materials
+                                .iter()
+                                .position(|m| m.id == i.material())?;
+                            let m = u16::try_from(m).ok()?;
+                            Some(if i.hollow_ml() > 0 { m | HOLLOW } else { m })
+                        })
                         .is_some_and(|m| mind.handwork().served(m))
                 });
             }
@@ -447,6 +482,7 @@ impl HandsProbe {
                         "body": m.body.0,
                         "tribe": tribe_name(m.tribe),
                         "heard_before": m.heard,
+                        "material": m.material,
                     })
                 })
         };
@@ -515,6 +551,15 @@ impl HandsProbe {
             "heard_never_tried": heard_never_tried,
             "heard_across_tribes": self.heard_across,
             "gestures": gestures,
+            "tried": self.tried.iter().map(|((g, on, with), (gave, nothing, broke))| json!({
+                "gesture": g.key(),
+                "on": on,
+                "with": (!with.is_empty()).then_some(with),
+                "gave": gave,
+                "nothing": nothing,
+                "broke": broke,
+            })).collect::<Vec<_>>(),
+            "made_of": self.made_of,
             "known": self.known,
             "cuts_with": self.cuts_with.iter().map(|(m, (done, gave))| (m.clone(), json!({"done": done, "gave": gave}))).collect::<serde_json::Map<String, Value>>(),
             "barks_dropped": self.barks_dropped,
@@ -524,13 +569,19 @@ impl HandsProbe {
 }
 
 /// A deed's name: its gesture, what it is done on, and what it cuts with
-/// (`cut birch with flint`, `pick up flint`, `fold birch_bark`).
+/// (`cut birch with flint`, `pick up flint`, `fold birch_bark`); a thing
+/// folded into a hollow is named `hollow` and its material.
 fn deed_name(content: &Content, deed: Deed) -> String {
     let material = |m: u16| {
-        content
+        let id = content
             .materials
-            .get(usize::from(m))
-            .map_or("?", |m| m.id.as_str())
+            .get(kind_material(m))
+            .map_or("?", |m| m.id.as_str());
+        if kind_hollow(m) {
+            format!("hollow {id}")
+        } else {
+            id.to_owned()
+        }
     };
     match deed.gesture {
         Gesture::Cut => {
@@ -710,5 +761,53 @@ mod tests {
         assert_eq!(json["untried"], 1);
         assert_eq!(json["drew_heard"], 2);
         assert_eq!(json["tools_taken"], 1);
+    }
+
+    #[test]
+    fn every_cut_and_fold_is_counted_by_what_it_was_done_on_and_what_came_of_it() {
+        use sim::ItemId;
+        let content = Content::sample();
+        let mut world = World::new(sim::Calendar::default(), &content);
+        let stone = content.materials[0].id.clone();
+        let tool = world.spawn_item(&stone, 400, sim::Pos::new(1, 1));
+        let people = BTreeMap::new();
+        let mut probe = HandsProbe::default();
+        let body = BodyId(1);
+        let ended = |gesture, on: &str, gave: Option<ItemId>, broke| Event::Gestured {
+            body,
+            gesture,
+            item: tool,
+            on: on.to_owned(),
+            gave,
+            broke,
+        };
+        for event in [
+            ended(Gesture::Cut, "oak", None, false),
+            ended(Gesture::Cut, "oak", None, false),
+            ended(Gesture::Cut, "birch", Some(tool), false),
+            ended(Gesture::Fold, "oak_bark", None, true),
+            ended(Gesture::Fold, "fibres", None, false),
+        ] {
+            probe.event((&world, &content), &people, &event, (3, 1));
+        }
+        let json = probe.json(&[], 8, 1);
+        let tried = json["tried"].as_array().unwrap();
+        let find = |gesture: &str, on: &str| {
+            tried
+                .iter()
+                .find(|t| t["gesture"] == gesture && t["on"] == on)
+                .unwrap_or_else(|| panic!("{gesture} {on}"))
+        };
+        let oak = find("cut", "oak");
+        assert_eq!((&oak["with"], &oak["nothing"]), (&json!(stone), &json!(2)));
+        assert_eq!(find("cut", "birch")["gave"], 1);
+        let broken = find("fold", "oak_bark");
+        assert_eq!(
+            (&broken["broke"], &broken["with"]),
+            (&json!(1), &Value::Null)
+        );
+        assert_eq!(find("fold", "fibres")["nothing"], 1);
+        assert_eq!(json["made_of"], json!({}));
+        assert_eq!(json["first"], Value::Null);
     }
 }
