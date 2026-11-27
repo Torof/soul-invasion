@@ -3167,7 +3167,7 @@ pub fn run_watched(
         // The trials (D50): what the brains tried, judged and copied, in
         // the chronicle, on the person's page and in the counters.
         let batch = brains.news();
-        journal.write(tick, day, &events, &batch);
+        journal.write((&world, content), (tick, day), &events, &batch);
         // --- the food carried home (25 November 2026) ---
         carried.thoughts((&world, &brains, content), &decisions, &batch);
         // --- end of the food carried home ---

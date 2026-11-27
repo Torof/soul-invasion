@@ -8,7 +8,9 @@
 //! A line: `{"t": tick, "d": day, "k": "news" | "event", "b": body or
 //! null, "w": what}`. A news' `w` is its name and fields as the brain
 //! prints them; an event's is its JSON. The last line tells how many
-//! lines were written and the seconds it took.
+//! lines were written and the seconds it took. A gathering stopped also
+//! writes a `"k": "carry"` line: the grams of food the body carries,
+//! those of them in a hollow, what its arms hold, and the things on it.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -16,8 +18,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use sim::Event;
 use sim::brain::News;
+use sim::{Content, Event, World};
 
 use crate::RunError;
 
@@ -86,7 +88,13 @@ impl Journal {
     }
 
     /// The tick's events and news, written.
-    pub fn write(&mut self, tick: u64, day: u64, events: &[Event], news: &[News]) {
+    pub fn write(
+        &mut self,
+        (world, rules): (&World, &Content),
+        (tick, day): (u64, u64),
+        events: &[Event],
+        news: &[News],
+    ) {
         let Some(out) = self.out.as_mut() else {
             return;
         };
@@ -97,6 +105,25 @@ impl Journal {
             let line = json!({"t": tick, "d": day, "k": "event", "b": body, "w": what});
             let _ = writeln!(out, "{line}");
             self.lines += 1;
+            if let Event::WorkStopped { body: id, .. } = event
+                && let Some(body) = world.body(*id)
+            {
+                let things: Vec<(u64, &str)> = body
+                    .held()
+                    .into_iter()
+                    .chain(body.carried().iter().copied())
+                    .filter_map(|i| world.item(i).map(|item| (i.0, item.material())))
+                    .collect();
+                let what = json!({
+                    "food_g": body.food_g(),
+                    "stowed_g": body.stowed_g(),
+                    "arms_g": body.arms_g(&rules.movement),
+                    "things": things,
+                });
+                let line = json!({"t": tick, "d": day, "k": "carry", "b": id.0, "w": what});
+                let _ = writeln!(out, "{line}");
+                self.lines += 1;
+            }
         }
         for one in news {
             let what = format!("{one:?}");
