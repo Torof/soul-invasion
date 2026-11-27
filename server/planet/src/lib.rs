@@ -824,6 +824,9 @@ pub struct Planet {
     pub hotspots: Vec<Hotspot>,
     /// Each cell's height above the sea, m.
     pub elevation: Vec<i32>,
+    /// The sea level every step is drawn against, in the raw heights' metres:
+    /// today's, kept for the whole history.
+    sea: i64,
     /// The pieces of land, largest first.
     pub lands: Vec<Landmass>,
     /// Cells reshaped for our continent (none until [`Planet::shape`]).
@@ -933,7 +936,7 @@ impl Planet {
             old,
             (old_at, old_at_edge),
             history,
-            last,
+            (last, None),
         )
     }
 
@@ -948,7 +951,7 @@ impl Planet {
             self.old.clone(),
             (self.old_at.clone(), self.old_at_edge.clone()),
             std::sync::Arc::clone(&self.history),
-            t.min(self.history.last()),
+            (t.min(self.history.last()), Some(self.sea)),
         )
     }
 
@@ -959,7 +962,7 @@ impl Planet {
         old: Layout,
         (old_at, old_at_edge): (Vec<u8>, Vec<Option<OldKind>>),
         history: std::sync::Arc<History>,
-        t: usize,
+        (t, sea): (usize, Option<i64>),
     ) -> Self {
         let h = &*history;
         let now_my = ((h.last() - t) as i64 * settings.step_my) as u16;
@@ -1086,7 +1089,15 @@ impl Planet {
         let relief_seed = hash(&[seed, P_RELIEF]);
         let mut elevation: Vec<i64> = (0..CELLS)
             .map(|c| {
-                let p = sphere.centre[c];
+                // A continent carries its fine relief with it (read where
+                // its crust stood at the start); the ocean floor's is read
+                // where it lies (27 November 2026: coasts no longer redraw
+                // themselves under a drifting continent).
+                let p = if continental[c] {
+                    sphere.centre[home[c] as usize]
+                } else {
+                    sphere.centre[c]
+                };
                 let rough = fbm3(relief_seed, p, &[(120_000, 2), (40_000, 1)]) - 500;
                 let mut e = if continental[c] {
                     let inland = i64::from(inland_d[c].min(600));
@@ -1164,7 +1175,12 @@ impl Planet {
                 e
             })
             .collect();
-        let sea = quantile(&sphere, &elevation, 1000 - settings.land_per_mille);
+        // One sea level for the whole history: today's, which gives the
+        // settings' share of land. In the past the share of land varies, as
+        // on Earth (27 November 2026: a range rising somewhere no longer
+        // drowns lowlands everywhere).
+        let sea =
+            sea.unwrap_or_else(|| quantile(&sphere, &elevation, 1000 - settings.land_per_mille));
         for e in &mut elevation {
             *e -= sea;
         }
@@ -1187,6 +1203,7 @@ impl Planet {
             near,
             hotspots,
             elevation,
+            sea,
             lands: Vec::new(),
             ours: vec![false; CELLS],
             settings: *settings,
