@@ -578,6 +578,7 @@ impl Report {
                     "land_checked": self.land_checked,
                     "land_prepared_s": self.land_prepared_s,
                     "learning_s": self.learning.seconds,
+                    "search_s": self.search.seconds,
                 }),
             );
         }

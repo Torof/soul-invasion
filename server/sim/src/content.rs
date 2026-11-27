@@ -551,6 +551,18 @@ pub struct Search {
     pub after_nights: u32,
     /// The age from which one goes searching, in years.
     pub from_years: u32,
+    /// The longest absence a mind keeps of a close one come back, in
+    /// nights: out no longer than that, it is not missed.
+    pub usual_max_nights: u32,
+    /// The seasons after which that longest absence is forgotten.
+    pub usual_seasons: u32,
+    /// The seasons a mind knows where a close one lives, at another
+    /// hearth, without hearing of it again.
+    pub lives_seasons: u32,
+    /// What a searcher tells of its findings at a fire, at most.
+    pub told_per_fire: u32,
+    /// The findings a searcher keeps to tell, the last ones.
+    pub findings_kept: u32,
 }
 
 impl Search {
@@ -558,8 +570,13 @@ impl Search {
     #[must_use]
     pub fn placeholders() -> Self {
         Self {
-            after_nights: 1,
+            after_nights: 2,
             from_years: 16,
+            usual_max_nights: 16,
+            usual_seasons: 4,
+            lives_seasons: 4,
+            told_per_fire: 2,
+            findings_kept: 4,
         }
     }
 

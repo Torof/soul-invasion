@@ -3777,6 +3777,7 @@ pub fn run_watched(
     // --- learning causes (27 November 2026) ---
     let learning_s = std::time::Duration::from_nanos(brains.learning_nanos()).as_secs_f64();
     learning_probe.seconds = learning_s;
+    search_probe.seconds = std::time::Duration::from_nanos(brains.search_nanos()).as_secs_f64();
     // --- end of learning causes ---
     let placed_ahead = placer.as_ref().map_or(0, sim::ahead::Placer::placed);
     drop(placer);

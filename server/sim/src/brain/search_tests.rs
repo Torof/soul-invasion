@@ -30,7 +30,10 @@ fn couple() -> (World, Content, Brains, BodyId, BodyId) {
     // The content's own needs: its ages make an infant.
     let mut rules = Content::sample();
     rules.needs = ron::from_str(include_str!("../../../../content/needs.ron")).unwrap();
-    rules.needs.search = Some(Search::placeholders());
+    rules.needs.search = Some(Search {
+        after_nights: 1,
+        ..Search::placeholders()
+    });
     let mut brains = Brains::new(7);
     for id in [husband, wife] {
         brains.adopt_at(&world, &rules, id, CAMP);
@@ -407,4 +410,252 @@ fn the_world_refuses_an_infant_out_of_reach_or_in_another_s_arms() {
         },
     );
     assert_eq!(world.body(wife).unwrap().carried_by(), None);
+}
+
+/// A third body of `years` at the camp, piloted, the child of `mother`.
+fn kin_of(
+    world: &mut World,
+    rules: &Content,
+    brains: &mut Brains,
+    (years, mother, father): (u64, BodyId, Option<BodyId>),
+) -> BodyId {
+    let id = world.spawn_body(Pos::new(7, 7));
+    let per_year = u64::from(world.calendar().days_per_age_year());
+    world.set_birth(id, years * per_year, Sex::Female);
+    world.set_parents(id, Some(mother), father);
+    brains.adopt_at(world, rules, id, CAMP);
+    id
+}
+
+const FAR: Pos = Pos::new(200, 200);
+
+#[test]
+fn one_known_to_stay_out_long_is_missed_only_past_her_longest_absence() {
+    let (mut world, rules, mut brains, husband, wife) = couple();
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![husband, wife])]);
+    // Three nights away, then back at the fire: she stays out that long.
+    put(&mut world, &rules, wife, FAR);
+    for _ in 0..3 {
+        next_day(&mut world);
+        brains.fire_absent(&world, &rules, &[(CAMP, vec![husband])]);
+    }
+    assert_eq!(
+        steps(&mut brains)
+            .iter()
+            .filter(|t| matches!(t.2, SearchStep::Noticed { .. }))
+            .count(),
+        1,
+        "missed once, the first time"
+    );
+    put(&mut world, &rules, wife, Pos::new(6, 5));
+    next_day(&mut world);
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![husband, wife])]);
+    put(&mut world, &rules, wife, FAR);
+    for _ in 0..3 {
+        next_day(&mut world);
+        brains.fire_absent(&world, &rules, &[(CAMP, vec![husband])]);
+    }
+    let told = steps(&mut brains);
+    assert_eq!(told.len(), 1, "said once, and no notice: {told:?}");
+    assert!(matches!(
+        told[0].2,
+        SearchStep::Unnoticed {
+            cause: super::Quiet::Usual,
+            ..
+        }
+    ));
+    // A fourth night: longer than she ever stayed out.
+    next_day(&mut world);
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![husband])]);
+    let told = steps(&mut brains);
+    assert!(matches!(told[0].2, SearchStep::Noticed { nights: 4, .. }));
+}
+
+#[test]
+fn one_seen_from_the_fire_is_at_the_camp_and_not_missed() {
+    let (mut world, rules, mut brains, husband, wife) = couple();
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![husband, wife])]);
+    // She lies a little way off, at no fire of his: he sees her.
+    put(&mut world, &rules, wife, Pos::new(25, 5));
+    next_day(&mut world);
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![husband])]);
+    let told = steps(&mut brains);
+    assert_eq!(told.len(), 1);
+    assert!(matches!(
+        told[0].2,
+        SearchStep::Unnoticed {
+            cause: super::Quiet::SeenAtCamp,
+            ..
+        }
+    ));
+    assert!(brains.minds[&husband].search.is_none());
+}
+
+#[test]
+fn found_alive_at_another_hearth_she_lives_there_and_her_kin_hear_it_at_the_fire() {
+    let (mut world, rules, mut brains, husband, wife) = couple();
+    let daughter = kin_of(&mut world, &rules, &mut brains, (20, wife, Some(husband)));
+    let said = Pos::new(150, 5);
+    says(&world, &rules, brains.minds.get_mut(&wife).unwrap(), said);
+    let all = [(CAMP, vec![husband, wife, daughter])];
+    brains.fire_absent(&world, &rules, &all);
+    // She takes a home out there, and tells nobody.
+    put(&mut world, &rules, wife, Pos::new(150, 8));
+    brains.minds.get_mut(&wife).unwrap().ways.home = Pos::new(150, 8);
+    next_day(&mut world);
+    let left = [(CAMP, vec![husband, daughter])];
+    brains.fire_absent(&world, &rules, &left);
+    steps(&mut brains);
+    put(&mut world, &rules, husband, Pos::new(120, 5));
+    brains.watch_searches(&world, &rules);
+    let (_, told) = turn(&world, &rules, &mut brains, husband);
+    assert_eq!(told, [SearchStep::FoundAlive]);
+    // Home, he tells the fire: their daughter hears it.
+    put(&mut world, &rules, husband, CAMP);
+    next_day(&mut world);
+    brains.fire_absent(&world, &rules, &left);
+    let told = steps(&mut brains);
+    assert_eq!(
+        told[0],
+        (
+            daughter,
+            wife,
+            SearchStep::Heard {
+                dead: false,
+                from: husband
+            }
+        )
+    );
+    // From then on her not sitting at their fire is no absence: said
+    // once by each, a measure, and nobody goes.
+    for _ in 0..5 {
+        next_day(&mut world);
+        brains.fire_absent(&world, &rules, &left);
+    }
+    let quiet: Vec<_> = told[1..]
+        .iter()
+        .chain(&steps(&mut brains))
+        .copied()
+        .collect();
+    assert_eq!(quiet.len(), 2, "{quiet:?}");
+    assert!(
+        quiet.iter().all(|t| matches!(
+            t.2,
+            SearchStep::Unnoticed {
+                cause: super::Quiet::LivesElsewhere,
+                ..
+            }
+        )),
+        "{quiet:?}"
+    );
+    assert!(brains.minds.values().all(|m| m.search.is_none()));
+}
+
+#[test]
+fn a_death_told_at_the_fire_ends_the_waiting_of_her_kin_who_hear_it() {
+    let (mut world, rules, mut brains, husband, wife) = couple();
+    let daughter = kin_of(&mut world, &rules, &mut brains, (20, wife, Some(husband)));
+    let said = Pos::new(150, 5);
+    says(&world, &rules, brains.minds.get_mut(&wife).unwrap(), said);
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![husband, wife, daughter])]);
+    put(&mut world, &rules, wife, Pos::new(150, 8));
+    let mut events = Vec::new();
+    world.die(wife, Death::Dehydrated, &rules, &mut events);
+    brains.search_events(&events, &rules);
+    next_day(&mut world);
+    let left = [(CAMP, vec![husband, daughter])];
+    brains.fire_absent(&world, &rules, &left);
+    steps(&mut brains);
+    put(&mut world, &rules, husband, Pos::new(120, 5));
+    brains.watch_searches(&world, &rules);
+    let (_, told) = turn(&world, &rules, &mut brains, husband);
+    assert_eq!(told, [SearchStep::FoundDead]);
+    assert!(
+        brains.minds[&daughter].kin.contains_key(&wife),
+        "not told yet"
+    );
+    put(&mut world, &rules, husband, CAMP);
+    next_day(&mut world);
+    brains.fire_absent(&world, &rules, &left);
+    assert_eq!(
+        steps(&mut brains),
+        [(
+            daughter,
+            wife,
+            SearchStep::Heard {
+                dead: true,
+                from: husband
+            }
+        )]
+    );
+    assert!(!brains.minds[&daughter].kin.contains_key(&wife));
+}
+
+#[test]
+fn a_child_tells_the_fire_and_a_grown_one_who_knows_nothing_of_her_goes() {
+    let (mut world, rules, mut brains, stranger, mother) = couple();
+    let child = kin_of(&mut world, &rules, &mut brains, (10, mother, None));
+    let said = Pos::new(150, 5);
+    says(&world, &rules, brains.minds.get_mut(&mother).unwrap(), said);
+    // The grown one never sat at a fire with her: it holds nothing of her.
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![mother, child])]);
+    put(&mut world, &rules, mother, FAR);
+    next_day(&mut world);
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![stranger, child])]);
+    let told = steps(&mut brains);
+    assert!(
+        matches!(told[0], (c, m, SearchStep::Noticed { stayed: None, .. }) if c == child && m == mother)
+    );
+    assert!(matches!(
+        told[1],
+        (s, m, SearchStep::Begun { child: Some(c), said: true, .. })
+            if s == stranger && m == mother && c == child
+    ));
+    assert!(brains.minds[&stranger].search.is_some());
+    assert!(brains.minds[&child].search.is_none());
+}
+
+#[test]
+fn a_child_tells_the_fire_and_a_grown_kin_who_knows_she_stays_out_says_so() {
+    let (mut world, rules, mut brains, husband, wife) = couple();
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![husband, wife])]);
+    put(&mut world, &rules, wife, FAR);
+    for _ in 0..3 {
+        next_day(&mut world);
+        brains.fire_absent(&world, &rules, &[(CAMP, vec![husband])]);
+    }
+    // Back: he knows she stays out three nights. Their child sits with
+    // her for the first time.
+    put(&mut world, &rules, wife, Pos::new(6, 5));
+    let child = kin_of(&mut world, &rules, &mut brains, (10, wife, Some(husband)));
+    next_day(&mut world);
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![husband, wife, child])]);
+    steps(&mut brains);
+    put(&mut world, &rules, wife, FAR);
+    next_day(&mut world);
+    let left = [(CAMP, vec![husband, child])];
+    brains.fire_absent(&world, &rules, &left);
+    let told = steps(&mut brains);
+    assert!(
+        told.iter().any(|t| matches!(
+            t,
+            (c, _, SearchStep::Noticed { stayed: Some(super::Stayed::AdultKnows), .. }) if *c == child
+        )),
+        "{told:?}"
+    );
+    assert!(brains.minds.values().all(|m| m.search.is_none()));
+    // The child knows it now: the next absence of three nights is none.
+    put(&mut world, &rules, wife, Pos::new(6, 5));
+    next_day(&mut world);
+    brains.fire_absent(&world, &rules, &[(CAMP, vec![husband, wife, child])]);
+    put(&mut world, &rules, wife, FAR);
+    steps(&mut brains);
+    next_day(&mut world);
+    brains.fire_absent(&world, &rules, &left);
+    let told = steps(&mut brains);
+    assert!(
+        told.iter()
+            .all(|t| matches!(t.2, SearchStep::Unnoticed { .. })),
+        "{told:?}"
+    );
 }

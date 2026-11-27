@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use sim::brain::{Brains, HOME_TILES, News, SearchStep, Stayed, Tie};
+use sim::brain::{Brains, HOME_TILES, News, Quiet, SearchStep, Stayed, Tie};
 use sim::content::{Content, Sex};
 use sim::map::Pos;
 use sim::{BodyId, World};
@@ -42,6 +42,11 @@ struct Record {
     said: bool,
     noticers: u32,
     stayed: Option<Stayed>,
+    /// Not noticed, and why: within its usual absence, known to live
+    /// elsewhere, seen at the camp, told dead.
+    quiet: Option<&'static str>,
+    /// The child who told the fire, when the searcher is no kin.
+    child: Option<BodyId>,
     /// The absent then, as the vivarium knows it.
     absent_alive: bool,
     /// The two homes then: how far apart, and since which day each.
@@ -87,6 +92,12 @@ pub struct SearchProbe {
     last_day: Option<u64>,
     known: BTreeMap<BodyId, Known>,
     records: Vec<Record>,
+    /// Absences not noticed, by cause; findings heard alive.
+    quiet: BTreeMap<&'static str, u32>,
+    heard_alive: u32,
+    by_child: u32,
+    /// The wall seconds the brains spent in the search.
+    pub seconds: f64,
 }
 
 impl SearchProbe {
@@ -101,6 +112,7 @@ impl SearchProbe {
 
     /// Counts the steps of the searches told in `batch`, and keeps one
     /// record an absence noticed.
+    #[allow(clippy::too_many_lines, reason = "one arm a step of the search")]
     pub fn news(&mut self, world: &World, brains: &Brains, batch: &[News]) {
         if !self.on {
             return;
@@ -122,33 +134,48 @@ impl SearchProbe {
                     stayed,
                 } => {
                     self.noticed += 1;
-                    self.records.push(Record {
-                        day,
-                        absent: *who,
-                        kin: *body,
-                        tie,
-                        nights,
+                    let record = Record {
                         said,
                         noticers: kin,
                         stayed,
-                        absent_alive: world.body(*who).is_some(),
-                        homes: self.homes(brains, day, *who, *body),
-                        began: None,
-                        walked: 0,
-                        last: None,
-                        result: None,
-                        found: None,
-                        result_day: None,
-                    });
+                        ..self.record(world, brains, (*who, *body), tie, nights)
+                    };
+                    self.records.push(record);
                 }
+                SearchStep::Unnoticed { cause, tie, nights } => {
+                    let cause = match cause {
+                        Quiet::Usual => "within_usual_absence",
+                        Quiet::LivesElsewhere => "known_to_live_elsewhere",
+                        Quiet::SeenAtCamp => "seen_at_camp",
+                    };
+                    *self.quiet.entry(cause).or_default() += 1;
+                    let record = Record {
+                        quiet: Some(cause),
+                        ..self.record(world, brains, (*who, *body), tie, nights)
+                    };
+                    self.records.push(record);
+                }
+                SearchStep::Heard { dead: true, .. } => {
+                    *self.quiet.entry("told_dead").or_default() += 1;
+                    // What the dead was to the listener is not told: the
+                    // record says the listener and the dead.
+                    let record = Record {
+                        quiet: Some("told_dead"),
+                        ..self.record(world, brains, (*who, *body), Tie::Spouse, 0)
+                    };
+                    self.records.push(record);
+                }
+                SearchStep::Heard { dead: false, .. } => self.heard_alive += 1,
                 SearchStep::Begun {
                     tiles,
                     tie,
                     nights,
                     said,
                     to,
+                    child,
                 } => {
                     self.begun += 1;
+                    self.by_child += u32::from(child.is_some());
                     self.begun_tiles += u64::from(tiles);
                     let from = world.body(*body).map(sim::Body::pos);
                     let homes = self.homes(brains, day, *who, *body);
@@ -161,6 +188,7 @@ impl SearchProbe {
                         (record.kin, record.tie, record.nights) = (*body, tie, nights);
                         record.said = said;
                         record.homes = homes;
+                        record.child = child;
                         record.began = from.map(|from| (from, to, said));
                         record.last = from;
                     }
@@ -189,6 +217,38 @@ impl SearchProbe {
                 }
                 SearchStep::InfantGiven { .. } => self.infants_given += 1,
             }
+        }
+    }
+
+    /// A record of `kin` and its absent, nothing else known yet.
+    fn record(
+        &self,
+        world: &World,
+        brains: &Brains,
+        (absent, kin): (BodyId, BodyId),
+        tie: Tie,
+        nights: u32,
+    ) -> Record {
+        let day = world.time().day;
+        Record {
+            day,
+            absent,
+            kin,
+            tie,
+            nights,
+            said: false,
+            noticers: 0,
+            stayed: None,
+            quiet: None,
+            child: None,
+            absent_alive: world.body(absent).is_some(),
+            homes: self.homes(brains, day, absent, kin),
+            began: None,
+            walked: 0,
+            last: None,
+            result: None,
+            found: None,
+            result_day: None,
         }
     }
 
@@ -336,6 +396,7 @@ impl SearchProbe {
             Stayed::Searching => "already_searching",
             Stayed::Goal => "holds_a_goal",
             Stayed::Moving => "moving_home",
+            Stayed::AdultKnows => "a_grown_kin_at_the_fire_knows",
         });
         let near = u64::from(HOME_TILES.unsigned_abs());
         let same = r.homes.map(|(apart, _)| apart <= near);
@@ -348,7 +409,10 @@ impl SearchProbe {
             "day": r.day,
             "absent": who(r.absent),
             "kin": who(r.kin),
-            "absent_is_kin_s": tie,
+            "absent_is_kin_s": if r.quiet == Some("told_dead") { None } else { Some(tie) },
+            "noticed": r.quiet.is_none(),
+            "not_noticed_because": r.quiet,
+            "told_by_child": r.child.map(|c| c.0),
             "noticers": r.noticers,
             "nights_since_seen": r.nights,
             "absent_alive": r.absent_alive,
@@ -376,6 +440,7 @@ impl SearchProbe {
             return json!({ "on": false });
         }
         let count = |what: Option<bool>| self.brought.iter().filter(|b| b.2 == what).count();
+        let quiet = |cause: &str| self.quiet.get(cause).copied().unwrap_or(0);
         json!({
             "on": true,
             "absences_noticed": self.noticed,
@@ -391,6 +456,14 @@ impl SearchProbe {
             "infants_survived_a_season": count(Some(true)),
             "infants_died_within_a_season": count(Some(false)),
             "infants_season_not_over": count(None),
+            "searches_told_by_a_child": self.by_child,
+            "heard_alive": self.heard_alive,
+            "not_noticed": {
+                "within_usual_absence": quiet("within_usual_absence"),
+                "known_to_live_elsewhere": quiet("known_to_live_elsewhere"),
+                "seen_at_camp": quiet("seen_at_camp"),
+                "told_dead": quiet("told_dead"),
+            },
             "records": self.records.iter().map(|r| self.record_json(r)).collect::<Vec<_>>(),
         })
     }
@@ -441,6 +514,12 @@ mod tests {
                     nights: 2,
                     said: true,
                     to: Pos::new(4, 4),
+                    child: None,
+                }),
+                told(SearchStep::Unnoticed {
+                    cause: Quiet::Usual,
+                    tie: Tie::Parent,
+                    nights: 3,
                 }),
                 told(SearchStep::FoundDead),
                 told(SearchStep::InfantTaken { infant: BodyId(3) }),
@@ -464,7 +543,10 @@ mod tests {
         // One record an absence: its notice, and no search without a
         // searcher in the world to set off.
         let records = json["records"].as_array().unwrap();
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1]["noticed"], false);
+        assert_eq!(records[1]["not_noticed_because"], "within_usual_absence");
+        assert_eq!(json["not_noticed"]["within_usual_absence"], 1);
         assert_eq!(records[0]["absent"]["id"], 2);
         assert_eq!(records[0]["absent_is_kin_s"], "spouse");
         assert_eq!(records[0]["noticers"], 3);

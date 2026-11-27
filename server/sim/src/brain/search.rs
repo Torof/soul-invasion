@@ -19,9 +19,18 @@
 //! milk), a man gives it at the camp to a grown woman. One search an
 //! absence: the absence ends when the two sit at a fire again.
 //!
+//! Who is not missed (the same day, after the first run read): a close
+//! one out no longer than it is known to stay out, one seen from the
+//! fire, one known to live at another hearth. What a searcher found is
+//! told at its next fire, and the kin who hear it take it. Noticed by
+//! children alone, the fire hears it: a grown kin who knows says why it
+//! does not worry, else the grown one who cares most for the young goes.
+//!
 //! Nothing here without the content's `search` section.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use super::{
     Brains, Decision, Doing, GroupEnd, HOME_TILES, Mind, News, TripChoice, Turn, Why, far,
@@ -56,13 +65,57 @@ pub(super) struct KinSeen {
     /// Its absence needs no search: one was made, or it said it goes to
     /// live elsewhere. Until the two sit at a fire again.
     settled: bool,
+    /// The last day the two sat at a fire together.
+    fire_day: u32,
+    /// The longest it is known to have stayed away from the fire and
+    /// come back, in nights, and the day it came back from it.
+    usual: u32,
+    usual_day: u32,
+    /// Where it is known to live, when not at the mind's own hearth,
+    /// and the day that was learnt: said at a shared fire, said when
+    /// found, or told by who found it.
+    lives: Option<(Pos, u32)>,
+    /// Its not being missed was told to the measure, this absence.
+    quiet: bool,
+}
+
+/// What a searcher found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Found {
+    /// Alive; and where it lives, when at another hearth.
+    Alive {
+        /// Its home, when not the finder's.
+        lives: Option<Pos>,
+    },
+    /// Its body, or its infant lying alone.
+    Dead,
+}
+
+/// What a searcher found, to tell at its next fire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Finding {
+    who: BodyId,
+    at: Pos,
+    day: u32,
+    what: Found,
+}
+
+/// Why a close one away from the fire is not missed: a measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quiet {
+    /// Out no longer than it is known to stay out.
+    Usual,
+    /// Known to live at another hearth.
+    LivesElsewhere,
+    /// Seen from the fire: at the camp.
+    SeenAtCamp,
 }
 
 /// What a searcher saw of the one it looks for, within its own sight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Sight {
-    /// Alive, there.
-    Alive(Pos),
+    /// Alive, there; and the home it says when met.
+    Alive(Pos, Pos),
     /// Its body dead, or its infant lying alone, there.
     Dead,
 }
@@ -107,6 +160,9 @@ pub enum Stayed {
     Goal,
     /// Its day is a move to a new home.
     Moving,
+    /// Noticed by children alone: a grown kin at the fire did not miss
+    /// the absent, and said why.
+    AdultKnows,
 }
 
 /// A step of a search, told as [`News::Search`].
@@ -138,6 +194,26 @@ pub enum SearchStep {
         said: bool,
         /// The place it goes to.
         to: Pos,
+        /// The child who told the fire, when the searcher is no kin of
+        /// the absent's.
+        child: Option<BodyId>,
+    },
+    /// A close one away from the fire was not missed (told once an
+    /// absence).
+    Unnoticed {
+        /// Why.
+        cause: Quiet,
+        /// What the absent is to that kin.
+        tie: Tie,
+        /// The nights since it last saw the absent.
+        nights: u32,
+    },
+    /// It heard at the fire what a searcher found of its close one.
+    Heard {
+        /// Found dead (else alive).
+        dead: bool,
+        /// Who told.
+        from: BodyId,
     },
     /// It saw the absent alive.
     FoundAlive,
@@ -232,11 +308,13 @@ impl Brains {
         if rules.needs.search.is_none() {
             return;
         }
+        let started = Instant::now();
         for event in events {
             if let Event::BodyDied { body, corpse, .. } = event {
                 self.corpses.insert(*body, *corpse);
             }
         }
+        self.search_nanos += elapsed_nanos(started);
     }
 
     /// What each searcher on its way sees of the one it looks for,
@@ -247,6 +325,14 @@ impl Brains {
         if self.searching.is_empty() {
             return;
         }
+        let started = Instant::now();
+        // Met alive, the absent says where it lives.
+        let homes: BTreeMap<BodyId, Pos> = self
+            .searching
+            .iter()
+            .filter_map(|id| self.minds.get(id)?.search.map(|s| s.who))
+            .filter_map(|who| Some((who, self.minds.get(&who)?.ways.home)))
+            .collect();
         let corpses = &self.corpses;
         let minds = &mut self.minds;
         self.searching.retain(|id| {
@@ -263,7 +349,8 @@ impl Brains {
             let sight = sight_at(world.map(), rules, here);
             let who = search.who;
             search.seen = if let Some(b) = world.body(who).filter(|b| alive(b)) {
-                within(b.pos(), here, sight).then(|| Sight::Alive(b.pos()))
+                within(b.pos(), here, sight)
+                    .then(|| Sight::Alive(b.pos(), homes.get(&who).copied().unwrap_or(b.pos())))
             } else {
                 let corpse = corpses
                     .get(&who)
@@ -287,13 +374,20 @@ impl Brains {
             }
             true
         });
+        self.search_nanos += elapsed_nanos(started);
     }
 
     /// Each present notes the close ones sitting at the fire with it:
-    /// seen today, here, with the place each said it goes to; one whose
-    /// home is elsewhere is known gone to live there.
+    /// seen today, here, with the place each said it goes to. One come
+    /// back after nights away is known to stay out that long (the
+    /// longest kept, bounded, faded after `usual_seasons`); one whose
+    /// home is elsewhere says so: it lives there.
     fn sit_with_kin(&mut self, world: &World, rules: &Content, present: &[BodyId]) {
+        let Some(search) = &rules.needs.search else {
+            return;
+        };
         let (side, day) = (place_side(rules), today_u32(world));
+        let season = world.calendar().days_per_cycle() / 4;
         // Who sits with whom.
         let mut ties: Vec<(BodyId, BodyId, Tie)> = Vec::new();
         for &p in present {
@@ -319,34 +413,282 @@ impl Brains {
                 .filter(|plan| plan.day == day)
                 .and_then(|plan| plan.place)
                 .map(|key| place_centre(key, side));
-            let their_home = place_of(theirs.ways.home, side);
+            let their_home = theirs.ways.home;
             let Some(mind) = self.minds.get_mut(&p) else {
                 continue;
             };
-            mind.kin.insert(
-                k,
-                KinSeen {
-                    tie,
-                    day,
-                    at: kin.pos(),
-                    going,
-                    settled: place_of(mind.ways.home, side) != their_home,
-                },
-            );
+            let elsewhere = place_of(mind.ways.home, side) != place_of(their_home, side);
+            let seen = mind.kin.entry(k).or_insert(KinSeen {
+                tie,
+                day,
+                at: kin.pos(),
+                going,
+                settled: false,
+                fire_day: day,
+                usual: 0,
+                usual_day: day,
+                lives: None,
+                quiet: false,
+            });
+            if day.saturating_sub(seen.usual_day) > search.usual_seasons * season {
+                seen.usual = 0;
+            }
+            let away = day.saturating_sub(seen.fire_day).saturating_sub(1);
+            if away > 0 && away >= seen.usual {
+                seen.usual = away.min(search.usual_max_nights);
+                seen.usual_day = day;
+            }
+            (seen.tie, seen.day, seen.at, seen.going) = (tie, day, kin.pos(), going);
+            (seen.settled, seen.quiet, seen.fire_day) = (false, false, day);
+            seen.lives = elsewhere.then_some((their_home, day));
         }
     }
 
+    /// What the searchers found, told at their next fire with someone to
+    /// hear: `told_per_fire` things each at most. A listener who holds
+    /// the one found as a close one takes it: found alive, it is seen
+    /// that day, there, and lives where it said; found dead, it waits
+    /// for it no more.
+    fn tell_findings(&mut self, world: &World, rules: &Content, present: &[BodyId]) {
+        let Some(search) = &rules.needs.search else {
+            return;
+        };
+        if present.len() < 2 {
+            return;
+        }
+        let now = world.tick().0;
+        let most = usize::try_from(search.told_per_fire).unwrap_or(usize::MAX);
+        for &teller in present {
+            let Some(mind) = self.minds.get_mut(&teller) else {
+                continue;
+            };
+            let count = mind.findings.len().min(most);
+            let told: Vec<Finding> = mind.findings.drain(..count).collect();
+            for finding in told {
+                for &listener in present {
+                    let Some(mind) = self.minds.get_mut(&listener).filter(|_| listener != teller)
+                    else {
+                        continue;
+                    };
+                    let Some(seen) = mind.kin.get_mut(&finding.who) else {
+                        continue;
+                    };
+                    let dead = match finding.what {
+                        Found::Dead => true,
+                        Found::Alive { lives } => {
+                            if finding.day > seen.day {
+                                (seen.day, seen.at) = (finding.day, finding.at);
+                            }
+                            seen.settled = true;
+                            if let Some(home) = lives {
+                                seen.lives = Some((home, finding.day));
+                            }
+                            false
+                        }
+                    };
+                    if dead {
+                        mind.kin.remove(&finding.who);
+                    }
+                    self.news.push(News::Search {
+                        body: listener,
+                        who: finding.who,
+                        step: SearchStep::Heard { dead, from: teller },
+                        at: now,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Who of `present` misses whom this dawn, the nearest tie first. A
+    /// close one seen from the fire is at the camp: seen, not absent.
+    /// One known to live elsewhere, or out no longer than it is known to
+    /// stay out, is not missed: said once an absence, a measure.
+    fn missed_at(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        present: &[BodyId],
+    ) -> BTreeMap<BodyId, Vec<(Tie, BodyId)>> {
+        let mut missed: BTreeMap<BodyId, Vec<(Tie, BodyId)>> = BTreeMap::new();
+        let Some(search) = &rules.needs.search else {
+            return missed;
+        };
+        let (day, now) = (today_u32(world), world.tick().0);
+        let season = world.calendar().days_per_cycle() / 4;
+        for &p in present {
+            let (Some(body), Some(mind)) = (world.body(p), self.minds.get_mut(&p)) else {
+                continue;
+            };
+            let here = body.pos();
+            let sight = sight_at(world.map(), rules, here);
+            for (&k, seen) in &mut mind.kin {
+                let nights = day.saturating_sub(seen.day);
+                if present.contains(&k) || nights < search.after_nights {
+                    continue;
+                }
+                if seen.lives.is_some_and(|(_, since)| {
+                    day.saturating_sub(since) > search.lives_seasons * season
+                }) {
+                    seen.lives = None;
+                }
+                // Searched already, this absence; one known to live
+                // elsewhere is said so all the same.
+                if seen.settled && seen.lives.is_none() {
+                    continue;
+                }
+                let usual = if day.saturating_sub(seen.usual_day) > search.usual_seasons * season {
+                    0
+                } else {
+                    seen.usual
+                };
+                let at_camp = world
+                    .body(k)
+                    .filter(|b| alive(b) && within(b.pos(), here, sight))
+                    .map(Body::pos);
+                let quiet = if let Some(at) = at_camp {
+                    (seen.day, seen.at) = (day, at);
+                    Some(Quiet::SeenAtCamp)
+                } else if seen.lives.is_some() {
+                    Some(Quiet::LivesElsewhere)
+                } else if day.saturating_sub(seen.fire_day) <= usual {
+                    Some(Quiet::Usual)
+                } else {
+                    None
+                };
+                let Some(cause) = quiet else {
+                    missed.entry(k).or_default().push((seen.tie, p));
+                    continue;
+                };
+                if !seen.quiet {
+                    seen.quiet = true;
+                    self.news.push(News::Search {
+                        body: p,
+                        who: k,
+                        step: SearchStep::Unnoticed {
+                            cause,
+                            tie: seen.tie,
+                            nights,
+                        },
+                        at: now,
+                    });
+                }
+            }
+        }
+        missed
+    }
+
+    /// `p` sets off to search `who` at `to`: it leaves the group of its
+    /// day (its own, called, ends as one whose caller left; another's
+    /// goes on without it).
+    fn set_off(&mut self, world: &World, p: BodyId, who: BodyId, to: Pos) {
+        let day = today_u32(world);
+        let Some(mind) = self.minds.get_mut(&p) else {
+            return;
+        };
+        let plan = mind.plan.filter(|plan| plan.day == day && !plan.done);
+        mind.search = Some(Search {
+            who,
+            to,
+            stage: Stage::Going,
+            seen: None,
+        });
+        plan_done(mind);
+        if let Some(group) = plan
+            .and_then(|plan| plan.leader)
+            .and_then(|leader| self.groups.get_mut(&leader))
+        {
+            if group.members[0] == p {
+                group.ended.get_or_insert(GroupEnd::Night);
+            } else {
+                group.left.insert(p);
+            }
+        }
+        self.searching.insert(p);
+    }
+
+    /// Why `p` would not go searching today, the place aside.
+    fn stays(&self, world: &World, rules: &Content, p: BodyId) -> Option<Stayed> {
+        let grown = u64::from(rules.needs.search.as_ref()?.from_years) * 1000;
+        let (body, mind) = (world.body(p)?, self.minds.get(&p)?);
+        let day = today_u32(world);
+        let plan = mind.plan.filter(|plan| plan.day == day && !plan.done);
+        if world.age_milli(body) < grown {
+            Some(Stayed::Young)
+        } else if mind.search.is_some() {
+            Some(Stayed::Searching)
+        } else if mind.goal.is_some() {
+            Some(Stayed::Goal)
+        } else if plan.is_some_and(|plan| plan.moving) {
+            Some(Stayed::Moving)
+        } else {
+            None
+        }
+    }
+
+    /// A child noticed `who` absent and nobody of its kin goes: it tells
+    /// the fire. A grown one present who holds `who` as a close one and
+    /// did not miss it has its reasons, and says them: the children take
+    /// what it knows (how long `who` stays out, where it lives), nobody
+    /// goes. With none, the grown one present who cares most for the
+    /// young (D58, its innate care), free today, goes to the place the
+    /// child says. Who went, and for which child; or why nobody.
+    fn child_tells(
+        &mut self,
+        world: &World,
+        rules: &Content,
+        (camp, present): (Pos, &[BodyId]),
+        who: BodyId,
+        young: &[BodyId],
+    ) -> Result<(BodyId, BodyId), Stayed> {
+        let grown = |brains: &Self, p: BodyId| {
+            !young.contains(&p) && brains.stays(world, rules, p) != Some(Stayed::Young)
+        };
+        let knows = present
+            .iter()
+            .filter(|&&p| grown(self, p))
+            .find_map(|p| self.minds.get(p)?.kin.get(&who).copied());
+        if let Some(known) = knows {
+            for child in young {
+                if let Some(seen) = self.minds.get_mut(child).and_then(|m| m.kin.get_mut(&who)) {
+                    (seen.usual, seen.usual_day) = (known.usual, known.usual_day);
+                    seen.lives = known.lives;
+                }
+            }
+            return Err(Stayed::AdultKnows);
+        }
+        let said = young.iter().find_map(|&child| {
+            let seen = self.minds.get(&child)?.kin.get(&who)?;
+            let to = seen.going.unwrap_or(seen.at);
+            (!within(to, camp, HOME_TILES)).then_some((child, to))
+        });
+        let Some((child, to)) = said else {
+            return Err(Stayed::Camp);
+        };
+        let helper = present
+            .iter()
+            .copied()
+            .filter(|&p| grown(self, p) && self.stays(world, rules, p).is_none())
+            .max_by_key(|&p| (self.minds.get(&p).map_or(0, |m| m.care), Reverse(p)));
+        let Some(helper) = helper else {
+            return Err(Stayed::Young);
+        };
+        self.set_off(world, helper, who, to);
+        Ok((helper, child))
+    }
+
     /// The absences noticed at the dawn's fires, once the day is said.
-    /// Each present first notes the close ones sitting there with it:
-    /// seen today, here, and the place each said it goes to; one who
-    /// takes a home elsewhere is known gone to live there. Then each
-    /// close one not at this fire and not seen for `search.after_nights`
-    /// nights is noticed: one kin goes (its spouse first, then a parent,
-    /// then a child; grown, holding no goal, not moving today), leaving
-    /// the group of its day; the others know it went.
+    /// Each present first notes the close ones sitting there with it,
+    /// and hears what the searchers found. Then each close one not at
+    /// this fire nor seen from it, not known to live elsewhere, not seen
+    /// for `search.after_nights` nights and out longer than it is known
+    /// to stay out, is noticed: one kin goes (its spouse first, then a
+    /// parent, then a child; grown, holding no goal, not moving today),
+    /// leaving the group of its day; the others know it went. Noticed by
+    /// children alone, they tell the fire ([`Brains::child_tells`]).
     #[allow(
         clippy::too_many_lines,
-        reason = "one fire read in order: who sits, who is missed, who goes"
+        reason = "one fire read in order: who sits, what is told, who is missed, who goes"
     )]
     pub(super) fn fire_absent(
         &mut self,
@@ -354,29 +696,15 @@ impl Brains {
         rules: &Content,
         circles: &[(Pos, Vec<BodyId>)],
     ) {
-        let Some(search) = &rules.needs.search else {
+        if rules.needs.search.is_none() {
             return;
-        };
+        }
+        let started = Instant::now();
         let (day, now) = (today_u32(world), world.tick().0);
-        let grown = u64::from(search.from_years) * 1000;
         for (camp, present) in circles {
             self.sit_with_kin(world, rules, present);
-            // Who is missed, and by whom: the nearest tie first.
-            let mut missed: BTreeMap<BodyId, Vec<(Tie, BodyId)>> = BTreeMap::new();
-            for &p in present {
-                let Some(mind) = self.minds.get(&p) else {
-                    continue;
-                };
-                for (&k, seen) in &mind.kin {
-                    if !present.contains(&k)
-                        && !seen.settled
-                        && day.saturating_sub(seen.day) >= search.after_nights
-                    {
-                        missed.entry(k).or_default().push((seen.tie, p));
-                    }
-                }
-            }
-            for (who, mut by) in missed {
+            self.tell_findings(world, rules, present);
+            for (who, mut by) in self.missed_at(world, rules, present) {
                 by.sort_unstable();
                 // The measure of the notice, as its first kin holds it.
                 let first = self.minds.get(&by[0].1).and_then(|m| m.kin.get(&who));
@@ -395,70 +723,69 @@ impl Brains {
                 });
                 let mut gone = false;
                 let mut why = None;
-                for (tie, p) in by {
-                    let (Some(body), Some(mind)) = (world.body(p), self.minds.get_mut(&p)) else {
-                        continue;
-                    };
-                    let Some(seen) = mind.kin.get_mut(&who) else {
+                let mut young = Vec::new();
+                for &(tie, p) in &by {
+                    let stays = self.stays(world, rules, p);
+                    let Some(seen) = self.minds.get_mut(&p).and_then(|m| m.kin.get_mut(&who))
+                    else {
                         continue;
                     };
                     seen.settled = true;
                     let to = seen.going.unwrap_or(seen.at);
                     let (said, nights) = (seen.going.is_some(), day.saturating_sub(seen.day));
-                    let plan = mind.plan.filter(|plan| plan.day == day && !plan.done);
                     if gone {
                         continue;
                     }
-                    let stays = if world.age_milli(body) < grown {
-                        Some(Stayed::Young)
-                    } else if mind.search.is_some() {
-                        Some(Stayed::Searching)
-                    } else if mind.goal.is_some() {
-                        Some(Stayed::Goal)
-                    } else if plan.is_some_and(|plan| plan.moving) {
-                        Some(Stayed::Moving)
-                    } else if within(to, *camp, HOME_TILES) {
-                        Some(Stayed::Camp)
-                    } else {
-                        None
-                    };
+                    if stays == Some(Stayed::Young) {
+                        young.push(p);
+                    }
+                    let stays = stays.or(within(to, *camp, HOME_TILES).then_some(Stayed::Camp));
                     if stays.is_some() {
                         why = why.or(stays);
                         continue;
                     }
                     gone = true;
-                    mind.search = Some(Search {
-                        who,
-                        to,
-                        stage: Stage::Going,
-                        seen: None,
-                    });
-                    plan_done(mind);
-                    // It leaves the group of its day: its own, called, ends
-                    // as one whose caller left; another's goes on without it.
-                    if let Some(group) = plan
-                        .and_then(|plan| plan.leader)
-                        .and_then(|leader| self.groups.get_mut(&leader))
-                    {
-                        if group.members[0] == p {
-                            group.ended.get_or_insert(GroupEnd::Night);
-                        } else {
-                            group.left.insert(p);
-                        }
-                    }
-                    self.searching.insert(p);
+                    let from = world.body(p).map_or(to, Body::pos);
+                    self.set_off(world, p, who, to);
                     self.news.push(News::Search {
                         body: p,
                         who,
                         step: SearchStep::Begun {
-                            tiles: tiles(body.pos(), to),
+                            tiles: tiles(from, to),
                             tie,
                             nights,
                             said,
                             to,
+                            child: None,
                         },
                         at: now,
                     });
+                }
+                if !gone && !young.is_empty() {
+                    match self.child_tells(world, rules, (*camp, present), who, &young) {
+                        Ok((helper, child)) => {
+                            gone = true;
+                            let seen = self.minds.get(&child).and_then(|m| m.kin.get(&who));
+                            let (Some(seen), Some(from)) = (seen, world.body(helper)) else {
+                                continue;
+                            };
+                            let to = seen.going.unwrap_or(seen.at);
+                            self.news.push(News::Search {
+                                body: helper,
+                                who,
+                                step: SearchStep::Begun {
+                                    tiles: tiles(from.pos(), to),
+                                    tie: seen.tie,
+                                    nights: day.saturating_sub(seen.day),
+                                    said: seen.going.is_some(),
+                                    to,
+                                    child: Some(child),
+                                },
+                                at: now,
+                            });
+                        }
+                        Err(stayed) => why = Some(stayed),
+                    }
                 }
                 if !gone
                     && let Some(News::Search {
@@ -470,7 +797,33 @@ impl Brains {
                 }
             }
         }
+        self.search_nanos += elapsed_nanos(started);
     }
+
+    /// The wall time the search took (its events, its watch, its fire),
+    /// in nanoseconds: a measure.
+    #[must_use]
+    pub fn search_nanos(&self) -> u64 {
+        self.search_nanos
+    }
+}
+
+/// Nanoseconds since `started`, saturated.
+fn elapsed_nanos(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// `mind` keeps what it found of `who`, to tell at its next fire: the
+/// last `search.findings_kept`.
+fn found(rules: &Content, mind: &mut Mind, who: BodyId, at: Pos, day: u32, what: Found) {
+    let kept = rules.needs.search.as_ref().map_or(0, |s| s.findings_kept);
+    mind.findings.retain(|f| f.who != who);
+    mind.findings.push(Finding { who, at, day, what });
+    let over = mind
+        .findings
+        .len()
+        .saturating_sub(usize::try_from(kept).unwrap_or(usize::MAX));
+    mind.findings.drain(..over);
 }
 
 /// A close one seen within its sight, as it thinks: where, and today.
@@ -562,15 +915,25 @@ pub(super) fn turn(
     };
     if search.stage == Stage::Going {
         match search.seen.take() {
-            Some(Sight::Alive(at)) => {
+            Some(Sight::Alive(at, home)) => {
+                // Another hearth than its own: it lives there.
+                let side = place_side(rules);
+                let lives =
+                    (place_of(home, side) != place_of(mind.ways.home, side)).then_some(home);
+                let day = today_u32(world);
                 if let Some(seen) = mind.kin.get_mut(&who) {
-                    (seen.day, seen.at) = (today_u32(world), at);
+                    (seen.day, seen.at) = (day, at);
+                    if let Some(home) = lives {
+                        seen.lives = Some((home, day));
+                    }
                 }
+                found(rules, mind, who, at, day, Found::Alive { lives });
                 tell(news, SearchStep::FoundAlive);
                 return end(mind);
             }
             Some(Sight::Dead) => {
                 mind.kin.remove(&who);
+                found(rules, mind, who, here, today_u32(world), Found::Dead);
                 tell(news, SearchStep::FoundDead);
                 let sight = sight_at(world.map(), rules, here);
                 let Some(infant) = lone_infant(world, rules, here, sight) else {

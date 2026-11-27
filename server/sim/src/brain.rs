@@ -107,7 +107,7 @@ mod wake_tests;
 pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
 pub use learning::{BeliefHeld, Forgot, LearnStep, Learner, TrialEnd};
 pub use problems::{Problem, ProblemAim, ProblemStep};
-pub use search::{SearchStep, Stayed, Tie};
+pub use search::{Quiet, SearchStep, Stayed, Tie};
 
 /// Thirst from which a body goes to drink: half a game day without
 /// water (thirst rises 100 points a day), so it drinks before the night
@@ -2414,6 +2414,8 @@ pub struct Mind {
     kin: BTreeMap<BodyId, search::KinSeen>,
     /// Its search for an absent kin, if it is on one.
     search: Option<search::Search>,
+    /// What its searches found, to tell at its next fire.
+    findings: Vec<search::Finding>,
 }
 
 /// A confidence moved by the four rules of temperance (D50 amended,
@@ -2626,6 +2628,7 @@ impl Mind {
             learner: Learner::default(),
             kin: BTreeMap::new(),
             search: None,
+            findings: Vec::new(),
         }
     }
 
@@ -4418,6 +4421,8 @@ pub struct Brains {
     corpses: BTreeMap<BodyId, ItemId>,
     /// The minds on a search.
     searching: BTreeSet<BodyId>,
+    /// The wall time the search took, in nanoseconds: a measure.
+    search_nanos: u64,
 }
 
 /// A group's return, told at the next fire (D56, PR 1 ter): its caller,
@@ -4753,6 +4758,7 @@ impl Brains {
             learning_nanos: 0,
             corpses: BTreeMap::new(),
             searching: BTreeSet::new(),
+            search_nanos: 0,
         }
     }
 
