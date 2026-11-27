@@ -654,6 +654,7 @@ impl Report {
                 "moves": s.moves,
                 "passages": s.passages,
                 "learning": s.learning,
+                "learning_act": s.learning_act,
                 "old_illness": s.old_illness,
                 "content": s.content.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
             },

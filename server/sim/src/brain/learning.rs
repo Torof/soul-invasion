@@ -45,17 +45,18 @@
 
 use std::time::Instant;
 
+use super::acting::{self, Doing};
 use super::{Brains, Mind, News, place_of, place_side, problems, season_of_day, today};
 use crate::content::{Content, Learning};
 use crate::r#gen::scatter::{self, purpose};
-use crate::memory::{self, Access, Clue, PlaceKey, Record, RecordId, Store, Suspect};
+use crate::memory::{self, Access, Clue, PlaceKey, Record, RecordId, Sign, Store, Suspect};
 use crate::{Ailment, Body, BodyId, Event, World};
 
 /// What a body's learning keeps (D59).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Learner {
     /// The camp it last slept at by its fire, and the nights in a row.
-    camp: Option<(PlaceKey, u32)>,
+    pub(super) camp: Option<(PlaceKey, u32)>,
     /// What it ate since the last dawn: a material's index and grams.
     ate_today: Vec<(u16, u32)>,
     /// What it ate most the day before.
@@ -67,37 +68,66 @@ pub struct Learner {
     /// How many lay at its fire last night.
     fire_size: u32,
     /// Each problem's episodes, the oldest first.
-    queues: Vec<Queue>,
+    pub(super) queues: Vec<Queue>,
     /// Its beliefs, one a problem at most.
-    beliefs: Vec<Held>,
+    pub(super) beliefs: Vec<Held>,
+    /// What its acting keeps (D59, amended 27 November 2026).
+    pub(super) act: Doing,
 }
+
+/// An episode's gravity for its holder (D59, amended 27 November 2026):
+/// a sick body seen.
+pub(super) const GRAVE_SEEN: u8 = 1;
+/// Its own illness.
+pub(super) const GRAVE_OWN: u8 = 2;
+/// A kin's death of it.
+pub(super) const GRAVE_DEATH: u8 = 3;
 
 /// A problem's episodes (D59).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Queue {
+pub(super) struct Queue {
     /// The problem.
-    kind: u8,
-    /// The episodes, the oldest first.
-    episodes: Vec<Access>,
+    pub(super) kind: u8,
+    /// The episodes, the oldest first, each with its gravity for its
+    /// holder ([`GRAVE_SEEN`], [`GRAVE_OWN`], [`GRAVE_DEATH`]).
+    pub(super) episodes: Vec<(Access, u8)>,
 }
 
 /// A belief held (D59).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Held {
+pub(super) struct Held {
     /// The problem.
-    kind: u8,
+    pub(super) kind: u8,
     /// The belief record, from whom, since when.
-    access: Access,
+    pub(super) access: Access,
     /// The last day it was renewed.
-    renewed: u32,
+    pub(super) renewed: u32,
     /// Episodes without its suspects since.
-    against: u32,
+    pub(super) against: u32,
     /// Its credit in it: 100 its own.
-    credit: u8,
+    pub(super) credit: u8,
     /// To tell at the next fire.
-    fresh: bool,
+    pub(super) fresh: bool,
     /// Taken without carrying its problem: the tradition.
-    tradition: bool,
+    pub(super) tradition: bool,
+    /// Its strength when last renewed, in points (D59, amended 27
+    /// November 2026): from what was lived; 0 without acting.
+    pub(super) strength: u8,
+    /// A trial from it was kept: told as a lesson at the next fire.
+    pub(super) lesson: bool,
+}
+
+impl Held {
+    /// Its strength on `day` (D59, amended 27 November 2026): whole for
+    /// its whole seasons from its renewal, half after.
+    pub(super) fn strength_on(&self, learning: &Learning, day: u32, days_per_cycle: u32) -> u8 {
+        let (whole, _) = learning.belief_days(days_per_cycle);
+        if day.saturating_sub(self.renewed) >= whole {
+            self.strength / 2
+        } else {
+            self.strength
+        }
+    }
 }
 
 /// What happened in a body's learning (D59), for the vivarium's measures.
@@ -144,6 +174,8 @@ pub enum LearnStep {
         record: RecordId,
         /// The others at the fire.
         listeners: u32,
+        /// Told as a lesson: a trial from it was kept.
+        lesson: bool,
     },
     /// It took a belief told at its fire.
     Copied {
@@ -161,6 +193,76 @@ pub enum LearnStep {
         /// Why.
         why: Forgot,
     },
+    /// A kin it holds the episode of died of it: the episode at its
+    /// gravest (D59, amended 27 November 2026).
+    Mourned {
+        /// The problem.
+        kind: u8,
+    },
+    /// Its belief agreeing with a mark, its will made it mean to try its
+    /// lever (D59, amended 27 November 2026).
+    Minded {
+        /// The problem.
+        kind: u8,
+    },
+    /// Its belief agreeing with a mark gives a lever not built yet: where
+    /// it would apply (D59, amended 27 November 2026).
+    Would {
+        /// The lever, its index in `content::LEVERS`.
+        lever: u8,
+    },
+    /// It called a move from its belief, for the dawn's fire (or went
+    /// alone without one).
+    Called {
+        /// The belief.
+        record: RecordId,
+    },
+    /// It meant to leave and knew no place to go: it waits.
+    Waited {
+        /// The problem.
+        kind: u8,
+    },
+    /// Its call from a belief was dropped: it stayed.
+    Stayed {
+        /// The belief.
+        record: RecordId,
+    },
+    /// Its home moved to another place (a grown body), from its belief or
+    /// for any other reason, after `nights` in a row at its camp.
+    Moved {
+        /// From its belief's call.
+        belief: bool,
+        /// Its nights in a row at the camp it left.
+        nights: u32,
+    },
+    /// A trial against a problem began: from a belief, or by chance (a
+    /// move for another reason while carrying the problem).
+    TrialBegan {
+        /// The problem.
+        kind: u8,
+        /// By chance.
+        chance: bool,
+    },
+    /// A trial against a problem ended, judged by the ills it perceived.
+    TrialEnded {
+        /// The problem.
+        kind: u8,
+        /// By chance.
+        chance: bool,
+        /// How.
+        end: TrialEnd,
+    },
+}
+
+/// How a trial against a problem ended (D59, amended 27 November 2026).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrialEnd {
+    /// Fewer ills perceived: kept, told as a lesson.
+    Kept,
+    /// Not fewer: given up, its belief countered.
+    Abandoned,
+    /// Too few nights away, or no ill before to compare: unjudged.
+    Unjudged,
 }
 
 /// Why a belief was forgotten (D59).
@@ -187,13 +289,15 @@ pub struct BeliefHeld {
     pub own: bool,
     /// Taken without carrying its problem.
     pub tradition: bool,
+    /// Its strength when last renewed, in points (0 without acting).
+    pub strength: u8,
 }
 
 impl Learner {
     /// Drops every access it holds.
     pub(super) fn forget_all(&mut self, memory: &mut Store) {
         for queue in self.queues.drain(..) {
-            for access in queue.episodes {
+            for (access, _) in queue.episodes {
                 memory.release(access.record);
             }
         }
@@ -202,18 +306,24 @@ impl Learner {
         }
     }
 
-    fn queue(&self, kind: u8) -> Option<&Queue> {
+    pub(super) fn queue(&self, kind: u8) -> Option<&Queue> {
         self.queues.iter().find(|q| q.kind == kind)
     }
 
     fn holds_episode(&self, kind: u8, record: RecordId) -> bool {
         self.queue(kind)
-            .is_some_and(|q| q.episodes.iter().any(|a| a.record == record))
+            .is_some_and(|q| q.episodes.iter().any(|(a, _)| a.record == record))
     }
 
     /// Keeps `access` among the episodes of `kind`, the oldest dropped
     /// past `kept`.
-    fn keep_episode(&mut self, kind: u8, access: Access, kept: u32, memory: &mut Store) {
+    fn keep_episode(
+        &mut self,
+        kind: u8,
+        (access, grave): (Access, u8),
+        kept: u32,
+        memory: &mut Store,
+    ) {
         let at = if let Some(at) = self.queues.iter().position(|q| q.kind == kind) {
             at
         } else {
@@ -224,16 +334,16 @@ impl Learner {
             self.queues.len() - 1
         };
         let episodes = &mut self.queues[at].episodes;
-        episodes.push(access);
+        episodes.push((access, grave));
         let kept = usize::try_from(kept).unwrap_or(usize::MAX).max(1);
         while episodes.len() > kept {
-            let oldest = episodes.remove(0);
+            let (oldest, _) = episodes.remove(0);
             memory.release(oldest.record);
         }
     }
 
     /// The camp-age tier of `camp` as lived: 0 new, 1 settled, 2 old.
-    fn camp_age(&self, learning: &Learning, camp: PlaceKey, days_per_cycle: u32) -> u8 {
+    pub(super) fn camp_age(&self, learning: &Learning, camp: PlaceKey, days_per_cycle: u32) -> u8 {
         let nights = match self.camp {
             Some((key, n)) if key == camp => n,
             _ => 0,
@@ -250,7 +360,13 @@ impl Learner {
 
 /// Whether `mind` carries the problem `kind`, not yet faded by `day`: the
 /// list itself is left as it is (it fades only where it is touched, D50).
-fn carries_fresh(rules: &Content, days_per_cycle: u32, mind: &Mind, kind: u8, day: u64) -> bool {
+pub(super) fn carries_fresh(
+    rules: &Content,
+    days_per_cycle: u32,
+    mind: &Mind,
+    kind: u8,
+    day: u64,
+) -> bool {
     let keep = u64::from(rules.needs.problems.fade_days(days_per_cycle));
     mind.problems
         .iter()
@@ -259,7 +375,7 @@ fn carries_fresh(rules: &Content, days_per_cycle: u32, mind: &Mind, kind: u8, da
 
 /// The circumstances `mind` perceives on `day` (D59): its own memory and
 /// senses only.
-fn perceive(
+pub(super) fn perceive(
     world: &World,
     rules: &Content,
     learning: &Learning,
@@ -320,13 +436,13 @@ fn kind_of(rules: &Content, learning: &Learning, ailment: Ailment) -> Option<u8>
 }
 
 /// What a mark needs to read of the world and the rules.
-struct Ctx<'a> {
-    world: &'a World,
-    rules: &'a Content,
-    learning: &'a Learning,
-    seed: u64,
-    day: u64,
-    now: u64,
+pub(super) struct Ctx<'a> {
+    pub(super) world: &'a World,
+    pub(super) rules: &'a Content,
+    pub(super) learning: &'a Learning,
+    pub(super) seed: u64,
+    pub(super) day: u64,
+    pub(super) now: u64,
 }
 
 /// `id` lived a mark of the problem `kind` (D59): the problem pushed on
@@ -336,10 +452,11 @@ struct Ctx<'a> {
 fn mark(
     ctx: &Ctx,
     (id, body, mind): (BodyId, &Body, &mut Mind),
-    (kind, access, times, own): (u8, Access, u32, bool),
+    (kind, access, times, grave): (u8, Access, u32, u8),
     memory: &mut Store,
     news: &mut Vec<News>,
 ) {
+    let own = grave == GRAVE_OWN;
     let Ctx {
         world,
         rules,
@@ -364,7 +481,8 @@ fn mark(
     });
     news.push(step(LearnStep::Marked { kind, own }));
     mind.learner
-        .keep_episode(kind, access, learning.episodes_kept, memory);
+        .keep_episode(kind, (access, grave), learning.episodes_kept, memory);
+    acting::perceived(learning, mind, (kind, day, access.record));
     // The belief it holds of this problem: renewed when its suspects were
     // all there, countered when not.
     let clues: Vec<Clue> = match memory.get(access.record) {
@@ -381,7 +499,10 @@ fn mark(
             _ => false,
         };
         if agrees {
+            let lived = acting::strength_of(learning, grave);
+            let cycle = world.calendar().days_per_cycle();
             let h = &mut mind.learner.beliefs[at];
+            h.strength = h.strength_on(learning, today, cycle).max(lived);
             (h.renewed, h.against, h.fresh) = (today, 0, true);
             news.push(step(LearnStep::Renewed {
                 record: held.access.record,
@@ -406,25 +527,25 @@ fn mark(
         .learner
         .queue(kind)
         .map_or(0, |q| u32::try_from(q.episodes.len()).unwrap_or(u32::MAX));
-    if kept < learning.notice_from.max(1) {
-        return;
+    if kept >= learning.notice_from.max(1) {
+        let chance = learning.notice_ppm(will, kept, times);
+        let roll = scatter::roll(
+            seed,
+            purpose::LEARN_NOTICE,
+            &[
+                u64::from(id.0),
+                day,
+                u64::from(kind),
+                u64::from(access.record),
+            ],
+        ) % 1_000_000;
+        if roll < chance {
+            news.push(step(LearnStep::Noticed { kind }));
+            cross_check(ctx, (id, mind), kind, memory, news);
+        }
     }
-    let chance = learning.notice_ppm(will, kept, times);
-    let roll = scatter::roll(
-        seed,
-        purpose::LEARN_NOTICE,
-        &[
-            u64::from(id.0),
-            day,
-            u64::from(kind),
-            u64::from(access.record),
-        ],
-    ) % 1_000_000;
-    if roll >= chance {
-        return;
-    }
-    news.push(step(LearnStep::Noticed { kind }));
-    cross_check(ctx, (id, mind), kind, memory, news);
+    // Its lever, when the belief it holds now accuses what was there.
+    acting::after_mark(ctx, (id, mind), (kind, &clues), memory, news);
 }
 
 /// `id` lays its latest episodes of `kind` side by side (D59), as many
@@ -447,6 +568,7 @@ fn cross_check(
         at: ctx.now,
     };
     let suspects = suspects_of(ctx, (id, mind), kind, memory);
+    let strength = acting::strength_of(ctx.learning, gravest(ctx.learning, mind, kind));
     if suspects.is_empty() {
         news.push(step(LearnStep::SawNothing { kind }));
         return;
@@ -457,7 +579,9 @@ fn cross_check(
         let h = mind.learner.beliefs[at];
         if matches!(memory.get(h.access.record), Some(Record::Belief { suspects: s, .. }) if *s == suspects)
         {
+            let cycle = ctx.world.calendar().days_per_cycle();
             let h = &mut mind.learner.beliefs[at];
+            h.strength = h.strength_on(ctx.learning, today, cycle).max(strength);
             (h.renewed, h.against, h.fresh) = (today, 0, true);
             news.push(step(LearnStep::Renewed {
                 record: h.access.record,
@@ -472,10 +596,24 @@ fn cross_check(
             why: Forgot::Replaced,
         }));
     }
+    let record = hold_own(mind, (id, today, kind), (suspects, strength), memory);
+    news.push(step(LearnStep::Believed { record }));
+}
+
+/// `id` holds on `today` its own new belief of `kind` accusing
+/// `suspects` (a fear: illness is a bad thing), of `strength`: the
+/// record written once. The record.
+pub(super) fn hold_own(
+    mind: &mut Mind,
+    (id, today, kind): (BodyId, u32, u8),
+    (suspects, strength): (Vec<Suspect>, u8),
+    memory: &mut Store,
+) -> RecordId {
     let (record, _) = memory.intern(Record::Belief {
         body: id,
         day: today,
         kind,
+        sign: Sign::Fear,
         suspects,
     });
     mind.learner.beliefs.push(Held {
@@ -490,8 +628,25 @@ fn cross_check(
         credit: 100,
         fresh: true,
         tradition: false,
+        strength,
+        lesson: false,
     });
-    news.push(step(LearnStep::Believed { record }));
+    record
+}
+
+/// The gravest of the episodes of `kind` `mind` would cross-check (D59,
+/// amended 27 November 2026).
+fn gravest(learning: &Learning, mind: &Mind, kind: u8) -> u8 {
+    let Some(queue) = mind.learner.queue(kind) else {
+        return 0;
+    };
+    let depth = usize::try_from(learning.depth(mind.will)).unwrap_or(usize::MAX);
+    let from = queue.episodes.len().saturating_sub(depth);
+    queue.episodes[from..]
+        .iter()
+        .map(|&(_, g)| g)
+        .max()
+        .unwrap_or(0)
 }
 
 /// What `id` finds was there each time in its latest episodes of `kind`
@@ -507,7 +662,7 @@ fn suspects_of(ctx: &Ctx, (id, mind): (BodyId, &Mind), kind: u8, memory: &Store)
     let from = queue.episodes.len().saturating_sub(depth);
     let mut counts: Vec<(Clue, u32)> = Vec::new();
     let mut looked = 0_u32;
-    for access in &queue.episodes[from..] {
+    for (access, _) in &queue.episodes[from..] {
         let Some(Record::Episode { clues, .. }) = memory.get(access.record) else {
             continue;
         };
@@ -563,7 +718,7 @@ fn suspects_of(ctx: &Ctx, (id, mind): (BodyId, &Mind), kind: u8, memory: &Store)
 /// The kin relation of the sick `sick` to `seer` (D59): its weight in
 /// the draw, 0 when not a kin. A child under sixteen of the seer's weighs
 /// `child_times`; its spouse and its parent, once.
-fn kin_times(world: &World, learning: &Learning, sick: &Body, seer: BodyId) -> u32 {
+pub(super) fn kin_times(world: &World, learning: &Learning, sick: &Body, seer: BodyId) -> u32 {
     let parent_of_sick = sick.mother() == Some(seer) || sick.father() == Some(seer);
     if parent_of_sick && world.age_milli(sick) < 16_000 {
         return learning.child_times.max(1);
@@ -613,6 +768,16 @@ impl Brains {
                 Event::FellIll { body, ailment, .. } => {
                     self.fell_ill(world, rules, learning, *body, *ailment);
                 }
+                Event::IllnessEnded {
+                    body,
+                    ailment,
+                    died: true,
+                    ..
+                } => {
+                    if let Some(kind) = kind_of(rules, learning, *ailment) {
+                        self.mourn(world, learning, *body, kind);
+                    }
+                }
                 _ => {}
             }
         }
@@ -659,7 +824,7 @@ impl Brains {
         mark(
             &ctx,
             (id, body, mind),
-            (kind, access, 1, true),
+            (kind, access, 1, GRAVE_OWN),
             &mut self.memory,
             &mut self.news,
         );
@@ -721,7 +886,7 @@ impl Brains {
                     continue;
                 }
                 if let Some(at) = mind.learner.queues.iter().position(|q| q.kind == kind) {
-                    for access in mind.learner.queues.remove(at).episodes {
+                    for (access, _) in mind.learner.queues.remove(at).episodes {
                         self.memory.release(access.record);
                     }
                 }
@@ -746,6 +911,7 @@ impl Brains {
                 self.tell_beliefs(world, rules, learning, present);
             }
         }
+        self.act_at_dawn(world, rules, learning, circles);
         self.learning_nanos += elapsed_nanos(started);
     }
 
@@ -806,8 +972,8 @@ impl Brains {
                 .learner
                 .queue(kind)
                 .and_then(|q| q.episodes.last())
-                .filter(|a| a.by == s)
-                .map(|a| a.record)
+                .filter(|(a, _)| a.by == s)
+                .map(|(a, _)| a.record)
             else {
                 continue;
             };
@@ -819,6 +985,7 @@ impl Brains {
                 let (Some(mind), Some(body)) = (self.minds.get_mut(&seer), world.body(seer)) else {
                     continue;
                 };
+                acting::perceived(learning, mind, (kind, dawn, episode));
                 if mind.learner.holds_episode(kind, episode) {
                     continue;
                 }
@@ -832,7 +999,7 @@ impl Brains {
                     mark(
                         &ctx,
                         (seer, body, mind),
-                        (kind, access, times, false),
+                        (kind, access, times, GRAVE_SEEN),
                         &mut self.memory,
                         &mut self.news,
                     );
@@ -840,7 +1007,7 @@ impl Brains {
                     self.memory.hold(episode);
                     mind.learner.keep_episode(
                         kind,
-                        access,
+                        (access, GRAVE_SEEN),
                         learning.episodes_kept,
                         &mut self.memory,
                     );
@@ -855,7 +1022,7 @@ impl Brains {
     /// for (`copy_credit`, half after its whole seasons), unless it holds
     /// its own of that problem or one believed more; hearing the same
     /// belief renews it.
-    fn tell_beliefs(
+    pub(super) fn tell_beliefs(
         &mut self,
         world: &World,
         rules: &Content,
@@ -882,8 +1049,8 @@ impl Brains {
                 .filter(|h| h.fresh)
                 .take(most)
             {
-                held.fresh = false;
                 tellings.push((id, will, *held));
+                (held.fresh, held.lesson) = (false, false);
             }
         }
         let listeners = u32::try_from(present.len() - 1).unwrap_or(u32::MAX);
@@ -901,7 +1068,11 @@ impl Brains {
             self.news.push(News::Learning {
                 body: teller,
                 will: teller_will,
-                step: LearnStep::Told { record, listeners },
+                step: LearnStep::Told {
+                    record,
+                    listeners,
+                    lesson: told.lesson,
+                },
                 at: now,
             });
             let half = dawn32.saturating_sub(told.renewed) >= whole;
@@ -953,6 +1124,7 @@ impl Brains {
             credit /= 2;
         }
         let will = mind.will;
+        let heard = acting::heard_strength(learning, told.strength_on(learning, dawn32, cycle));
         let held = mind
             .learner
             .beliefs
@@ -964,7 +1136,9 @@ impl Brains {
                 || matches!(self.memory.get(h.access.record),
                     Some(Record::Belief { suspects: s, .. }) if s.as_slice() == suspects);
             if same {
-                mind.learner.beliefs[at].renewed = dawn32;
+                let again = &mut mind.learner.beliefs[at];
+                again.strength = again.strength_on(learning, dawn32, cycle).max(heard);
+                again.renewed = dawn32;
                 self.news.push(News::Learning {
                     body: id,
                     will,
@@ -1006,6 +1180,8 @@ impl Brains {
             credit,
             fresh: true,
             tradition: !carries,
+            strength: heard,
+            lesson: false,
         });
         self.news.push(News::Learning {
             body: id,
@@ -1038,6 +1214,7 @@ impl Brains {
                     record: h.access.record,
                     own: h.access.by == body,
                     tradition: h.tradition,
+                    strength: h.strength,
                 })
             })
             .collect()
@@ -1050,7 +1227,7 @@ fn elapsed_nanos(started: Instant) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::content::Sex;
     use crate::map::Pos;
@@ -1059,7 +1236,7 @@ mod tests {
 
     /// The repository's content, a valley of minute ticks, and `n` bodies
     /// with minds on one tile, grown (thirty years).
-    fn valley(n: usize) -> (Content, World, Brains, Vec<BodyId>) {
+    pub(in crate::brain) fn valley(n: usize) -> (Content, World, Brains, Vec<BodyId>) {
         let rules = crate::crops::tests::content();
         let mut world = World::with_valley(Calendar::new(1, 1440).unwrap(), &rules, 768);
         let side = i32::try_from(world.map().chunks_wide()).unwrap() * 32;
@@ -1080,7 +1257,7 @@ mod tests {
         (rules, world, brains, ids)
     }
 
-    fn learning_mut(rules: &mut Content) -> &mut Learning {
+    pub(in crate::brain) fn learning_mut(rules: &mut Content) -> &mut Learning {
         rules
             .needs
             .learning
@@ -1089,12 +1266,18 @@ mod tests {
     }
 
     /// The world on `day`, a little after its dawn.
-    fn on_day(world: &mut World, day: u64) {
+    pub(in crate::brain) fn on_day(world: &mut World, day: u64) {
         world.tick = Tick(day * world.calendar().ticks_per_day() + 10);
     }
 
     /// `id` falls ill of `ailment` on `day`.
-    fn ill(world: &mut World, brains: &mut Brains, rules: &Content, id: BodyId, day: u64) {
+    pub(in crate::brain) fn ill(
+        world: &mut World,
+        brains: &mut Brains,
+        rules: &Content,
+        id: BodyId,
+        day: u64,
+    ) {
         on_day(world, day);
         let at = world.body(id).unwrap().pos();
         let event = Event::FellIll {
@@ -1106,11 +1289,11 @@ mod tests {
         brains.learn_events(&[event], world, rules);
     }
 
-    fn gut(rules: &Content) -> u8 {
+    pub(in crate::brain) fn gut(rules: &Content) -> u8 {
         rules.needs.problems.kind_of("ill_gut").unwrap()
     }
 
-    fn steps(brains: &mut Brains) -> Vec<LearnStep> {
+    pub(in crate::brain) fn steps(brains: &mut Brains) -> Vec<LearnStep> {
         brains
             .news()
             .into_iter()
@@ -1128,7 +1311,7 @@ mod tests {
             .map(|q| {
                 q.episodes
                     .iter()
-                    .map(|a| match brains.memory.get(a.record) {
+                    .map(|(a, _)| match brains.memory.get(a.record) {
                         Some(Record::Episode { clues, .. }) => clues.clone(),
                         other => panic!("an episode, not {other:?}"),
                     })
@@ -1177,7 +1360,7 @@ mod tests {
         }
         let q = brains.minds[&ids[0]].learner.queue(gut(&rules)).unwrap();
         assert_eq!(q.episodes.len(), kept as usize);
-        assert_eq!(q.episodes[0].day, 3, "the three oldest dropped");
+        assert_eq!(q.episodes[0].0.day, 3, "the three oldest dropped");
         // Its own records only: those dropped are freed.
         let live = brains
             .memory
@@ -1205,7 +1388,10 @@ mod tests {
         let kind = gut(&rules);
         let news = steps(&mut brains);
         assert!(news.contains(&LearnStep::Noticed { kind }));
-        let Some(LearnStep::Believed { record }) = news.last().copied() else {
+        let Some(&LearnStep::Believed { record }) = news
+            .iter()
+            .find(|s| matches!(s, LearnStep::Believed { .. }))
+        else {
             panic!("a belief: {news:?}");
         };
         let accused = suspects(&brains, record);
@@ -1274,6 +1460,7 @@ mod tests {
                 body: id,
                 day: 0,
                 kind,
+                sign: Sign::Fear,
                 suspects: vec![Suspect { clue, kind: 0 }],
             });
             brains.minds.get_mut(&id).unwrap().learner.beliefs = vec![Held {
@@ -1288,6 +1475,8 @@ mod tests {
                 credit: 100,
                 fresh: false,
                 tradition: false,
+                strength: 0,
+                lesson: false,
             }];
             record
         };
@@ -1339,7 +1528,8 @@ mod tests {
         let news = steps(&mut brains);
         assert!(news.contains(&LearnStep::Told {
             record,
-            listeners: 3
+            listeners: 3,
+            lesson: false,
         }));
         assert!(news.contains(&LearnStep::Copied {
             record,
@@ -1539,6 +1729,7 @@ mod tests {
         let sources = [
             include_str!("../brain.rs"),
             include_str!("learning.rs"),
+            include_str!("acting.rs"),
             include_str!("problems.rs"),
             include_str!("handwork.rs"),
             include_str!("pooling.rs"),
@@ -1557,6 +1748,10 @@ mod tests {
         for source in sources {
             // Its code, the tests apart (the proof above sets a fouling).
             let code = source.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+            let code = code
+                .split("\n#[cfg(test)]\npub(super) mod tests")
+                .next()
+                .unwrap();
             for word in hidden {
                 assert!(!code.contains(word), "the brain names {word}");
             }

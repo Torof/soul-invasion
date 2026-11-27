@@ -219,6 +219,10 @@ pub struct Settings {
     /// section replaced by none and the problems it marks taken out:
     /// behaviour bit for bit the run's before the change.
     pub learning: bool,
+    /// Learning causes, acting (D59, amended 27 November 2026): false is
+    /// the run that believes without acting (`--learning-believe-only`),
+    /// the content's `learning.acting` replaced by none.
+    pub learning_act: bool,
     /// Where the vivarium's continent is kept between runs
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
@@ -309,6 +313,7 @@ impl Default for Settings {
             old_illness: false,
             passages: true,
             learning: true,
+            learning_act: true,
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
             helpers: 1,
@@ -2295,6 +2300,7 @@ pub fn run_watched(
         || settings.old_illness
         || !settings.passages
         || !settings.learning
+        || !settings.learning_act
     {
         let mut own = content.clone();
         if settings.fed {
@@ -2345,6 +2351,11 @@ pub fn run_watched(
                 .problems
                 .kinds
                 .retain(|k| !learning.marks(&k.refusal));
+        }
+        if !settings.learning_act
+            && let Some(learning) = own.needs.learning.as_mut()
+        {
+            learning.acting = None;
         }
         if !settings.moves {
             own.needs.moving = Moving::default();
@@ -6976,6 +6987,7 @@ mod tests {
             old_illness: false,
             passages: true,
             learning: true,
+            learning_act: true,
             continents: None,
             lands: None,
             helpers: 1,

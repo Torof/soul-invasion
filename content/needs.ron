@@ -1171,6 +1171,47 @@
     // copy_credit:   50 — the least credit in the teller to take it;
     // child_years:   16 — under it, a listener takes a belief without
     //                carrying its problem.
+    // acting:        its second step (D59, amended 27 November 2026; the
+    //                project lead: a belief is held through fear or reward;
+    //                fear weighs about twice a reward, loss aversion).
+    //                Absent: believe only (`--learning-believe-only`).
+    //                A belief whose kind of cause gives the lever `leave`
+    //                (a place: this camp, its age, its crowd), held by one
+    //                who lives its problem again with all its suspects
+    //                there, may make it mean to leave (the chance of its
+    //                will, as any trial); at a free nightfall it calls a
+    //                move to the best place of its notes not feared, not
+    //                worse for food by more than `worse_permille`, and not
+    //                slept at for a season when the camp's age is accused.
+    //                The belief weighs on its holder's own move balance at
+    //                the fire, and on every listener holding it: a fear of
+    //                here pushes away, a fear of there holds back. The move
+    //                itself is judged by the place's grade as before; the
+    //                problem judges the trial: the ills it perceived (its
+    //                own, its kin's, the sick seen at its fire) over the
+    //                season against the season before. A move made for
+    //                another reason by one carrying the problem is judged
+    //                the same way (the trial by chance).
+    //   strength_kin_death: 100, strength_own: 60, strength_seen: 30 — a
+    //                belief's strength, from the gravest episode it was
+    //                drawn from (a kin's death of it, one's own illness, a
+    //                sick body seen), in points; it fades as the belief
+    //                does (whole, then half), renewed by what agrees;
+    //   heard_percent: 50 — a belief heard carries half its teller's;
+    //   fear_tenths:  50 — a point of a fear's strength weighs half a per
+    //                mille of a day of need: a fear of strength 100 weighs
+    //                half a day;
+    //   reward_tenths: 25 — a reward weighs half a fear (no reward belief
+    //                has a source yet: the sign is ready);
+    //   worse_permille: 100 — the place left for may be worse for food by
+    //                a tenth of a day of need at most, by its own notes;
+    //   keep_percent: 50 — kept when the ills perceived in its season are
+    //                at most half those of the season before; else given
+    //                up (none before: unjudged);
+    //   judge_nights: 8 — fewer nights than this away from the camp left:
+    //                unjudged;
+    //   levers:       each kind of cause and its lever; only `leave` is
+    //                built, the others are counted where they would apply.
     learning: (
         ailments: [(gut, "ill_gut"), (chest, "ill_chest")],
         clues: [
@@ -1201,5 +1242,25 @@
         told_per_night: 2,
         copy_credit: 50,
         child_years: 16,
+        acting: (
+            strength_kin_death: 100,
+            strength_own: 60,
+            strength_seen: 30,
+            heard_percent: 50,
+            fear_tenths: 50,
+            reward_tenths: 25,
+            worse_permille: 100,
+            keep_percent: 50,
+            judge_nights: 8,
+            levers: [
+                ("place", "leave"),
+                ("season", "prepare"),
+                ("weather", "prepare"),
+                ("company", "keep_apart"),
+                ("food", "avoid"),
+                ("water", "drink_elsewhere"),
+                ("gesture", "otherwise"),
+            ],
+        ),
     ),
 )

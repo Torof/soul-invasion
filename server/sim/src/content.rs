@@ -1015,6 +1015,132 @@ pub struct Learning {
     /// Under this age (years), a listener takes a belief without having
     /// lived its problem: the tradition.
     pub child_years: u32,
+    /// Its second step, acting (D59, amended 27 November 2026): a belief
+    /// weighs on moves, its lever tried and judged. Absent: believe only.
+    #[serde(default, deserialize_with = "present")]
+    pub acting: Option<Acting>,
+}
+
+/// The levers a kind of cause may give (D59, amended 27 November 2026):
+/// only `leave` is built; the others are recorded where they would apply.
+pub const LEVERS: [&str; 6] = [
+    "leave",
+    "prepare",
+    "keep_apart",
+    "avoid",
+    "drink_elsewhere",
+    "otherwise",
+];
+
+/// Learning causes, its second step: acting (D59, amended 27 November
+/// 2026; the project lead: a belief is held through fear or reward, its
+/// strength from what was lived). Every value is a D30 placeholder,
+/// named and explained in `content/needs.ron`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Acting {
+    /// A belief's strength (points) when its gravest episode is a kin's
+    /// death of it…
+    pub strength_kin_death: u32,
+    /// …one's own illness…
+    pub strength_own: u32,
+    /// …a sick body seen (a kin, a mate at the fire).
+    pub strength_seen: u32,
+    /// A belief heard carries this share of its teller's strength, in
+    /// percent.
+    pub heard_percent: u32,
+    /// What a point of strength weighs on a move for a fear, in tenths of
+    /// a per mille of a day of need…
+    pub fear_tenths: u32,
+    /// …and for a reward.
+    pub reward_tenths: u32,
+    /// The place a body leaves for may be worse for food, by its own
+    /// notes, by this much at most, per mille of a day of need.
+    pub worse_permille: u32,
+    /// A trial is kept when the ills perceived in its season are at most
+    /// this share of those of the season before, in percent.
+    pub keep_percent: u32,
+    /// Fewer nights than this away from the camp left in the trial's
+    /// season: unjudged.
+    pub judge_nights: u32,
+    /// Each kind of cause (a name of [`CLUE_KINDS`]) and its lever (a
+    /// name of [`LEVERS`]).
+    pub levers: Vec<(String, String)>,
+}
+
+impl Acting {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            strength_kin_death: 100,
+            strength_own: 60,
+            strength_seen: 30,
+            heard_percent: 50,
+            fear_tenths: 50,
+            reward_tenths: 25,
+            worse_permille: 100,
+            keep_percent: 50,
+            judge_nights: 8,
+            levers: [
+                ("place", "leave"),
+                ("season", "prepare"),
+                ("weather", "prepare"),
+                ("company", "keep_apart"),
+                ("food", "avoid"),
+                ("water", "drink_elsewhere"),
+                ("gesture", "otherwise"),
+            ]
+            .iter()
+            .map(|&(k, l)| (k.to_owned(), l.to_owned()))
+            .collect(),
+        }
+    }
+
+    /// The lever of the kind of cause numbered `kind` ([`CLUE_KINDS`]),
+    /// its index in [`LEVERS`].
+    #[must_use]
+    pub fn lever_of(&self, kind: u8) -> Option<u8> {
+        let name = CLUE_KINDS.get(usize::from(kind))?;
+        let (_, lever) = self.levers.iter().find(|(k, _)| k == name)?;
+        LEVERS
+            .iter()
+            .position(|l| l == lever)
+            .and_then(|i| u8::try_from(i).ok())
+    }
+
+    /// A trial's length: a season, in game days.
+    #[must_use]
+    pub fn trial_days(days_per_cycle: u32) -> u32 {
+        season_days(1, days_per_cycle).max(1)
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let levers = self.levers.iter().enumerate().all(|(i, (k, l))| {
+            CLUE_KINDS.contains(&k.as_str())
+                && LEVERS.contains(&l.as_str())
+                && self.levers[..i].iter().all(|(o, _)| o != k)
+        });
+        if !levers
+            || [
+                self.strength_kin_death,
+                self.strength_own,
+                self.strength_seen,
+            ]
+            .iter()
+            .any(|&s| s > 100)
+            || self.heard_percent > 100
+            || self.keep_percent > 100
+            || self.fear_tenths > 1000
+            || self.reward_tenths > 1000
+        {
+            return Err(ContentError::Needs(
+                "learning.acting: strengths and heard_percent and keep_percent at most 100, \
+                 fear_tenths and reward_tenths at most 1000, levers each a kind of CLUE_KINDS once \
+                 with a lever of LEVERS",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Learning {
@@ -1059,6 +1185,7 @@ impl Learning {
             told_per_night: 2,
             copy_credit: 50,
             child_years: 16,
+            acting: Some(Acting::placeholders()),
         }
     }
 
@@ -1125,6 +1252,9 @@ impl Learning {
     }
 
     fn validate(&self) -> Result<(), ContentError> {
+        if let Some(acting) = &self.acting {
+            acting.validate()?;
+        }
         let clues_known = self.clues.iter().enumerate().all(|(i, (c, k))| {
             CLUES.contains(&c.as_str())
                 && CLUE_KINDS.contains(&k.as_str())
