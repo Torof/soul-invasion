@@ -768,6 +768,7 @@ fn deed_name(content: &Content, deed: Deed) -> String {
             format!("cut {tree} with {}", material(deed.with))
         }
         Gesture::PutIn => format!("put {} in {}", material(deed.on), material(deed.with)),
+        Gesture::TakeOut => format!("take {} out of {}", material(deed.on), material(deed.with)),
         g => format!("{} {}", g.key(), material(deed.on)),
     }
 }

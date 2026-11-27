@@ -1119,6 +1119,15 @@ pub enum Intention {
         /// The item it is put in.
         into: ItemId,
     },
+    /// Take the item `item` out of the item it carries it lies in (D57,
+    /// amended 27 November 2026): a gesture of the content's minutes,
+    /// whatever comes of it.
+    TakeOut {
+        /// Who.
+        body: BodyId,
+        /// The item taken out.
+        item: ItemId,
+    },
 }
 
 impl Intention {
@@ -1159,7 +1168,8 @@ impl Intention {
             | Intention::Gather { body, .. }
             | Intention::Cut { body, .. }
             | Intention::Fold { body, .. }
-            | Intention::PutIn { body, .. } => body,
+            | Intention::PutIn { body, .. }
+            | Intention::TakeOut { body, .. } => body,
         }
     }
 }
@@ -3526,6 +3536,7 @@ impl World {
                 item,
                 into,
             } => self.put_in(id, (item, into), rules, events),
+            Intention::TakeOut { body: id, item } => self.take_out(id, item, rules, events),
             Intention::Sleep { body: id } => {
                 if let Some(index) = self.index_of(id) {
                     let body = &mut self.bodies[index];

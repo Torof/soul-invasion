@@ -37,11 +37,20 @@ pub enum Gesture {
     Fold,
     /// Put a thing carried in another thing carried.
     PutIn,
+    /// Take a thing out of the thing carried it lies in (27 November
+    /// 2026): the put-in undone.
+    TakeOut,
 }
 
 impl Gesture {
     /// Every gesture, in a fixed order.
-    pub const ALL: [Gesture; 4] = [Gesture::PickUp, Gesture::Cut, Gesture::Fold, Gesture::PutIn];
+    pub const ALL: [Gesture; 5] = [
+        Gesture::PickUp,
+        Gesture::Cut,
+        Gesture::Fold,
+        Gesture::PutIn,
+        Gesture::TakeOut,
+    ];
 
     /// Its name, as the vivarium writes it.
     #[must_use]
@@ -51,6 +60,7 @@ impl Gesture {
             Gesture::Cut => "cut",
             Gesture::Fold => "fold",
             Gesture::PutIn => "put in",
+            Gesture::TakeOut => "take out",
         }
     }
 }
@@ -375,6 +385,75 @@ impl World {
         );
     }
 
+    /// `id` takes `item` out of the thing carried it lies in (D57, amended
+    /// 27 November 2026): busy the content's minutes, whatever comes of
+    /// it.
+    pub(crate) fn take_out(
+        &mut self,
+        id: BodyId,
+        item: ItemId,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) {
+        let refuse = |events: &mut Vec<Event>, reason| {
+            events.push(Event::GestureRefused {
+                body: id,
+                gesture: Gesture::TakeOut,
+                reason,
+            });
+        };
+        let Some(index) = self.index_of(id) else {
+            return refuse(events, Refusal::Unknown);
+        };
+        if !self.carries(index, item) {
+            return refuse(events, Refusal::NotCarried);
+        }
+        let until = Tick(self.tick.0 + self.gesture_ticks(rules));
+        let into = self.item(item).and_then(|i| i.within);
+        self.begin(
+            index,
+            Making {
+                gesture: Gesture::TakeOut,
+                item,
+                into,
+                tree: None,
+                until,
+            },
+            events,
+        );
+    }
+
+    /// What a take-out gives ([`Gesture::TakeOut`]): nothing when the
+    /// thing lies in no hollow, or when it is loose food its arms have no
+    /// room for; else the thing, out of the hollow and carried as any
+    /// other.
+    fn take_gives(
+        &mut self,
+        index: usize,
+        item: ItemId,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) -> Option<ItemId> {
+        if !self.carries(index, item) {
+            return None;
+        }
+        let thing = self.item(item)?;
+        thing.within?;
+        let food = rules
+            .material(&thing.material)
+            .is_some_and(|m| m.food.is_some());
+        let body = &self.bodies[index];
+        let room = body
+            .arms_g(&rules.movement)
+            .saturating_sub(body.arms_food_g());
+        if food && thing.mass_g > room {
+            return None;
+        }
+        self.items.get_mut(&item)?.within = None;
+        self.inventory_changed(index, rules, events);
+        Some(item)
+    }
+
     /// Whether the hollow `hollow` shows it has no room for `thing` (D57,
     /// amended 27 November 2026): something lies in it already and
     /// no room is left, or `thing` is a whole thing heavier than the room
@@ -534,7 +613,7 @@ impl World {
                     let species = self.trees_in(chunk).iter().find(|t| t.key == key)?.species;
                     Some(self.species.get(species)?.id.clone())
                 }),
-                Gesture::Fold | Gesture::PickUp | Gesture::PutIn => {
+                Gesture::Fold | Gesture::PickUp | Gesture::PutIn | Gesture::TakeOut => {
                     self.item(making.item).map(|i| i.material.clone())
                 }
             }
@@ -548,6 +627,7 @@ impl World {
                         .and_then(|into| self.put_gives(index, (making.item, into), rules, events)),
                     false,
                 ),
+                Gesture::TakeOut => (self.take_gives(index, making.item, rules, events), false),
                 Gesture::PickUp => (None, false),
             };
             events.push(Event::Gestured {
@@ -1046,6 +1126,34 @@ mod tests {
         assert!(world.item(bark).is_none());
         assert!(!body(&world, id).has(berries), "spilt with the tear");
         assert_eq!(body(&world, id).food_g(), 0);
+    }
+
+    #[test]
+    fn a_thing_put_in_a_hollow_is_taken_out_again() {
+        let rules = rules();
+        let (mut world, id, ..) = by_a_birch(&rules);
+        let bark = hollow(&mut world, &rules, id);
+        let room = world.hollow_room_g(bark, &rules);
+        let pebble = picked(&mut world, &rules, id, "pebble", 300);
+        assert_eq!(put(&mut world, &rules, id, (pebble, bark)), Some(pebble));
+        assert_eq!(world.hollow_room_g(bark, &rules), room - 300);
+        world.queue(Intention::TakeOut {
+            body: id,
+            item: pebble,
+        });
+        assert_eq!(gesture_ends(&mut world, &rules, id), Some(pebble));
+        assert!(world.item(pebble).unwrap().within().is_none());
+        assert!(
+            body(&world, id).has(pebble),
+            "out of the hollow, still on it"
+        );
+        assert_eq!(world.hollow_room_g(bark, &rules), room);
+        // What lies in nothing is taken out of nothing.
+        world.queue(Intention::TakeOut {
+            body: id,
+            item: pebble,
+        });
+        assert_eq!(gesture_ends(&mut world, &rules, id), None);
     }
 
     /// Folds a birch bark of 200 g on the body: the hollow.
