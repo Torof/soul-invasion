@@ -27,9 +27,10 @@
 //!    (ridge in the ocean, rift in a continent), or transform.
 //! 5. **Hotspots.** Fixed plumes under moving plates leave chains, older
 //!    the farther they run in the plate's direction of motion.
-//! 6. **Height and the sea.** A height from these and from the history's
-//!    ranges and trailing coasts, and a sea level that leaves the settings'
-//!    share of the surface dry.
+//! 6. **Height and the sea.** A continent's height is carried by its
+//!    crust through the history (version 7) and changes only where
+//!    something happens to it; the ocean floor's follows its age. The sea
+//!    level leaves the settings' share of the surface dry.
 //! 7. **Our continent** ([`Site`], [`Zoom`]): a subduction margin at
 //!    40–50° north with the ocean to the west is chosen, and a
 //!    continent of [`LENGTH_KM`] is shaped on its overriding side, read
@@ -847,32 +848,6 @@ pub struct Planet {
     old_at_edge: Vec<Option<OldKind>>,
 }
 
-/// A range the history raised at a cell, `(height m, half-width km)`:
-/// a collision's suture, today's leading edge, an accreted terrane, an
-/// older leading edge, each lower the older it is.
-fn range_of(h: &History, t: usize, now_my: u16, c: usize) -> Option<(i64, i64)> {
-    let (flags, ago) = (h.margins_at[t][c], h.orogeny_at[t][c]);
-    if ago == history::NEVER
-        || flags & !(history::OLD_SUTURE | history::RIFT | history::PASSIVE) == 0
-    {
-        return None;
-    }
-    let ago = i64::from(ago.saturating_sub(now_my));
-    let youth = (1000 - ago * 1000 / 400).clamp(250, 1000);
-    let (height, width) = if flags & history::SUTURE != 0 {
-        (2_800, 320)
-    } else if flags & history::ACTIVE != 0 && ago <= 10 {
-        (2_000, 170)
-    } else if flags & history::ACCRETED != 0 {
-        (1_300, 130)
-    } else if flags & history::ACTIVE != 0 {
-        (900, 150)
-    } else {
-        return None;
-    };
-    Some((height * youth / 1000, width))
-}
-
 /// Ocean floor older than this, millions of years, sinks no more.
 const FLAT_FLOOR_MY: i64 = 120;
 
@@ -899,9 +874,6 @@ fn floor_sinking(sphere: &Sphere, h: &History, t: usize) -> i64 {
 /// A hotspot's island or seamount sinks as it ages: gone after this,
 /// millions of years.
 const TRACK_MYR: i64 = 120;
-/// Height a km of extra crust raises a continent, m (Airy isostasy:
-/// crust 2.8, mantle 3.3).
-const ISOSTASY_M: i64 = 100;
 
 impl Planet {
     /// The planet born from `seed`, with the default settings.
@@ -934,12 +906,15 @@ impl Planet {
                 })
             })
             .collect();
-        let old_suture: Vec<bool> = old_at_edge
-            .iter()
-            .map(|&k| k == Some(OldKind::Suture))
-            .collect();
+        let old_is = |kind| -> Vec<bool> { old_at_edge.iter().map(|&k| k == Some(kind)).collect() };
+        let (old_suture, old_rift) = (old_is(OldKind::Suture), old_is(OldKind::FailedRift));
         // 2. The history: the supercontinent, its break-up, the drift.
-        let history = std::sync::Arc::new(history::run(seed, settings, &sphere, &old_suture));
+        let history = std::sync::Arc::new(history::run(
+            seed,
+            settings,
+            &sphere,
+            (&old_suture, &old_rift),
+        ));
         let last = history.last();
         Self::build(
             seed,
@@ -1034,32 +1009,6 @@ impl Planet {
             .collect();
         let (near_d, near_l) = sphere.spread(&sources, |a, b| plate[a] == plate[b], 1_500);
         let near: Vec<(u32, u32)> = near_d.into_iter().zip(near_l).collect();
-        let shore: Vec<(usize, u32)> = (0..CELLS)
-            .filter(|&c| !continental[c])
-            .map(|c| (c, 0))
-            .collect();
-        let (inland_d, _) = sphere.spread(&shore, |_, b| continental[b], 2_000);
-        let sutures: Vec<(usize, u32)> = (0..CELLS)
-            .filter(|&c| continental[c] && old_edge[c].is_some_and(|k| k != OldKind::OldFault))
-            .map(|c| (c, c as u32))
-            .collect();
-        let (old_d, old_l) = sphere.spread(&sutures, |_, b| continental[b], 400);
-        // The history's marks: which coasts trail (wide low plains), and
-        // the ranges its collisions, leading edges and accretions raised.
-        let coasts: Vec<(usize, u32)> = (0..CELLS)
-            .filter(|&c| continental[c])
-            .filter_map(|c| {
-                let k = h.margin[t][c];
-                (k == history::Margin::Passive as u8 || k == history::Margin::Active as u8)
-                    .then_some((c, u32::from(k)))
-            })
-            .collect();
-        let (_, coast_kind) = sphere.spread(&coasts, |_, b| continental[b], 700);
-        let raised: Vec<(usize, u32)> = (0..CELLS)
-            .filter(|&c| continental[c] && range_of(h, t, now_my, c).is_some())
-            .map(|c| (c, c as u32))
-            .collect();
-        let (range_d, range_l) = sphere.spread(&raised, |_, b| continental[b], 700);
         // 5. Hotspots: their chains are the marks the history carried, the
         // youngest first.
         let hotspots: Vec<Hotspot> = h
@@ -1097,91 +1046,47 @@ impl Planet {
                 }
             }
         }
-        // 6. Height.
-        let relief_seed = hash(&[seed, P_RELIEF]);
+        // 6. Height. A continent's is carried by its crust (version 7,
+        // 27 November 2026): the history changed it only where something
+        // happened to the crust, and the grain is its home's. The ocean
+        // floor's follows its age, with its trenches, its island arcs and
+        // its hotspots' chains.
         let mut elevation: Vec<i64> = (0..CELLS)
             .map(|c| {
-                // A continent carries its fine relief with it (read where
-                // its crust stood at the start); the ocean floor's is read
-                // where it lies (27 November 2026: coasts no longer redraw
-                // themselves under a drifting continent).
-                let p = if continental[c] {
-                    sphere.centre[home[c] as usize]
-                } else {
-                    sphere.centre[c]
-                };
-                let rough = fbm3(relief_seed, p, &[(120_000, 2), (40_000, 1)]) - 500;
-                let mut e = if continental[c] {
-                    let inland = i64::from(inland_d[c].min(600));
-                    let rise = if coast_kind[c] == history::Margin::Passive as u32 {
-                        550
+                if continental[c] {
+                    let from = home[c] as usize;
+                    // A pile of crust floats higher (isostasy), flood
+                    // basalts stand as plateaus.
+                    let pile = (i64::from(h.thick_at[t][c]) - i64::from(history::CONTINENT_THICK))
+                        .max(0)
+                        * history::ISOSTASY_M
+                        / 10;
+                    let lip = if h.margins_at[t][c] & history::LIP != 0 {
+                        350
                     } else {
-                        900
+                        0
                     };
-                    let from = sphere.centre[home[c] as usize];
-                    let broad = fbm3(relief_seed ^ 0xb0, from, &[(300_000, 2), (120_000, 1)]) - 500;
-                    let mut range = 0;
-                    if range_d[c] != u32::MAX {
-                        let (height, width) =
-                            range_of(h, t, now_my, range_l[c] as usize).expect("a range's source");
-                        range = height * bump(i64::from(range_d[c]), width) / 1000;
-                    }
-                    -300 + inland * rise / 600 + broad / 2 + rough + range
-                } else {
-                    // The floor sinks as it cools: ~2,500 m at a ridge,
-                    // ~350 m more per square root of a million years
-                    // (Parsons and Sclater), flat past [`FLAT_FLOOR_MY`].
-                    -2_500 - sinking(i64::from(h.age[t][c])) + rough
-                };
+                    return i64::from(h.high_at[t][c])
+                        + i64::from(h.rough[from])
+                        + i64::from(h.broad[from]) / 2
+                        + pile
+                        + lip;
+                }
+                // The floor sinks as it cools: ~2,500 m at a ridge,
+                // ~350 m more per square root of a million years
+                // (Parsons and Sclater), flat past [`FLAT_FLOOR_MY`].
+                let mut e = -2_500 - sinking(i64::from(h.age[t][c])) + i64::from(h.rough[c]);
                 let (d, src) = near[c];
                 if d != u32::MAX {
                     let d = i64::from(d);
-                    let b = edge[src as usize].expect("a source is an edge");
-                    let r = i64::from(b.rate).min(80);
-                    e += match b.kind {
-                        Kind::Collision => (1_500 + 30 * r) * bump(d, 500) / 1000,
-                        Kind::Arc => {
-                            (1_600 + 15 * r) * bump(d - 180, 140) / 1000
-                                + 700 * bump(d - 40, 60) / 1000
-                        }
+                    e += match edge[src as usize].expect("a source is an edge").kind {
                         Kind::IslandArc => 3_800 * bump(d - 140, 90) / 1000,
                         Kind::Trench => -2_600 * bump(d, 90) / 1000,
-                        Kind::Rift => {
-                            -(800 + 20 * r) * bump(d, 110) / 1000 + 300 * bump(d - 150, 70) / 1000
-                        }
-                        Kind::Ridge => 0,
-                        Kind::Transform => {
-                            if continental[c] {
-                                -200 * bump(d, 60) / 1000
-                            } else {
-                                0
-                            }
-                        }
-                    };
-                }
-                if continental[c] && old_d[c] != u32::MAX {
-                    let d = i64::from(old_d[c]);
-                    e += match old_edge[old_l[c] as usize] {
-                        Some(OldKind::Suture) => 450 * bump(d, 220) / 1000,
-                        Some(OldKind::FailedRift) => -650 * bump(d, 110) / 1000,
                         _ => 0,
                     };
                 }
                 if let Some((d, age)) = lava[c] {
-                    e += if continental[c] {
-                        500 * bump(d, 250) / 1000 / (1 + age / 20)
-                    } else {
-                        3_800 * bump(d, 130) / 1000 * (TRACK_MYR - age).max(0) / TRACK_MYR
-                    };
-                }
-                if continental[c] {
-                    // A pile of crust floats higher (isostasy), flood
-                    // basalts stand as plateaus.
-                    let thick = i64::from(h.thick_at[t][c]);
-                    e += (thick - i64::from(history::CONTINENT_THICK)).max(0) * ISOSTASY_M / 10;
-                    if h.margins_at[t][c] & history::LIP != 0 {
-                        e += 350;
-                    }
+                    e += 3_800 * bump(d, 130) / 1000 * (TRACK_MYR - age).max(0) / TRACK_MYR;
                 }
                 e
             })
@@ -2519,6 +2424,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_continent_carries_its_relief() {
+        // Followed by its home from step to step, a crust keeps its height
+        // unless something happens to it: little of it crosses the level
+        // of the start's sea in a step (a height recomputed at each step
+        // sent a tenth of it across).
+        let world = Planet::new(9);
+        let h = &world.history;
+        let height = |t: usize, c: usize| {
+            let home = h.home_at[t][c] as usize;
+            i64::from(h.high_at[t][c])
+                + i64::from(h.rough[home])
+                + i64::from(h.broad[home]) / 2
+                + (i64::from(h.thick_at[t][c]) - i64::from(history::CONTINENT_THICK)).max(0)
+                    * history::ISOSTASY_M
+                    / 10
+        };
+        let (mut followed, mut crossed) = (0_i64, 0_i64);
+        for t in 1..=h.last() {
+            let mut was = vec![None; CELLS];
+            for c in 0..CELLS {
+                if h.class[t - 1][c] != history::OCEAN {
+                    was[h.home_at[t - 1][c] as usize] = Some(height(t - 1, c) > 0);
+                }
+            }
+            for c in 0..CELLS {
+                if h.class[t][c] == history::OCEAN {
+                    continue;
+                }
+                if let Some(dry) = was[h.home_at[t][c] as usize] {
+                    followed += 1;
+                    crossed += i64::from(dry != (height(t, c) > 0));
+                }
+            }
+        }
+        assert!(crossed * 100 <= followed * 4, "{crossed} of {followed}");
     }
 
     #[test]

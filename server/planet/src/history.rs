@@ -50,6 +50,15 @@
 //! 8. **Hotspots** mark the crust passing over them, a mark a million
 //!    years, carried with the crust: their chains bend as the plates
 //!    turned, and are as old as the history.
+//! 9. **Relief** (version 7, the lead's 27 November). A continent's
+//!    height is carried by its crust, like its thickness, and changes
+//!    only when something happens to that crust: a collision piles it up
+//!    and it floats higher; a rift stretches it and it sinks, then sinks
+//!    as much again as it cools (a passive margin's shelf); an arc, a
+//!    docking terrane or a plume raise it where they act; high ground
+//!    wears down slowly and its sediment fills the low ground. The
+//!    supercontinent starts with a relief of its own, once. Nothing is
+//!    recomputed from where the crust happens to lie.
 //!
 //! Moving the crust (version 5): the crust is a set of bits at their exact
 //! places; each step every bit turns with its plate, so the turns add up
@@ -59,9 +68,9 @@
 //! the plates of the last step.
 
 use crate::{
-    CELLS, Kind, ONE, RADIUS_KM, Sphere, TAU, V3, add, classify, cos, cross, dot, draw, east_at,
-    fbm3, hash, km_between, latitude, norm, normalize, north_at, quantile, random_unit, scale, sin,
-    step, sub, warp,
+    CELLS, Kind, ONE, P_RELIEF, RADIUS_KM, Sphere, TAU, V3, add, bump, classify, cos, cross, dot,
+    draw, east_at, fbm3, hash, km_between, latitude, norm, normalize, north_at, quantile,
+    random_unit, scale, sin, step, sub, warp,
 };
 
 /// A world's character, the model's input: a supercontinent of this
@@ -209,7 +218,7 @@ impl Default for Settings {
             terrane_cells: (1, 5),
             hotspots: (14, 20),
             mountain_wear: 100,
-            sea_follows_floor: 400,
+            sea_follows_floor: 150,
         }
     }
 }
@@ -403,6 +412,16 @@ pub struct History {
     pub orogeny_at: Vec<Vec<u16>>,
     /// Per step, each cell's crust thickness, tenths of a km.
     pub thick_at: Vec<Vec<u16>>,
+    /// Per step, the height each cell's continental crust carries, m
+    /// above the sea of the start, without its grain and its pile's lift
+    /// (version 7).
+    pub high_at: Vec<Vec<i16>>,
+    /// The relief's grain at each cell, m: fine, and broad. A continent's
+    /// crust keeps the grain of its home (fine plus half the broad one);
+    /// the ocean floor has the fine one of where it lies.
+    pub rough: Vec<i16>,
+    /// The broad grain (see [`History::rough`]).
+    pub broad: Vec<i16>,
     /// The hotspots, fixed under the plates: plumes risen where the mantle
     /// was hottest at the start.
     pub hotspots: Vec<V3>,
@@ -587,6 +606,13 @@ struct Rock {
     home: u32,
     /// Its thickness, tenths of a km.
     thick: u16,
+    /// Its height, m above the sea of the start, without its grain
+    /// ([`History::rough`], [`History::broad`]) and without what a pile
+    /// lifts ([`ISOSTASY_M`]). The crust carries it (version 7): only what
+    /// happens to the crust changes it.
+    high: i16,
+    /// How far it has still to sink as it cools, m (a stretched margin).
+    cool: i16,
 }
 
 /// A bit of crust where it really is. Each step it turns with its plate,
@@ -691,6 +717,126 @@ const LIP_KM: i64 = 400;
 const RIFT_SEAM_KM: i64 = 250;
 const RIFT_SPAN_KM: i64 = 3_000;
 const RIFT_SIDE_KM: i64 = 500;
+
+/// Height a km of extra crust raises a continent, m (Airy isostasy:
+/// crust 2.8, mantle 3.3).
+pub const ISOSTASY_M: i64 = 100;
+/// The starting supercontinent's relief, m: its shore, how high its
+/// heart stands above it and how far inland it gets there (km); an old
+/// range along an old suture and an old failed rift's trough, with their
+/// half-widths (km).
+const SHORE_M: i64 = -300;
+const HEART_M: i64 = 1_800;
+const HEART_KM: i64 = 2_000;
+const OLD_RANGE: (i64, i64) = (450, 220);
+const OLD_TROUGH: (i64, i64) = (-650, 110);
+/// A rift stretches and thins the crust this far from its line, km: it
+/// sinks at once by this much at the line, m, and as much again as it
+/// cools, [`COOLING`] ‰ of what is left each step (a passive margin's
+/// shelf).
+const STRETCH_KM: u32 = 230;
+const STRETCH_M: i64 = 400;
+const COOLING: i64 = 100;
+/// An arc builds volcanoes on the plate riding over a sinking floor:
+/// toward this height, m, at their line ([`ARC_LINE_KM`] from the coast,
+/// this half-width) and on the coast range, by [`ARC_RATE`] ‰ of what is
+/// missing each step, as far as [`ARC_KM`].
+const ARC_TOP_M: i64 = 2_200;
+const ARC_COAST_M: i64 = 700;
+const ARC_RATE: i64 = 100;
+const ARC_LINE_KM: (i64, i64) = (180, 150);
+const ARC_KM: u32 = 340;
+/// A terrane docking raises the crust it meets, m; an island arc is born
+/// this high; a plume lifts the continent over it, m a step.
+const DOCK_M: i64 = 500;
+const ARC_ISLAND_M: i16 = 200;
+const PLUME_UP_M: i64 = 60;
+/// Wear: each step the height above a plain's (m) loses this much (‰,
+/// slowly: an old range is still a range), slopes level by this much
+/// (‰), and the sediment fills its plate's low ground, at most this share
+/// (‰) of what lies below a shelf's depth (m).
+const WEAR: i64 = 20;
+const PLAIN_M: i64 = 300;
+const LEVELLING: i64 = 30;
+const FILLING: i64 = 300;
+const SHELF_M: i64 = -150;
+
+/// A carried height changed by `by` m.
+fn lift(high: i16, by: i64) -> i16 {
+    (i64::from(high) + by).clamp(-6_000, 8_000) as i16
+}
+
+/// The arcs build: volcanoes on the plates riding over
+/// a sinking floor, behind their active margins.
+fn arcs(sphere: &Sphere, rock: &mut [Rock], margin: &[u8]) {
+    let active: Vec<(usize, u32)> = (0..CELLS)
+        .filter(|&c| rock[c].class != OCEAN && margin[c] == Margin::Active as u8)
+        .map(|c| (c, 0))
+        .collect();
+    let (d, _) = sphere.spread(&active, |_, b| rock[b].class != OCEAN, ARC_KM);
+    for c in 0..CELLS {
+        if d[c] != u32::MAX && rock[c].class != OCEAN {
+            let d = i64::from(d[c]);
+            let top = ARC_TOP_M * bump(d - ARC_LINE_KM.0, ARC_LINE_KM.1) / 1000
+                + ARC_COAST_M * bump(d, 90) / 1000;
+            let up = (top - i64::from(rock[c].high)).max(0) * ARC_RATE / 1000;
+            rock[c].high = lift(rock[c].high, up);
+        }
+    }
+}
+
+/// What happens to the continents' relief in a step, apart from the
+/// collisions' piles (version 7): arcs build, stretched margins cool and
+/// sink, high ground wears down and its sediment fills the low ground.
+fn weather(sphere: &Sphere, plate: &[u8], rock: &mut [Rock], margin: &[u8], grain: &[i16]) {
+    arcs(sphere, rock, margin);
+    for c in 0..CELLS {
+        let r = &mut rock[c];
+        if r.class == OCEAN {
+            continue;
+        }
+        if r.cool > 0 {
+            let sunk = (i64::from(r.cool) * COOLING / 1000).max(1);
+            r.high = lift(r.high, -sunk);
+            r.cool -= sunk as i16;
+        }
+    }
+    let high: Vec<i64> = rock.iter().map(|r| i64::from(r.high)).collect();
+    let mut silt = [0_i64; MAXP];
+    let mut room = [0_i64; MAXP];
+    let below = |r: &Rock| {
+        SHELF_M
+            - i64::from(r.high)
+            - i64::from(grain[r.home as usize])
+            - (i64::from(r.thick) - i64::from(CONTINENT_THICK)).max(0) * ISOSTASY_M / 10
+    };
+    for c in 0..CELLS {
+        if rock[c].class == OCEAN {
+            continue;
+        }
+        let mut flow = 0;
+        for &(m, _) in &sphere.links[c] {
+            if rock[m as usize].class != OCEAN {
+                flow += (high[m as usize] - high[c]) * LEVELLING / 1000 / 8;
+            }
+        }
+        let worn = ((high[c] - PLAIN_M) * WEAR / 1000).max(0);
+        let area = i64::from(sphere.area_km2[c]);
+        let r = &mut rock[c];
+        r.high = lift(r.high, flow - worn);
+        silt[plate[c] as usize] += worn * area;
+        room[plate[c] as usize] += below(r).max(0) * area;
+    }
+    for c in 0..CELLS {
+        let p = plate[c] as usize;
+        let deep = below(&rock[c]);
+        if rock[c].class == OCEAN || deep <= 0 || silt[p] == 0 {
+            continue;
+        }
+        let fill = deep * silt[p].min(room[p]) / room[p].max(1) * FILLING / 1000;
+        rock[c].high = lift(rock[c].high, fill);
+    }
+}
 
 /// The part of `v` tangent to the sphere at `x`.
 fn tangent(x: V3, v: V3) -> V3 {
@@ -1348,7 +1494,12 @@ fn flood(
 }
 
 /// The history of the planet born from `seed`.
-pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> History {
+pub fn run(
+    seed: u64,
+    s: &Settings,
+    sphere: &Sphere,
+    (old_suture, old_rift): (&[bool], &[bool]),
+) -> History {
     assert_eq!(s.radius_km, RADIUS_KM, "only the Earth's radius for now");
     let total_my = s.steps as i64 * s.step_my;
     let area = |c: usize| i64::from(sphere.area_km2[c]);
@@ -1429,6 +1580,58 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
         .map(|c| (c, 0))
         .collect();
     let (from_ridge, _) = sphere.spread(&ridges, |a, b| !inside[b] && plate[a] == plate[b], 20_000);
+    // The relief the crust carries (version 7). Its grain is read once at
+    // each cell, and a crust keeps the grain of its home. The
+    // supercontinent starts with a relief of its own: low shores, a higher
+    // heart, old ranges along its old sutures, troughs along its failed
+    // rifts.
+    let relief_seed = hash(&[seed, P_RELIEF]);
+    let rough: Vec<i16> = sphere
+        .centre
+        .iter()
+        .map(|&p| (fbm3(relief_seed, p, &[(120_000, 2), (40_000, 1)]) - 500) as i16)
+        .collect();
+    let broad: Vec<i16> = sphere
+        .centre
+        .iter()
+        .map(|&p| (fbm3(relief_seed ^ 0xb0, p, &[(300_000, 2), (120_000, 1)]) - 500) as i16)
+        .collect();
+    let grain: Vec<i16> = (0..CELLS).map(|c| rough[c] + broad[c] / 2).collect();
+    let high0: Vec<i16> = {
+        let around: Vec<(usize, u32)> =
+            (0..CELLS).filter(|&c| !inside[c]).map(|c| (c, 0)).collect();
+        let (inland, _) = sphere.spread(&around, |_, b| inside[b], 2_000);
+        let near = |which: &[bool], reach: i64| {
+            let from: Vec<(usize, u32)> = (0..CELLS)
+                .filter(|&c| inside[c] && which[c])
+                .map(|c| (c, 0))
+                .collect();
+            sphere.spread(&from, |_, b| inside[b], reach as u32).0
+        };
+        let (range, trough) = (near(old_suture, OLD_RANGE.1), near(old_rift, OLD_TROUGH.1));
+        let old = |d: u32, (m, km): (i64, i64)| {
+            if d == u32::MAX {
+                0
+            } else {
+                m * bump(i64::from(d), km) / 1000
+            }
+        };
+        let raw: Vec<i64> = (0..CELLS)
+            .map(|c| {
+                if inside[c] {
+                    SHORE_M
+                        + i64::from(inland[c]).min(HEART_KM) * HEART_M / HEART_KM
+                        + old(range[c], OLD_RANGE)
+                        + old(trough[c], OLD_TROUGH)
+                } else {
+                    0
+                }
+            })
+            .collect();
+        (0..CELLS)
+            .map(|c| if inside[c] { lift(0, raw[c]) } else { 0 })
+            .collect()
+    };
     // Records at the start.
     let old_my = draw(seed, P_AGE, 1, OLD_OROGENY_MY.0, OLD_OROGENY_MY.1) as u16;
     let mut rock: Vec<Rock> = (0..CELLS)
@@ -1458,6 +1661,8 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                     orogeny,
                     home: c as u32,
                     thick: CONTINENT_THICK,
+                    high: high0[c],
+                    cool: 0,
                 }
             } else {
                 let d = i64::from(from_ridge[c].min(20_000));
@@ -1472,6 +1677,8 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                     orogeny: NEVER,
                     home: c as u32,
                     thick: OCEAN_THICK,
+                    high: 0,
+                    cool: 0,
                 }
             }
         })
@@ -1616,6 +1823,7 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
     let mut out_margins = Vec::with_capacity(s.steps + 1);
     let mut out_orogeny = Vec::with_capacity(s.steps + 1);
     let mut out_thick = Vec::with_capacity(s.steps + 1);
+    let mut out_high = Vec::with_capacity(s.steps + 1);
     let mut out_marks = Vec::with_capacity(s.steps + 1);
     let mut out_heat = Vec::with_capacity(s.steps + 1);
     let mut continental_km2 = Vec::with_capacity(s.steps + 1);
@@ -1934,6 +2142,9 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                         .max_by_key(|&p| ride(p))
                 {
                     accrete.push((q, rider, pw, r.piece));
+                    if r.margins & ACCRETED == 0 {
+                        r.high = lift(r.high, DOCK_M);
+                    }
                     r.margins |= ACCRETED;
                     r.orogeny = now_my;
                     pw = rider;
@@ -1960,6 +2171,9 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                             }
                         }
                         TERRANE => {
+                            if r.margins & ACCRETED == 0 {
+                                r.high = lift(r.high, DOCK_M);
+                            }
                             r.margins |= ACCRETED;
                             r.orogeny = now_my;
                             accrete.push((q, pw, bj.plate, bj.rock.piece));
@@ -1990,6 +2204,8 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                         r.margins |= ACTIVE;
                         r.orogeny = now_my;
                         r.thick = TERRANE_THICK;
+                        r.high = ARC_ISLAND_M;
+                        r.cool = 0;
                         made += area(q);
                     }
                 }
@@ -2061,6 +2277,9 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                     pending[q] = false;
                 }
             }
+            // The crust a rift has already torn (what this step tears
+            // sinks, below).
+            let rifted: Vec<bool> = rock.iter().map(|r| r.margins & RIFT != 0).collect();
             // 7. Gaps: new ocean floor, filled from both sides at once.
             let mut open: Vec<usize> = (0..CELLS).filter(|&q| pending[q]).collect();
             let born: Vec<usize> = open.clone();
@@ -2074,6 +2293,8 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                 orogeny: NEVER,
                 home: q as u32,
                 thick: OCEAN_THICK,
+                high: 0,
+                cool: 0,
             };
             while !open.is_empty() {
                 let mut set = Vec::new();
@@ -2197,6 +2418,9 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                         continue;
                     }
                     plate[c] = pw;
+                    if rock[c].margins & ACCRETED == 0 {
+                        rock[c].high = lift(rock[c].high, DOCK_M);
+                    }
                     rock[c].margins |= ACCRETED;
                     rock[c].orogeny = now_my;
                     km2 += area(c);
@@ -2351,6 +2575,10 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                 plate[m] = p;
                 rock[m] = Rock {
                     thick: (v / area(m).max(1)) as u16,
+                    // Sediment builds a shelf out.
+                    high: lift(0, SHELF_M - i64::from(grain[m])),
+                    cool: 0,
+                    home: m as u32,
                     margins: 0,
                     arc: 0,
                     rift: 0,
@@ -2394,6 +2622,16 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
                 let i0 = disp[c];
                 if i0 == NO_BIT {
                     continue;
+                }
+                // A plume lifts the continent over it and floods it a little.
+                if rock[c].class != OCEAN {
+                    rock[c].high = lift(rock[c].high, PLUME_UP_M);
+                    for &(m, _) in &sphere.links[c] {
+                        let r = &mut rock[m as usize];
+                        if r.class != OCEAN {
+                            r.high = lift(r.high, PLUME_UP_M / 3);
+                        }
+                    }
                 }
                 let p = bits[i0 as usize].plate;
                 let w = moved[p as usize];
@@ -2682,6 +2920,27 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
             for push in &mut pushes {
                 push.strength = push.strength * PUSH_KEEP / 1000;
             }
+            // A rift stretches and thins the crust along it: it sinks at
+            // once, and as much again while it cools.
+            let torn: Vec<(usize, u32)> = (0..CELLS)
+                .filter(|&c| rock[c].class != OCEAN && rock[c].margins & RIFT != 0 && !rifted[c])
+                .map(|c| (c, 0))
+                .collect();
+            if !torn.is_empty() {
+                let (d, _) = sphere.spread(&torn, |_, b| rock[b].class != OCEAN, STRETCH_KM);
+                for c in 0..CELLS {
+                    let r = &mut rock[c];
+                    if d[c] == u32::MAX || r.class == OCEAN {
+                        continue;
+                    }
+                    let due = STRETCH_M * bump(i64::from(d[c]), i64::from(STRETCH_KM)) / 1000;
+                    let more = due - i64::from(r.cool);
+                    if more > 0 {
+                        r.high = lift(r.high, -more);
+                        r.cool = lift(r.cool, more);
+                    }
+                }
+            }
         }
         // 12. What the plates do now, and the forces for the next step.
         let seen = look(
@@ -2705,6 +2964,25 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
         for c in 0..CELLS {
             if seen.margin[c] == Margin::Active as u8 && rock[c].orogeny != now_my {
                 rock[c].orogeny = now_my;
+            }
+        }
+        if t > 0 {
+            weather(sphere, &plate, &mut rock, &seen.margin, &grain);
+        } else {
+            // Heights are counted from the sea of the start, the one
+            // that leaves the settings' share of land dry.
+            let whole: Vec<i64> = (0..CELLS)
+                .map(|c| {
+                    if rock[c].class == CONTINENT {
+                        i64::from(rock[c].high) + i64::from(grain[c])
+                    } else {
+                        i64::from(i16::MIN)
+                    }
+                })
+                .collect();
+            let sea = quantile(sphere, &whole, 1000 - s.land_per_mille);
+            for r in rock.iter_mut().filter(|r| r.class == CONTINENT) {
+                r.high = lift(r.high, -sea);
             }
         }
         sync(&mut bits, &plate, &rock, &disp);
@@ -2804,6 +3082,7 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
         out_margins.push(rock.iter().map(|r| r.margins).collect::<Vec<u8>>());
         out_orogeny.push(rock.iter().map(|r| r.orogeny).collect::<Vec<u16>>());
         out_thick.push(rock.iter().map(|r| r.thick).collect::<Vec<u16>>());
+        out_high.push(rock.iter().map(|r| r.high).collect::<Vec<i16>>());
         out_marks.push(
             marks
                 .iter()
@@ -2906,6 +3185,9 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old_suture: &[bool]) -> His
         margins_at: out_margins,
         orogeny_at: out_orogeny,
         thick_at: out_thick,
+        high_at: out_high,
+        rough,
+        broad,
         marks_at: out_marks,
         hotspots: hotspots.to_vec(),
         motion: out_motion,
