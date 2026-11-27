@@ -1,0 +1,161 @@
+# The planet's map: which mechanism lives where
+
+## Rule of work for a round on the model
+
+1. **Try small.** A change of a mechanism is tried on its bench scene
+   (`banc`, under a second to a few seconds) and on two seeds (14 and 9),
+   with the try build. Not on thirty seeds.
+2. **The thirty seeds run once, at the end**, through the bilan
+   (`tools/bilan.sh vNN OUT_DIR`), with the release build.
+3. **The proof** (`tools/preuve.py`) says whether the worlds changed. A
+   tooling change must leave it identical. A change of the model moves it:
+   save the new reference (`--save`) in the same commit.
+4. **One archive of the page, no more**: `tools/page.py --previous NN`
+   keeps the page before it as `carte-vNN.html` (the previous version
+   only). Older archives are not regenerated, and no copy is made per try.
+5. Read this map and the module of the mechanism you change. The two
+   files of several thousand lines are gone: no module is over 800 lines.
+
+## The commands
+
+All from `server/`, with `CARGO_TARGET_DIR=~/.cache/soul-sim/target-planete`
+and under `soul-cap`.
+
+| What | Command | Measured (27 Nov 2026, 16 threads) |
+|---|---|---|
+| Does it compile | `cargo check -p planet --all-targets` | under 1 s after a one-line change |
+| **Try**: a bench scene | `cargo run --profile essai -p planet --example banc -- rift` | build 3 s, a scene about 1 s, the five together 4 s |
+| **Try**: two seeds, numbers only | `PLANET_OUT=dir PLANET_SEEDS=14,9 cargo run --profile essai -p planet --example planet` | build 3 s, two planets 5 s |
+| Tests | `cargo test --profile essai -p planet --lib` | build 2 s, tests 11 s |
+| **Final**: the bilan on 30 seeds | `planet/tools/bilan.sh v12 OUT_DIR` | 2 min (was 7 min on one thread) |
+| **Final**: the identity proof | `planet/tools/preuve.py` | 3 min (planets with layers 1 min, bilan 2 min) |
+| The page for seeds 14 and 9 | `planet/tools/page.py --out DIR --version 12 --previous 11` | 70 s |
+| A sheet of 12 steps | `planet/tools/planche.py DIR 14 1 out.png` | 1 s |
+
+The `essai` profile (workspace `Cargo.toml`) is the release profile at
+`opt-level = 1` with incremental compilation, overflow checks and debug
+assertions: the build of a one-line change is about twice as fast as
+release, a planet about 15 % slower, and an integer overflow panics
+instead of wrapping. The worlds are the same under every profile
+(integers only). `cargo test` without `--lib` also builds the examples a
+second time: use `--lib`.
+
+`PLANET_THREADS=n` sets the threads of `planet`, `bilan` and `banc`
+(default: every core). What they write does not depend on it, except the
+seconds a planet takes.
+
+## Where things are
+
+`src/lib.rs` only declares the modules and re-exports their names.
+
+| File | What it holds |
+|---|---|
+| `math.rs`, `noise.rs`, `hash.rs` | Fixed-point trigonometry and vectors; seeded draws and noise. |
+| `sphere.rs` | The grid: `FACE`² × 6 cells of one area, neighbours, `cell_of`, `spread`, `quantile`. The cell count is a constant (`CELLS`). |
+| `history/` | **The model**: the plates' history, one mechanism a module (below). |
+| `today.rs` | Today's plates and the kinds of their boundaries (`Layout`, `Kind`, `classify`). |
+| `planet.rs` | `Planet`: the history, then heights, sea, landmasses, hollows; `at_step(t)`. |
+| `site.rs`, `zoom.rs` | Our continent: its site on a subduction margin, its shape across the margin. |
+| `tests.rs` | The tests. |
+| `examples/planet.rs` | Draws seeds: maps, the page's layers (`PLANET_LAYERS`), `graine-N.json`. |
+| `examples/bilan.rs` | The one measuring tool: a table over many seeds, a JSON per version. |
+| `examples/banc.rs` | The bench: small written scenes, one mechanism each, a sheet of their steps. |
+| `tools/` | `preuve.py` (identity proof), `bilan.sh`, `page.py` + `carte.html` (the page), `planche.py` (sheets). |
+
+## The settings
+
+A world's character is `Settings` (`history/settings.rs`): each field is
+documented there with its default. The lead's file `monde-defaut.ron`
+(review folder) lists the same fields in French; `--settings file.ron`
+reads it, a missing field takes its default.
+
+A mechanism's own tuning constants sit at the top of its module (for
+example `RIFT_WIDTH_KM` in `history/rifts.rs`, `WEAR` in
+`history/wear.rs`). The draws' purposes (`P_*`) are in `history/mod.rs`.
+
+## The history, a mechanism a module
+
+`history/mod.rs` is the table of contents: `run` = `start::begin`, then
+`advance` once per step, then `record::finish`. **`advance` lists the
+mechanisms in the order a step runs them**: read it first.
+
+The state they all work on is `World` (`history/state.rs`): the crust
+(pieces of continent, bits of ocean floor), the grid's view of it
+(`plate`, `rock`, `top`), the plates' turns, the mantle's heat, the
+events' records and the layers kept for each step. What the mechanisms
+of one step hand to one another is `world.step` (`Step`, same file).
+Each mechanism is a function `fn name(world: &mut World)` that begins by
+naming the parts of the world it uses.
+
+| Order in a step | Function | Module | What it does |
+|---|---|---|---|
+| start | `begin` | `start.rs` | Supercontinent, first plates, ocean floor, relief, heat, plumes, first forces. |
+| 1 | `begin_step` | `crust.rs` | Clears what the last step left on each cell of crust. |
+| 2 | `weld_and_escape` | `collisions.rs` | A collision that stood still welds its two plates; a hard one sheds a block sideways. |
+| 3 | `troughs` | `rifts.rs` | Rifts: troughs begin where a plate is pulled apart and weak, stretch and thin the crust, grow, cut the plate, or are abandoned. |
+| 4 | `turn` | `crust.rs` | The plates turn: pieces change their turn, bits of floor move, and are sorted by cell. |
+| 5 | `meet` | `collisions.rs` | Pieces that meet: crust run under another piece piles on it (suture). |
+| 6 | `sink_and_dock` | `trenches.rs` | Floor under a continent sinks (active margin); terranes and arcs dock. |
+| 7 | `draw_floor` | `trenches.rs` | The grid's view; ocean under ocean (the older sinks), island arcs. |
+| 8 | `holes_and_gaps` | `floor.rs` | Holes of the floor's sampling mended; gaps between parting plates filled with new floor; rift margins. |
+| 9 | `specks` | `plates.rs` | A lone cell of a plate joins the plate around it. |
+| 10 | `piles_and_silt` | `wear.rs` | Piles spread and wear; their silt builds the margins out. |
+| 11 | `one_piece` | `plates.rs` | A plate is one piece: parts cut off become plates or are captured, crumbs absorbed; plates parted. |
+| 12 | `hotspots_mark` | `heat.rs` | Hotspots mark and lift the crust over them. |
+| 13 | `compact` | `crust.rs` | Dead crust leaves the record; what the view hides is counted. |
+| 14 | `margins_sink` | `rifts.rs` | The crust beside a new ocean sinks (a rifted margin). |
+| 15 | `look_at` | `forces.rs` | What the plates do now: kinds of boundaries, margins (`look`). |
+| 16 | `warm_step` | `heat.rs` | The mantle's heat under the crust as it lies (`warm`). |
+| 17 | `sea_and_weather` | `wear.rs` | The sea level; relief wears down and fills (`weather`). |
+| 18 | `progress` | `collisions.rs` | Collisions begin, last, end. |
+| 19 | `write` | `record.rs` | The step's layers and its journal of events. |
+| 20 | `next` | `forces.rs` | The forces and the plates' turns for the next step (`drive`); boundaries that open, lava floods. |
+
+Steps 1 to 14 do not run at step 0. Other things a module holds:
+`pieces.rs` the rigid pieces (`Land`: lattice, `cover`, `kin`, `spread`),
+the grid's view (`paint`, `seats`) and who rides over whom
+(`precedence`); `crust.rs` the records a crust carries (`Rock`, `Bit`,
+`Mark`, the named causes of a change of height); `plates.rs` the merge
+of two plates (`absorb`) and the parts of a plate (`parts`);
+`record.rs` the public records and `History`.
+
+## The bench
+
+`cargo run --profile essai -p planet --example banc -- [scene…]` runs
+written scenes on the real model (`history::run_scene`: the model's own start and
+steps, on continents and plates laid by hand), prints a line of numbers a step and writes
+`banc-<scene>.png`, a sheet of its steps, in `PLANET_OUT` (default the
+current folder). With no name, every scene.
+
+| Scene | What is written | What it shows |
+|---|---|---|
+| `rift` | One continent of 3,000 km on its plate, the forces free. | The lid warms the mantle, troughs begin, the plate is cut. |
+| `collision` | Two continents driven at each other at 60 mm a year each. | They meet, pile up, weld once stopped. |
+| `trench` | An ocean plate driven under a continent that stands still. | An active margin and its arc. |
+| `arcs` | Two ocean plates driven at each other, no continent near. | The older floor sinks, island arcs grow. |
+| `carried` | A continent carried 20 steps by its plate. | A rigid piece: its cells unchanged. |
+
+To add a scene, write a function like these in `examples/banc.rs` and
+name it in `SCENES`. A scene is not "well under a second": it runs on
+the planet's whole grid, whose cell count (`CELLS`, 60,000) and radius
+are constants, so its time is the time of its 14 to 20 steps (about 1 s).
+A smaller sphere would need `FACE` and `RADIUS_KM` chosen at build or run
+time, which touches the grid's constants and the thresholds in km²: a
+change of the model's code, not done in the tooling round.
+
+## The journal and the page
+
+The history keeps a journal (`History::journal`, `history/record.rs`:
+`Event`, `What`): for each step, what happened to the plates, with its
+cause and its place. A plate born (of which rift, escaping which
+collision, cut off which plate), a plate ended (welded, crumb, enclosed,
+no cell left), a plate that moves as one with another (`MovesWith`: the
+map then draws them as one) or alone again, a rift begun or abandoned, a
+collision begun, terranes docked, islands risen. Recording only: no
+mechanism reads it.
+
+`examples/planet.rs` writes it beside the layers (`h<seed>-journal.js`)
+and the page shows it: in "Histoire", the list of the step's events in
+French (a click marks the place), and the button "Frise des plaques", one
+bar per plate drawn from its birth to its end. The address
+`carte.html#histoire-9-12-frise` opens seed 9 at step 12 with the strip.
