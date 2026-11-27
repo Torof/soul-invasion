@@ -749,9 +749,11 @@ impl Brains {
         self.learning_nanos += elapsed_nanos(started);
     }
 
-    /// At a fire at dawn (D59): who is sick there is seen by the others;
-    /// a kin who sees it lives a mark and takes an access to its episode,
-    /// a mate who carries the same problem takes the access alone.
+    /// At a fire at dawn (D59): who is sick there is seen by the others,
+    /// the infants its present carry too (not in the fire's circle, but
+    /// in their carrier's arms: the lead, 27 November 2026); a kin who
+    /// sees it lives a mark and takes an access to its episode, a mate
+    /// who carries the same problem takes the access alone.
     fn see_sick(
         &mut self,
         world: &World,
@@ -762,8 +764,13 @@ impl Brains {
         let dawn = today(world);
         let dawn32 = u32::try_from(dawn).unwrap_or(u32::MAX);
         let cycle = world.calendar().days_per_cycle();
+        let carried = present
+            .iter()
+            .filter_map(|id| self.carried.get(id))
+            .flatten();
         let sick: Vec<(BodyId, Ailment)> = present
             .iter()
+            .chain(carried)
             .filter_map(|&id| {
                 let s = world.body(id)?.condition().sick?;
                 Some((id, s.ailment))
@@ -1422,6 +1429,58 @@ mod tests {
         on_day(&mut world, 3);
         brains.see_sick(&world, &rules, &learning, &ids);
         assert_eq!(steps(&mut brains), []);
+    }
+
+    #[test]
+    fn an_infant_sick_in_its_mothers_arms_is_seen_by_its_mother_and_its_father() {
+        let (rules, mut world, mut brains, ids) = valley(4);
+        let (infant, mother, father, stranger) = (ids[0], ids[1], ids[2], ids[3]);
+        let days = u64::from(world.calendar().days_per_age_year());
+        world.set_birth(infant, days / 2, Sex::Male);
+        world.set_parents(infant, Some(mother), Some(father));
+        ill(&mut world, &mut brains, &rules, infant, 1);
+        let _ = brains.news();
+        for b in &mut world.bodies {
+            if b.id == infant {
+                b.condition.sick = Some(Sickness {
+                    ailment: Ailment::Gut,
+                    until_day: 10,
+                });
+            }
+        }
+        // In its mother's arms, not in the fire's circle.
+        brains.carried.insert(mother, vec![infant]);
+        on_day(&mut world, 2);
+        let learning = rules.needs.learning.clone().unwrap();
+        let present = [mother, father, stranger];
+        brains.see_sick(&world, &rules, &learning, &present);
+        let kind = gut(&rules);
+        let marked = steps(&mut brains)
+            .iter()
+            .filter(|s| **s == LearnStep::Marked { kind, own: false })
+            .count();
+        assert_eq!(marked, 2, "its mother and its father");
+        for parent in [mother, father] {
+            assert_eq!(
+                episodes(&brains, parent, kind),
+                episodes(&brains, infant, kind)
+            );
+        }
+        assert!(!brains.minds[&stranger].carries(kind));
+        assert_eq!(
+            brains.minds[&stranger].learner.sick_seen,
+            Some(2),
+            "seen all the same"
+        );
+        // Its own child: the draw weighs it `child_times`.
+        let body = world.body(infant).unwrap();
+        for parent in [mother, father] {
+            assert_eq!(
+                kin_times(&world, &learning, body, parent),
+                learning.child_times
+            );
+        }
+        assert_eq!(kin_times(&world, &learning, body, stranger), 0);
     }
 
     #[test]
