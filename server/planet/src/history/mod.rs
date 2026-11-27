@@ -33,12 +33,15 @@
 //!    crust sinks and is destroyed: always under a continent, and the
 //!    older, denser one under the younger; the riding edge of an ocean
 //!    grows an island arc. Continental crust never sinks: continent
-//!    against continent is a collision, a process (version 5): the plates
-//!    stay apart, the front resists and slows them, the crust run under
-//!    piles up (thicker, higher, spreading and wearing down), a block of
-//!    the riding plate may escape sideways, and the two weld only once
-//!    they have stopped closing. A terrane or an arc against a continent
-//!    is accreted to its plate.
+//!    against continent is a collision, a process: the crust run under
+//!    piles up, thicker and higher, and its weight pushes back on the two
+//!    plates, harder as it thickens (version 15); they slow, and once the
+//!    pile holds all the forces press them with they turn as one and are
+//!    one plate. No grip on their speed, no count of quiet steps, no
+//!    block pushed out sideways. A pile flows out at its base only where
+//!    it is very thick, and wears from the top slowly: a range keeps its
+//!    root for hundreds of millions of years. A terrane or an arc against
+//!    a continent is accreted to its plate.
 //!    **A trench is a state** (version 14), not only a motion: where a
 //!    slab hangs it pulls by its weight however slowly the plates close,
 //!    and is lost only where they part. **And a trench is born**: the old
@@ -130,7 +133,6 @@ pub(super) const P_AGE: u64 = 0x0c50_0107;
 pub(super) const P_OCEAN: u64 = 0x0c50_0108;
 pub(super) const P_ARC: u64 = 0x0c50_010a;
 pub(super) const P_SILT: u64 = 0x0c50_010c;
-pub(super) const P_ESCAPE: u64 = 0x0c50_010b;
 
 /// The history of the planet born from `seed`.
 pub fn run(seed: u64, s: &Settings, sphere: &Sphere, mosaic: &Mosaic) -> History {
@@ -149,7 +151,9 @@ pub fn run_scene(seed: u64, s: &Settings, sphere: &Sphere, scene: &Scene) -> His
     world.impose();
     for t in 0..=s.steps {
         advance(&mut world, t);
-        world.impose();
+        if t + 1 < scene.free_from {
+            world.impose();
+        }
     }
     finish(world)
 }
@@ -162,7 +166,7 @@ pub(crate) fn advance(world: &mut World, t: usize) {
     if t > 0 {
         world.free_names();
         crust::begin_step(world);
-        collisions::weld_and_escape(world);
+        collisions::stopped(world);
         rifts::troughs(world);
         crust::turn(world);
         collisions::meet(world);

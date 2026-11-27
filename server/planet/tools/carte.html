@@ -385,7 +385,6 @@ const quand = t => t >= ETAPES ? "aujourd'hui" : `il y a ${(ETAPES - t) * PAS} M
 // Each event in plain words; `plaque: true` for those that make or end a plate.
 const DIT = {
   BornOfRift: e => [true, `<b>La ${P(e.p)} naît.</b> Le rift ${e.r + 1} a traversé son continent et la croûte a cédé : la ${P(e.o)} est coupée en deux.`],
-  BornEscaping: e => [true, `<b>La ${P(e.p)} naît.</b> Un bloc de la ${P(e.o)} (${aire(e.km2)}) s'échappe sur le côté d'une collision.`],
   BornOfTrench: e => [true, `<b>La ${P(e.p)} naît : une fosse est née.</b> Le vieux fond d'océan de la ${P(e.o)} (${aire(e.km2)}), lourd, a fini par céder le long de sa marge : il se détache de son continent et commence à plonger dessous.`],
   BornCutOff: e => [true, `<b>La ${P(e.p)} naît.</b> Un grand morceau de la ${P(e.o)} (${aire(e.km2)}), séparé du reste sur la carte, devient une plaque à part, avec le même mouvement.`],
   EndedWelded: e => [true, `<b>La ${P(e.p)} disparaît.</b> Elle est soudée à la ${P(e.o)} : leur collision ne bougeait plus.`],
@@ -471,7 +470,7 @@ function vies() {
       let fin = t;
       while (la(fin + 1, k)) fin++;
       const de = j.etapes[t].e, a = fin < ETAPES ? j.etapes[fin + 1].e : [];
-      const ne = de.find(e => e.p === k && ["BornOfRift", "BornOfTrench", "BornEscaping", "BornCutOff", "MovesAlone"].includes(e.k))
+      const ne = de.find(e => e.p === k && ["BornOfRift", "BornOfTrench", "BornCutOff", "MovesAlone"].includes(e.k))
         || de.find(e => e.k === "MovesWith" && e.o === k);
       // A plate born while it moved as one with another shows only later.
       let cachee = null;
@@ -491,7 +490,6 @@ function vies() {
 
 const NAIT = {
   BornOfRift: e => `née du rift ${e.r + 1}, qui coupe la plaque ${nP(e.o)}`,
-  BornEscaping: e => `née d'un bloc de la plaque ${nP(e.o)} échappé d'une collision`,
   BornOfTrench: e => `née du vieux fond de la plaque ${nP(e.o)}, qui cède à sa marge et commence à plonger`,
   BornCutOff: e => `née d'un morceau de la plaque ${nP(e.o)} séparé du reste`,
   MovesAlone: e => `détachée de la plaque ${nP(e.o)} : elles ne bougent plus d'un bloc`,

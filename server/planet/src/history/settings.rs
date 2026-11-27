@@ -54,16 +54,15 @@ pub struct Settings {
     /// The mantle's drag grows with speed: at this speed, mm a year, it is
     /// twice a plain drag (the fast plates slow, no ceiling).
     pub mantle_drag_mm: i64,
-    /// A collision's front grips the two plates: each step it takes away
-    /// a share of their relative motion, ‰, of this times the front's
-    /// length (cell sides) times a thousand over the smaller continent's
-    /// cells (at most nine tenths): they slow as the front grows. Low on
-    /// purpose: a strong grip jams the breakup's pieces against each other
-    /// and they never spread (27 November).
-    pub collision_resist: i64,
-    /// Two colliding plates weld once they have moved against each other
-    /// slower than this, mm a year, for four steps.
-    pub weld_stop_mm: i64,
+    /// A collision's pile pushes back on the two plates that thicken it:
+    /// mm a year per side of a cell on its front (a cell of front has
+    /// about three), shared by all the plate's cells as
+    /// [`Settings::slab_pull`] is, for a pile twice a continent's
+    /// thickness (70 km); it grows with the pile
+    /// ([`pile_weight`](super::pile_weight)). At 4,000 a front as long
+    /// as a trench holds, at 70 km, about one and a half times what the
+    /// trench's slab pulls with.
+    pub pile_push: i64,
     /// The mantle's heat moves the continents: mm a year down a slope of
     /// the heat field as steep as under a supercontinent's edge (hot
     /// under a large continent, cold where slabs sink).
@@ -100,8 +99,11 @@ pub struct Settings {
     pub terrane_cells: (i64, i64),
     /// Hotspots: plumes rise where the mantle is hottest.
     pub hotspots: (i64, i64),
-    /// A range loses this much of its height above a plain continent each
-    /// step, per mille (its silt builds the coasts out).
+    /// A range loses this much of its thickness above a plain continent
+    /// each step, per mille (its silt builds the coasts out). 25: a
+    /// range is worn from the top and floats back up as it lightens, so
+    /// its root lasts some six times longer than its relief alone
+    /// would: it halves in about 140 My (100 until version 14: 33 My).
     pub mountain_wear: i64,
     /// The sea follows the ocean floor's age: of each metre the floor
     /// stood higher than today's on average (a younger floor), the sea
@@ -127,8 +129,7 @@ impl Default for Settings {
             step_my: 5,
             speed_mm: (10, 250),
             mantle_drag_mm: 150,
-            collision_resist: 3,
-            weld_stop_mm: 5,
+            pile_push: 4_000,
             heat_push: 150,
             slab_pull: 7_500,
             slab_age_my: 80,
@@ -140,7 +141,7 @@ impl Default for Settings {
             terranes: (18, 28),
             terrane_cells: (1, 5),
             hotspots: (14, 20),
-            mountain_wear: 100,
+            mountain_wear: 25,
             sea_follows_floor: 150,
         }
     }

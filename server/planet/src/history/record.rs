@@ -9,8 +9,6 @@ pub const NONE: u8 = u8::MAX;
 /// Why a cell of crust changed plate in a step: its plate welded to
 /// another after a collision.
 pub const SWITCH_WELD: u8 = 1;
-/// A block pushed out sideways by a collision.
-pub const SWITCH_ESCAPE: u8 = 2;
 /// A terrane or an arc docked.
 pub const SWITCH_DOCK: u8 = 3;
 /// A lone cell of a plate inside another, on the grid's view.
@@ -73,8 +71,6 @@ pub enum What {
     RiftAbandoned,
     /// `plate` is born: rift `rift` has cut plate `other` in two.
     BornOfRift,
-    /// `plate` is born: a block of `other` escaping a collision sideways.
-    BornEscaping,
     /// `plate` is born: a large part of `other` cut off from the rest of
     /// it on the grid is a plate of its own, with the same motion.
     BornCutOff,
@@ -238,6 +234,9 @@ pub struct Rift {
     pub cut_cells: u32,
     /// See `cut_cells`.
     pub belt_cells: u32,
+    /// The pull across its line when it began, ‰ of what the crust
+    /// there holds (1,000: the pull is the crust's strength).
+    pub pull: u32,
 }
 
 /// Two plates welded by a collision.
@@ -278,10 +277,27 @@ pub struct Collision {
     pub a: u8,
     /// See `a`.
     pub b: u8,
+    /// The continent each plate carried at their first contact, km².
+    pub km2: (i64, i64),
     /// First contact, millions of years ago.
     pub from_my: u16,
-    /// When they welded, millions of years ago ([`NEVER`]: not welded).
+    /// When they became one plate, millions of years ago ([`NEVER`]:
+    /// they did not).
     pub welded_my: u16,
+    /// When it ended, millions of years ago ([`NEVER`]: it goes on
+    /// today): the plates parted again or touch no more, or (`stopped`)
+    /// its pile stopped them and they are one plate.
+    pub ended_my: u16,
+    /// See `ended_my`.
+    pub stopped: bool,
+    /// The middle of its front when it was last seen (the suture's
+    /// place, on the planet as it lay then), and the way it squeezed
+    /// there: the unit vector from plate `a` toward plate `b`.
+    pub at: V3,
+    /// See `at`.
+    pub squeeze: V3,
+    /// The thickest crust its pile reached, tenths of a km.
+    pub thick: u16,
     /// How far they closed after the contact, km.
     pub closed_km: i64,
     /// The longest front, cells of ~100 km.
@@ -304,19 +320,6 @@ pub struct Capture {
     pub km2: i64,
     /// The whole plate (false: a part cut off from the rest).
     pub whole: bool,
-}
-
-/// A block of a riding plate pushed out sideways by a collision.
-#[derive(Debug, Clone, Copy)]
-pub struct Escape {
-    /// When, millions of years ago.
-    pub my: u16,
-    /// The plate it left, and its own.
-    pub from: u8,
-    /// See `from`.
-    pub block: u8,
-    /// Its continent, km².
-    pub km2: i64,
 }
 
 /// Flood basalts.
@@ -429,8 +432,6 @@ pub struct History {
     pub accretions: Vec<Accretion>,
     /// The collisions, in order of first contact.
     pub collisions: Vec<Collision>,
-    /// The blocks escaped sideways.
-    pub escapes: Vec<Escape>,
     /// The plates and cut-off parts taken by their neighbours, in order.
     pub captures: Vec<Capture>,
     /// Plates born of a large part cut off from its plate.
@@ -674,7 +675,6 @@ pub(crate) fn finish(world: World) -> History {
         welds,
         accretions,
         collisions,
-        escapes,
         captures,
         cut_off,
         built_km2,
@@ -724,7 +724,6 @@ pub(crate) fn finish(world: World) -> History {
         welds,
         accretions,
         collisions,
-        escapes,
         captures,
         cut_off,
         built_km2,

@@ -336,7 +336,6 @@ pub(super) fn troughs(world: &mut World) {
     let belt = &world.belt;
     let plumes = &world.plumes;
     let spent = &mut world.spent;
-    let pushes = &world.pushes;
     let parted = &mut world.parted;
     let broken = &mut world.broken;
     let alias = &world.alias;
@@ -362,16 +361,13 @@ pub(super) fn troughs(world: &mut World) {
     let (cell_tq, edge_tq) = torques(
         sphere,
         s,
-        &*plate,
         rock,
-        pushes,
-        alias,
         heat,
         Edges {
             slab: &edges_last.0,
             suction: &edges_last.1,
             ridge: &edges_last.2,
-            grips: &[],
+            piles: &[],
             bridges: &[],
         },
     );
@@ -892,6 +888,7 @@ pub(super) fn troughs(world: &mut World) {
                 bow_km: 0,
                 cut_cells: 0,
                 belt_cells: 0,
+                pull: 0,
             });
             journal.push(Event::rift(
                 What::RiftBegun,

@@ -69,15 +69,15 @@ pub(super) struct Mark {
 /// No bit shown.
 pub(super) const NO_BIT: u32 = u32::MAX;
 /// Crust thickness, tenths of a km: continents, the ocean floor,
-/// terranes and arcs; the most a pile reaches.
+/// terranes and arcs.
 pub const CONTINENT_THICK: u16 = 350;
 pub(super) const OCEAN_THICK: u16 = 70;
 pub(super) const TERRANE_THICK: u16 = 250;
-pub(super) const THICK_MAX: i64 = 700;
 
 /// Height a km of extra crust raises a continent, m (Airy isostasy:
-/// crust 2.8, mantle 3.3).
-pub const ISOSTASY_M: i64 = 100;
+/// crust 2.8 floating on a mantle 3.3 stands above it by 0.5 / 3.3 of
+/// its thickness; 100 until version 14, a third too little).
+pub const ISOSTASY_M: i64 = 150;
 
 /// A carried height changed by `by` m.
 pub(super) fn lift(high: i16, by: i64) -> i16 {
@@ -261,7 +261,6 @@ pub(super) fn turn(world: &mut World) {
 /// Step 11. The floor sunk and the crust piled leave the record; what
 /// the view hides is counted.
 pub(super) fn compact(world: &mut World) {
-    let pushes = &mut world.pushes;
     let troughs = &mut world.troughs;
     let land = &mut world.land;
     let bits = &mut world.bits;
@@ -346,7 +345,4 @@ pub(super) fn compact(world: &mut World) {
     *hidden_now = hidden;
     shortened_km2.push(*shortened);
     made_km2.push(*made);
-    for push in &mut *pushes {
-        push.strength = push.strength * PUSH_KEEP / 1000;
-    }
 }

@@ -1,5 +1,5 @@
 //! The forces on the plates and their turns: slab pull, trench suction,
-//! ridge push, the mantle's drag, the grip of a collision; what the plates
+//! ridge push, the mantle's drag, the weight of a collision's pile; what the plates
 //! do at their boundaries (`look`).
 
 use super::*;
@@ -9,10 +9,6 @@ pub const SLAB_YOUNG_MY: i64 = 10;
 /// The most an old slab pulls, per mille of the pull at
 /// [`Settings::slab_age_my`].
 pub(super) const SLAB_MOST: i64 = 1_500;
-/// An escape's push keeps this much of its strength per step,
-/// per mille.
-pub(super) const PUSH_KEEP: i64 = 960;
-
 /// A plate keeps this much of its last motion each step, per mille (the
 /// rest comes from the forces of the step).
 pub(super) const INERTIA: i64 = 400;
@@ -28,21 +24,6 @@ pub(super) fn slab_weight(age: i64, full_my: i64) -> i64 {
     ((age - SLAB_YOUNG_MY) * 1000 / (full_my - SLAB_YOUNG_MY).max(1)).clamp(0, SLAB_MOST)
 }
 
-/// A push on two plates, an escaping block and
-/// the plate it leaves: away from a great circle (`normal`), growing
-/// with the distance from it up to `expansion_km`, within `reach_km` of
-/// `centre`.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct Push {
-    pub(super) centre: V3,
-    pub(super) normal: V3,
-    pub(super) reach_km: i64,
-    pub(super) expansion_km: i64,
-    /// µm a year.
-    pub(super) strength: i64,
-    pub(super) plates: (u8, u8),
-}
-
 /// A cell where a force acts on its plate, the force's direction and its
 /// weight, per mille.
 pub(super) type Spot = (usize, u8, V3, i64);
@@ -51,8 +32,32 @@ pub(super) type Spot = (usize, u8, V3, i64);
 /// normal toward it, and how fast they close, µm a year.
 pub(super) type Front = (usize, u8, u8, V3, i64);
 
-/// Two plates in a collision and its front's length, cells.
-pub(super) type Grip = (u8, u8, i64);
+/// A side of a cell on a collision's front, where two plates' continents
+/// touch: the cell, its plate, the plate it meets, the normal toward it,
+/// the weight of the pile there, ‰ ([`pile_weight`]), and whether the two
+/// are in a collision (continents that had parted and met again: plates
+/// a rift has cut and that press on each other again are held apart by
+/// their pile, and stay two).
+pub(super) type Pile = (usize, u8, u8, V3, i64, bool);
+
+/// How hard thickened crust pushes back on the plates that thicken it, ‰
+/// of the push of a crust twice a continent's thickness: a column of
+/// crust `thick` (tenths of a km) stands higher and reaches deeper than
+/// the plain continent beside it, and its weight pushes outward with the
+/// difference of the squares of their thicknesses (the weight of a
+/// column grows with its height, and so does the face it pushes on). To
+/// shorten the crust further the plates must push harder than that.
+pub(super) fn pile_weight(thick: i64) -> i64 {
+    let whole = i64::from(CONTINENT_THICK);
+    let more = (thick - whole).max(0);
+    more * (2 * whole + more) * 1000 / (3 * whole * whole)
+}
+
+/// The piles between two plates: the pair, the torque their push puts on
+/// the second (and, reversed, on the first), each side's place and
+/// normal from the first toward the second, and whether the two are in
+/// a collision.
+type PileFront = ((usize, usize), V3, Vec<(V3, V3)>, bool);
 
 /// How a pair of plates is held by the crust that still joins them: a
 /// matrix on their relative turn.
@@ -66,19 +71,9 @@ type Hold = [[i128; 3]; 3];
 /// press on each other, their crust meets as in any collision.
 pub(super) type Bridge = (u8, u8, V3, i64);
 
-/// The most of two colliding plates' relative motion a front takes away
-/// in a step, ‰.
-pub(super) const GRIP_MOST: i64 = 900;
-
 /// The part of `v` tangent to the sphere at `x`.
 pub(super) fn tangent(x: V3, v: V3) -> V3 {
     sub(v, scale(x, dot(v, x)))
-}
-
-/// The turn that moves the point `at` along the unit `dir` at `um` µm a
-/// year (a vector along its pole).
-pub(super) fn lateral(at: V3, dir: V3, um: i64) -> V3 {
-    scale(normalize(cross(at, dir)), um)
 }
 
 /// The speed a plate reaches against a mantle whose drag grows with
@@ -101,17 +96,20 @@ pub(super) struct Drive {
     /// Each plate's group, named by its least id: plates whose continents
     /// have not parted move as one while the forces press them together.
     pub(super) group: [u8; MAXP],
+    /// The pairs of plates a collision has stopped: its pile holds all
+    /// the forces press them together with, and they turn as one.
+    pub(super) locked: Vec<(u8, u8)>,
 }
 
 /// The forces at the plates' edges, read at the last step: the slabs
 /// (on the plate that sinks), their suction (on the plate riding over
-/// them), the ridges, and the collisions' fronts.
+/// them), the ridges, and the collisions' piles.
 #[derive(Clone, Copy)]
 pub(super) struct Edges<'a> {
     pub(super) slab: &'a [Spot],
     pub(super) suction: &'a [Spot],
     pub(super) ridge: &'a [Spot],
-    pub(super) grips: &'a [Grip],
+    pub(super) piles: &'a [Pile],
     pub(super) bridges: &'a [Bridge],
 }
 
@@ -124,8 +122,6 @@ pub(super) fn drive(
     s: &Settings,
     plate: &[u8],
     rock: &[Rock],
-    pushes: &[Push],
-    alias: &[u8; MAXP],
     heat: &[i32],
     edges: Edges,
     prev: Option<&[V3]>,
@@ -134,7 +130,7 @@ pub(super) fn drive(
     let mut torque = vec![[0_i64; 3]; MAXP];
     let mut cells = [0_i64; MAXP];
     let mut cont = [0_i64; MAXP];
-    let (cell_tq, edge_tq) = torques(sphere, s, plate, rock, pushes, alias, heat, edges);
+    let (cell_tq, edge_tq) = torques(sphere, s, rock, heat, edges);
     for c in 0..CELLS {
         let p = plate[c] as usize;
         cells[p] += 1;
@@ -159,54 +155,20 @@ pub(super) fn drive(
 }
 
 /// The forces on the plates, as torques: each cell's, on its own plate
-/// (an escape's push, the mantle's heat under a continent),
-/// and the edges' (a cell, the plate it acts on, the torque): slabs,
-/// their suction, ridges.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the forces' inputs, each one named"
-)]
+/// (the mantle's heat under a continent), and the edges' (a cell, the
+/// plate it acts on, the torque): slabs, their suction, ridges.
 pub(super) fn torques(
     sphere: &Sphere,
     s: &Settings,
-    plate: &[u8],
     rock: &[Rock],
-    pushes: &[Push],
-    alias: &[u8; MAXP],
     heat: &[i32],
     edges: Edges,
 ) -> (Vec<V3>, Vec<(u32, u8, V3)>) {
     let mut cell_tq = vec![[0_i64; 3]; CELLS];
     let mut edge_tq = Vec::new();
-    let pushes: Vec<Push> = pushes
-        .iter()
-        .filter(|p| p.strength > 0)
-        .filter_map(|p| {
-            let (a, b) = (alias_of(alias, p.plates.0), alias_of(alias, p.plates.1));
-            (a != b).then_some(Push {
-                plates: (a, b),
-                ..*p
-            })
-        })
-        .collect();
     for c in 0..CELLS {
-        let p = plate[c];
         let x = sphere.centre[c];
         let mut f = [0_i64; 3];
-        for push in &pushes {
-            if p != push.plates.0 && p != push.plates.1 {
-                continue;
-            }
-            let d = km_between(x, push.centre);
-            if d >= push.reach_km {
-                continue;
-            }
-            let side = dot(x, push.normal);
-            let away = (side * RADIUS_KM / ONE * 1000 / push.expansion_km).clamp(-1000, 1000);
-            let fade = ((push.reach_km - d) * 2000 / push.reach_km).min(1000);
-            let dir = normalize(tangent(x, push.normal));
-            f = add(f, scale(dir, push.strength * away / 1000 * fade / 1000));
-        }
         if rock[c].class != OCEAN && s.pole_flight != 0 {
             let z = x[2];
             let across = (ONE * ONE - z * z).max(0).isqrt();
@@ -311,22 +273,27 @@ pub(super) fn drive_from(
         }
     }
     let mut up: [u8; MAXP] = std::array::from_fn(|k| k as u8);
-    let mut w = vec![[0_i64; 3]; MAXP];
-    loop {
+    let turns = |up: &[u8; MAXP]| {
         let mut tq = vec![[0_i64; 3]; MAXP];
         let mut rs = [0_i64; MAXP];
         for p in 0..MAXP {
-            let r = root(&up, p as u8) as usize;
+            let r = root(up, p as u8) as usize;
             tq[r] = add(tq[r], torque[p]);
             rs[r] += resist[p];
         }
-        for r in 0..MAXP {
-            w[r] = if rs[r] > 0 {
-                tq[r].map(|v| v * 1000 / rs[r])
-            } else {
-                [0; 3]
-            };
-        }
+        let w: Vec<V3> = (0..MAXP)
+            .map(|r| {
+                if rs[r] > 0 {
+                    tq[r].map(|v| v * 1000 / rs[r])
+                } else {
+                    [0; 3]
+                }
+            })
+            .collect();
+        (w, rs)
+    };
+    let (mut w, mut rs) = turns(&up);
+    loop {
         let mut close = vec![0_i64; MAXP * MAXP];
         for &(c, n) in &samples {
             let (ra, rb) = (root(&up, plate[c]) as usize, root(&up, plate[n]) as usize);
@@ -352,24 +319,89 @@ pub(super) fn drive_from(
         if !merged {
             break;
         }
+        (w, rs) = turns(&up);
     }
-    // A collision's front grips the two plates: it takes away part of
-    // their relative motion, more as the front grows against the smaller
-    // one (they slow, and stop once the front is long).
-    let mut grip = vec![0_i64; MAXP * MAXP];
-    for &(p, o, cells) in edges.grips {
-        let (ra, rb) = (root(&up, p) as usize, root(&up, o) as usize);
-        if ra != rb {
-            grip[ra.min(rb) * MAXP + ra.max(rb)] += cells;
+    // A collision's pile pushes back on the two plates that thicken it
+    // (`pile_weight`), against their closing only: thick crust does not
+    // pull. While the forces press harder than the pile pushes back, the
+    // plates go on closing, slower, and the pile grows. Once the pile
+    // holds all they press with, nothing moves the two plates against
+    // each other across their front: one balance of forces turns them
+    // both, as one.
+    let before = up;
+    let mut back: Vec<(usize, usize, V3, V3)> = Vec::new();
+    loop {
+        back.clear();
+        let mut fronts: Vec<PileFront> = Vec::new();
+        for &(c, p, o, normal, weight, met) in edges.piles {
+            let (mut a, mut b) = (root(&up, p) as usize, root(&up, o) as usize);
+            if a == b {
+                continue;
+            }
+            let mut n = normal;
+            if a > b {
+                (a, b) = (b, a);
+                n = n.map(|v| -v);
+            }
+            let x = sphere.centre[c];
+            let at = fronts
+                .iter()
+                .position(|f| f.0 == (a, b))
+                .unwrap_or_else(|| {
+                    fronts.push(((a, b), [0; 3], Vec::new(), false));
+                    fronts.len() - 1
+                });
+            fronts[at].1 = add(fronts[at].1, cross(x, scale(n, s.pile_push * weight)));
+            fronts[at].2.push((x, n));
+            fronts[at].3 |= met;
         }
+        let mut merged = false;
+        for ((a, b), tq, sides, met) in fronts {
+            let closing = |wa: V3, wb: V3| -> i64 {
+                sides
+                    .iter()
+                    .map(|&(x, n)| dot(sub(cross(wa, x), cross(wb, x)), n))
+                    .sum()
+            };
+            let da = tq.map(|v| -v * 1000 / rs[a].max(1));
+            let db = tq.map(|v| v * 1000 / rs[b].max(1));
+            let pressed = closing(w[a], w[b]);
+            let held = -closing(da, db);
+            if pressed <= 0 || held <= 0 {
+                continue;
+            }
+            if held < pressed {
+                back.push((a, b, da, db));
+            } else if met {
+                let (ra, rb) = (root(&up, a as u8), root(&up, b as u8));
+                if ra != rb {
+                    up[ra.max(rb) as usize] = ra.min(rb);
+                }
+                merged = true;
+            } else {
+                let part = |d: V3| {
+                    d.map(|v| (i128::from(v) * i128::from(pressed) / i128::from(held)) as i64)
+                };
+                back.push((a, b, part(da), part(db)));
+            }
+        }
+        if !merged {
+            break;
+        }
+        (w, rs) = turns(&up);
     }
-    let mut rs = [0_i64; MAXP];
-    let mut cs = [0_i64; MAXP];
-    for p in 0..MAXP {
-        let r = root(&up, p as u8) as usize;
-        rs[r] += resist[p];
-        cs[r] += cont[p];
+    for &(a, b, da, db) in &back {
+        w[a] = add(w[a], da);
+        w[b] = add(w[b], db);
     }
+    let mut locked: Vec<(u8, u8)> = edges
+        .piles
+        .iter()
+        .filter(|f| root(&up, f.1) == root(&up, f.2) && root(&before, f.1) != root(&before, f.2))
+        .map(|f| (f.1.min(f.2), f.1.max(f.2)))
+        .collect();
+    locked.sort_unstable();
+    locked.dedup();
     // The crust that still joins two plates a rift has cut holds them
     // there: it lets through its weakness' share of their parting at
     // each of its cells, and leaves them free to turn about it (the
@@ -418,20 +450,6 @@ pub(super) fn drive_from(
         w[a] = sub(w[a], held_back.map(|v| v * rs[b] / total));
         w[b] = add(w[b], held_back.map(|v| v * rs[a] / total));
     }
-    for a in 0..MAXP {
-        for b in a + 1..MAXP {
-            let fc = grip[a * MAXP + b];
-            if fc == 0 {
-                continue;
-            }
-            let small = cs[a].min(cs[b]).max(1);
-            let f = (fc * s.collision_resist * 1000 / small).min(GRIP_MOST);
-            let rel = sub(w[a], w[b]);
-            let total = (rs[a] + rs[b]).max(1);
-            w[a] = sub(w[a], rel.map(|v| v * f / 1000 * rs[b] / total));
-            w[b] = add(w[b], rel.map(|v| v * f / 1000 * rs[a] / total));
-        }
-    }
     let mut least = [u8::MAX; MAXP];
     for p in 0..MAXP {
         let r = root(&up, p as u8) as usize;
@@ -471,7 +489,11 @@ pub(super) fn drive_from(
             x
         })
         .collect();
-    Drive { omega, group }
+    Drive {
+        omega,
+        group,
+        locked,
+    }
 }
 
 /// What the plates do at a step, read from their relative motion: each
@@ -707,7 +729,6 @@ pub(super) fn next(world: &mut World) {
     let heat = &mut world.heat;
     let plumes = &mut world.plumes;
     let spent = &mut world.spent;
-    let pushes = &mut world.pushes;
     let parted = &mut world.parted;
     let broken = &mut world.broken;
     let alias = &mut world.alias;
@@ -723,7 +744,7 @@ pub(super) fn next(world: &mut World) {
     let t = world.step.t;
     let now_my = world.step.now_my;
     let seen = &mut world.step.seen;
-    let grips = &mut world.step.grips;
+    let piles = &mut world.step.piles;
     // The crust that still joins the plates a rift has cut.
     let mut bridges: Vec<Bridge> = Vec::new();
     for tr in world.troughs.iter().filter(|tr| tr.cut) {
@@ -749,14 +770,12 @@ pub(super) fn next(world: &mut World) {
             s,
             &*plate,
             &*rock,
-            &*pushes,
-            &*alias,
             &*heat,
             Edges {
                 slab: &seen.slab,
                 suction: &seen.suction,
                 ridge: &seen.ridge,
-                grips: &*grips,
+                piles: &*piles,
                 bridges: &bridges,
             },
             Some(&*omega),
@@ -764,6 +783,7 @@ pub(super) fn next(world: &mut World) {
         );
         *omega = next.omega;
         *group = next.group;
+        world.locked = next.locked;
         // A rift's ocean is open once its two shores touch nowhere.
         for (k, r) in rifts.iter_mut().enumerate() {
             if r.cut_my != NEVER && r.parted_my == NEVER && !world.renamed.contains(&k) {

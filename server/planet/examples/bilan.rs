@@ -69,7 +69,7 @@ const CAUSES: [&str; 16] = [
 const SWITCHES: [&str; 9] = [
     "unnamed",
     "weld after a collision",
-    "block escaping a collision",
+    "block escaping a collision (no such thing since v15)",
     "terrane or arc docking",
     "lone cell on the grid's view",
     "large part cut off: its own plate, same motion",
@@ -216,7 +216,45 @@ struct Count {
     born: u64,
     born_step: Vec<i64>,
     born_km2: u64,
+    // Version 15. Counts added over the planets ([`STOPPED`]...), and
+    // lists of a value a planet or an event ([`LASTED`]...).
+    tally: [u64; 6],
+    lists: [Vec<i64>; 10],
 }
+
+/// [`Count::tally`]: collisions their pile stopped, collisions still
+/// going on today, troughs begun on a plate with little continent.
+const STOPPED: usize = 0;
+const GOING: usize = 1;
+const ON_CRUMBS: usize = 2;
+/// Collisions between two plates with a continent each (over
+/// [`CRUMB_KM2`]): begun, of one step only, stopped by their pile.
+const BIG: usize = 3;
+const BIG_BRIEF: usize = 4;
+const BIG_STOPPED: usize = 5;
+/// [`Count::lists`]: how long each collision lasted, My; the same for
+/// those of more than a step; each planet's thickest pile, tenths of a
+/// km; its continents today and the largest, k km2; the most continent
+/// one of its stopped collisions made one plate of, k km2; how long ago
+/// its oldest standing range was last squeezed, My; the pull at each
+/// trough's start, per mille of what the crust there holds; today's
+/// thickest crust, tenths of a km.
+const LASTED: usize = 0;
+const LASTED_LONG: usize = 1;
+const PILE: usize = 2;
+const CONTINENTS: usize = 3;
+const LARGEST: usize = 4;
+const WELDED: usize = 5;
+const OLD_RANGE: usize = 6;
+const PULL: usize = 7;
+const THICKEST: usize = 8;
+/// How long each collision between two continents lasted, My.
+const LASTED_BIG: usize = 9;
+/// A plate with less continent than this, km2, carries a crumb.
+const CRUMB_KM2: i64 = 1_000_000;
+/// A range still stands where the crust is thicker than this, tenths of
+/// a km (10 km of root left: 1,500 m of height from it).
+const RANGE_THICK: u16 = 450;
 
 impl Count {
     /// Another planet's count added to this one.
@@ -280,6 +318,8 @@ impl Count {
             wet,
             unnamed,
             born,
+            tally,
+            lists,
             born_step,
             born_km2,
         } = o;
@@ -338,6 +378,10 @@ impl Count {
         sum(&mut self.crust, crust);
         sum(&mut self.wet, wet);
         self.unnamed += unnamed;
+        sum(&mut self.tally, tally);
+        for (mine, theirs) in self.lists.iter_mut().zip(lists) {
+            mine.extend(theirs);
+        }
         self.born += born;
         self.born_step.extend(born_step);
         self.born_km2 += born_km2;
@@ -793,6 +837,20 @@ fn main() {
             "of which a front of 40 cells or more (about 3,700 km)": per(n.collisions[1], n.planets),
             "of which lasted one step only": per(n.brief, n.planets),
             "that welded their two plates": per(n.welds, n.planets),
+            "ended because their pile stopped them (the two plates are one)": per(n.tally[STOPPED], n.planets),
+            "still going on today": per(n.tally[GOING], n.planets),
+            "between two plates with over 1 M km2 of continent each: begun, one step only, stopped by their pile": [
+                per(n.tally[BIG], n.planets),
+                per(n.tally[BIG_BRIEF], n.planets),
+                per(n.tally[BIG_STOPPED], n.planets),
+            ],
+            "how long those last, My: least, median, most": spread(&mut n.lists[LASTED_BIG]),
+            "how long a collision lasts, My: least, median, most": spread(&mut n.lists[LASTED]),
+            "the same, of those of more than a step": spread(&mut n.lists[LASTED_LONG]),
+            "the thickest crust a pile reached, km, each planet's: least, median, most": spread(&mut n.lists[PILE]).map(|v| v / 10),
+            "the most continent a stopped collision made one plate of, M km2, each planet's: least, median, most": spread(&mut n.lists[WELDED]).map(|v| v / 1000),
+            "continents today (bodies of continental crust over 1 M km2): least, median, most": spread(&mut n.lists[CONTINENTS]),
+            "the largest continent today, M km2: least, median, most": spread(&mut n.lists[LARGEST]).map(|v| v / 1000),
         },
         "10 the engine": {
             "step at which the plates' mean speed (weighted by area) first reaches 10 mm a year: least, median, most": spread(&mut n.moving),
@@ -812,6 +870,8 @@ fn main() {
             "today's land above 2,000 m, per mille of the land: least, median, most": spread(&mut n.high[0]),
             "today's land above 4,000 m, per mille of the land: least, median, most": spread(&mut n.high[1]),
             "today's highest point, m: least, median, most": spread(&mut n.highest),
+            "today's thickest crust, km: least, median, most": spread(&mut n.lists[THICKEST]).map(|v| v / 10),
+            "the oldest range still standing (crust thicker than 45 km today): My since it was last squeezed, 0 none: least, median, most": spread(&mut n.lists[OLD_RANGE]),
             "continental crust under water, % of its cells: at the start, through the history, today": [
                 pc(n.wet[0], n.crust[0]),
                 pc(n.wet[1], n.crust[1]),
@@ -821,6 +881,8 @@ fn main() {
         "7 rifts, per planet": {
             "started (a trough)": per(n.rifts[0], n.planets),
             "cut through (the crust gave way, the plate is two)": per(n.rifts[1], n.planets),
+            "begun on a plate with under 1 M km2 of continent, % of the troughs": pc(n.tally[ON_CRUMBS], n.rifts[0]),
+            "the pull at a trough's start, per mille of what its crust holds: least, median, most": spread(&mut n.lists[PULL]),
             "of which an open ocean (shores touch nowhere)": per(n.rifts[2], n.planets),
             "failed (abandoned trough)": per(n.rifts[3], n.planets),
             "still a trough at the end": per(n.rifts[4], n.planets),
@@ -858,10 +920,84 @@ fn rifts(world: &Planet, n: &mut Count) {
         n.collisions[0] += 1;
         n.collisions[1] += u64::from(c.front_cells >= 40);
         n.brief += u64::from(c.steps <= 1);
+        n.tally[STOPPED] += u64::from(c.stopped);
+        n.tally[GOING] += u64::from(c.ended_my == never);
+        let ended = if c.ended_my == never { 0 } else { c.ended_my };
+        let lasted = i64::from(c.from_my) - i64::from(ended);
+        n.lists[LASTED].push(lasted);
+        if c.steps > 1 {
+            n.lists[LASTED_LONG].push(lasted);
+        }
+        if c.km2.0.min(c.km2.1) >= CRUMB_KM2 {
+            n.tally[BIG] += 1;
+            n.tally[BIG_BRIEF] += u64::from(c.steps <= 1);
+            n.tally[BIG_STOPPED] += u64::from(c.stopped);
+            n.lists[LASTED_BIG].push(lasted);
+        }
     }
-    n.welds += world.history.welds.len() as u64;
+    let h = &world.history;
+    n.lists[PILE].push(
+        h.collisions
+            .iter()
+            .map(|c| i64::from(c.thick))
+            .max()
+            .unwrap_or(0),
+    );
+    n.lists[WELDED].push(
+        h.welds
+            .iter()
+            .map(|w| (w.kept_km2 + w.absorbed_km2) / 1000)
+            .max()
+            .unwrap_or(0),
+    );
+    n.welds += h.welds.len() as u64;
+    // Today's continents: the bodies of continental crust, whatever
+    // plates carry them; today's thickest crust and oldest range.
+    let last = h.last();
+    let sphere = &world.sphere;
+    let mut seen = vec![false; CELLS];
+    let mut bodies: Vec<i64> = Vec::new();
+    for c in 0..CELLS {
+        if seen[c] || h.class[last][c] == history::OCEAN {
+            continue;
+        }
+        let (mut km2, mut todo) = (0_i64, vec![c]);
+        seen[c] = true;
+        while let Some(q) = todo.pop() {
+            km2 += i64::from(sphere.area_km2[q]);
+            for &(m, _) in &sphere.links[q] {
+                let m = m as usize;
+                if !seen[m] && h.class[last][m] != history::OCEAN {
+                    seen[m] = true;
+                    todo.push(m);
+                }
+            }
+        }
+        bodies.push(km2 / 1000);
+    }
+    n.lists[CONTINENTS].push(bodies.iter().filter(|&&b| b >= CRUMB_KM2 / 1000).count() as i64);
+    n.lists[LARGEST].push(bodies.iter().copied().max().unwrap_or(0));
+    let crust = || (0..CELLS).filter(|&c| h.class[last][c] != history::OCEAN);
+    n.lists[THICKEST].push(
+        crust()
+            .map(|c| i64::from(h.thick_at[last][c]))
+            .max()
+            .unwrap_or(0),
+    );
+    n.lists[OLD_RANGE].push(
+        crust()
+            .filter(|&c| {
+                h.thick_at[last][c] > RANGE_THICK
+                    && usize::from(h.orogeny_my[c]) <= last * world.settings.step_my as usize
+            })
+            .map(|c| i64::from(h.orogeny_my[c]))
+            .max()
+            .unwrap_or(0),
+    );
     for r in &world.history.rifts {
         n.rifts[0] += 1;
+        n.tally[ON_CRUMBS] += u64::from(r.area_km2 < CRUMB_KM2);
+        n.lists[PULL].push(i64::from(r.pull));
         n.rifts[1] += u64::from(r.cut_my != never);
         n.rifts[2] += u64::from(r.parted_my != never);
         n.rifts[3] += u64::from(r.aborted);

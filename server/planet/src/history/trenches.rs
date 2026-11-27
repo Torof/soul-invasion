@@ -93,16 +93,13 @@ pub(super) fn margins_give_way(world: &mut World) {
     let (cell_tq, edge_tq) = torques(
         sphere,
         s,
-        &*plate,
         &*rock,
-        &world.pushes,
-        &world.alias,
         &world.heat,
         Edges {
             slab: &edges_last.0,
             suction: &edges_last.1,
             ridge: &edges_last.2,
-            grips: &[],
+            piles: &[],
             bridges: &[],
         },
     );

@@ -3,9 +3,21 @@
 
 use super::*;
 
-/// Each step, a pile spreads this much toward its neighbours, ‰ (slowly:
-/// a range stays a range, version 6).
-pub(super) const THICK_SPREAD: i64 = 120;
+/// Each step, a pile as thick as two continents (70 km) spreads the
+/// whole of its difference toward its neighbours, ‰; a thinner one far
+/// less and a thicker one more, as the sixth power of what it has above
+/// a continent's thickness (50 km: 6 ‰; 55 km: 35; 60 km: 130; 65 km:
+/// 400): crust flows out from under a range only where it is thick
+/// enough to be hot and weak at its base, and then fast (a plateau is
+/// flat, and widens instead of rising), so a range keeps its root and
+/// nothing sets a ceiling on a pile (version 15; until then every pile
+/// spread 120 ‰ a step and stopped at 70 km). The flow is worked out in
+/// [`SPREAD_PARTS`] parts of a step, each moving at most the whole
+/// difference ([`SPREAD_MOST`]: beyond it the sum would overshoot):
+/// limits of the arithmetic, not of the crust.
+pub(super) const THICK_SPREAD: i64 = 1000;
+pub(super) const SPREAD_PARTS: i64 = 4;
+pub(super) const SPREAD_MOST: i64 = 1000;
 /// Each step a continent loses [`Settings::mountain_wear`] of its
 /// thickness above a continent's (wear); the silt builds its plate's
 /// margins out, a shore cell at a time once there is enough for
@@ -110,16 +122,28 @@ pub(super) fn piles_and_silt(world: &mut World) {
     // 9. Piles spread and wear down, in their pieces: what stands
     // above a continent's thickness (a rift's thinned crust is not
     // filled again from its sides, version 11).
-    let thick: Vec<i64> = land.cells.iter().map(|c| i64::from(c.rock.thick)).collect();
-    let pile = |i: usize| thick[i].max(i64::from(CONTINENT_THICK));
-    let spread: Vec<i64> = (0..land.cells.len())
-        .map(|i| {
-            land.kin(sphere, i)
-                .filter(|&(j, _)| land.cells[j].plate == land.cells[i].plate)
-                .map(|(j, _)| (pile(j) - pile(i)) * THICK_SPREAD / 1000 / 8)
-                .sum()
-        })
-        .collect();
+    let whole = i64::from(CONTINENT_THICK);
+    let mut thick: Vec<i64> = land.cells.iter().map(|c| i64::from(c.rock.thick)).collect();
+    for _ in 0..SPREAD_PARTS {
+        let pile = |i: usize| thick[i].max(whole);
+        let spread: Vec<i64> = (0..land.cells.len())
+            .map(|i| {
+                land.kin(sphere, i)
+                    .filter(|&(j, _)| land.cells[j].plate == land.cells[i].plate)
+                    .map(|(j, _)| {
+                        let part = (pile(j).max(pile(i)) - whole) * 1000 / whole;
+                        let cube = part * part / 1000 * part / 1000;
+                        let rate = (THICK_SPREAD * cube / 1000 * cube / 1000 / SPREAD_PARTS)
+                            .min(SPREAD_MOST);
+                        (pile(j) - pile(i)) * rate / 1000 / 8
+                    })
+                    .sum()
+            })
+            .collect();
+        for i in 0..thick.len() {
+            thick[i] += spread[i];
+        }
+    }
     // The piles wear down: what a continent loses above its
     // thickness goes, as silt, to build its plate's margins out
     // (no continental crust is ever lost).
@@ -127,7 +151,7 @@ pub(super) fn piles_and_silt(world: &mut World) {
         if c.dead {
             continue;
         }
-        c.rock.thick = (thick[i] + spread[i]).clamp(i64::from(OCEAN_THICK), THICK_MAX) as u16;
+        c.rock.thick = thick[i].max(i64::from(OCEAN_THICK)) as u16;
         if c.rock.class != CONTINENT {
             continue;
         }

@@ -63,7 +63,7 @@ const SCENES: [(&str, &str, Write); 6] = [
     ("rift", "one continent, the forces free", rift),
     (
         "collision",
-        "two continents driven at each other",
+        "two continents driven at each other for 6 steps, then free",
         collision,
     ),
     ("trench", "an ocean plate driven under a continent", trench),
@@ -137,6 +137,7 @@ fn rift(sphere: &Sphere) -> Written {
             plate: nearest(sphere, &[(0, 0), (0, 120), (0, -120), (80, 180)]),
             continent_plates: 1,
             plates: 4,
+            free_from: usize::MAX,
             turns: Vec::new(),
         },
         window: ((0, 0), 60),
@@ -144,17 +145,19 @@ fn rift(sphere: &Sphere) -> Written {
 }
 
 /// Two continents on two plates (the two hemispheres), driven at each
-/// other at 60 mm a year each: they meet after a few steps, pile up, and
-/// weld once they have stopped.
+/// other at 60 mm a year each for 6 steps, then left to the forces: they
+/// meet, pile up, and once nothing drives them the pile holds what the
+/// forces press with: they turn as one and are one plate.
 fn collision(sphere: &Sphere) -> Written {
     let (a, b) = (cap(sphere, (0, -30), 1800), cap(sphere, (0, 30), 1800));
     Written {
-        settings: plain(14),
+        settings: plain(20),
         scene: Scene {
             continent: (0..CELLS).map(|c| a[c] || b[c]).collect(),
             plate: nearest(sphere, &[(0, -90), (0, 90)]),
             continent_plates: 2,
             plates: 2,
+            free_from: 6,
             turns: vec![(0, east(60)), (1, east(-60))],
         },
         window: ((0, 0), 60),
@@ -175,6 +178,7 @@ fn trench(sphere: &Sphere) -> Written {
             continent: land,
             continent_plates: 1,
             plates: 2,
+            free_from: usize::MAX,
             turns: vec![(0, east(0)), (1, east(-80))],
         },
         window: ((0, 0), 60),
@@ -192,6 +196,7 @@ fn arcs(sphere: &Sphere) -> Written {
             plate: nearest(sphere, &[(0, -90), (0, 90)]),
             continent_plates: 1,
             plates: 2,
+            free_from: usize::MAX,
             turns: vec![(0, east(50)), (1, east(-50))],
         },
         window: ((0, 0), 60),
@@ -208,6 +213,7 @@ fn carried(sphere: &Sphere) -> Written {
             plate: nearest(sphere, &[(0, 0), (0, 180)]),
             continent_plates: 1,
             plates: 2,
+            free_from: usize::MAX,
             turns: vec![(0, east(90)), (1, east(0))],
         },
         window: ((0, 0), 80),
@@ -228,6 +234,7 @@ fn margin(sphere: &Sphere) -> Written {
             plate: nearest(sphere, &[(0, 0), (0, 120), (0, -120)]),
             continent_plates: 1,
             plates: 3,
+            free_from: usize::MAX,
             turns: Vec::new(),
         },
         window: ((0, 0), 70),
@@ -325,7 +332,7 @@ fn numbers(sphere: &Sphere, h: &History) -> String {
         );
     }
     let events = format!(
-        "  rifts {} (cut {}), trenches born {}, collisions {}, welds {}, accretions {}, escapes {}, captures {}\n",
+        "  rifts {} (cut {}), trenches born {}, collisions {}, welds {}, accretions {}, captures {}\n",
         h.rifts.len(),
         h.rifts
             .iter()
@@ -339,7 +346,6 @@ fn numbers(sphere: &Sphere, h: &History) -> String {
         h.collisions.len(),
         h.welds.len(),
         h.accretions.len(),
-        h.escapes.len(),
         h.captures.len(),
     );
     text + &events

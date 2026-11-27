@@ -61,7 +61,7 @@ seconds a planet takes.
 | `site.rs`, `zoom.rs` | Our continent: its site on a subduction margin, its shape across the margin. |
 | `tests.rs` | The tests. |
 | `examples/planet.rs` | Draws seeds: maps, the page's layers (`PLANET_LAYERS`), `graine-N.json`. |
-| `examples/bilan.rs` | The one measuring tool: a table over many seeds, a JSON per version. Sections: 1 flips, 2 rigid pieces, 3 plates, 4 crust kept, 5 water inside the continents, 6 crust and its plate, 7 rifts, 9 collisions (begun, one step only, welded), 10 the engine (the step the plates start to move, trenches and ridges through time, the ocean floor's age, plates not born for lack of a name), 11 relief and sea (land above 2,000 and 4,000 m, crust under water), 8 seconds. |
+| `examples/bilan.rs` | The one measuring tool: a table over many seeds, a JSON per version. Sections: 1 flips, 2 rigid pieces, 3 plates, 4 crust kept, 5 water inside the continents, 6 crust and its plate, 7 rifts, 9 collisions (begun, one step only, stopped by their pile, how long they last, those between two real continents, the thickest pile, today's continents), 10 the engine (the step the plates start to move, trenches and ridges through time, the ocean floor's age, plates not born for lack of a name), 11 relief and sea (land above 2,000 and 4,000 m, the thickest crust, the oldest range still standing, crust under water), 8 seconds. |
 | `examples/banc.rs` | The bench: small written scenes, one mechanism each, a sheet of their steps. |
 | `tools/` | `preuve.py` (identity proof), `bilan.sh`, `page.py` + `carte.html` (the page), `planche.py` (sheets). |
 
@@ -94,15 +94,15 @@ naming the parts of the world it uses.
 |---|---|---|---|
 | start | `begin` | `start.rs` | Supercontinent, first plates, ocean floor, relief, heat, plumes, first forces. Since version 14 the supercontinent's plates carry no floor: the ocean's plates reach its rim, their floor oldest far from their ridges, and a slab hangs wherever that floor meets the supercontinent (`hung`); those slabs pull from step 0, and the mantle starts cold around them. |
 | 1 | `begin_step` | `crust.rs` | Clears what the last step left on each cell of crust. |
-| 2 | `weld_and_escape` | `collisions.rs` | A collision that stood still welds its two plates; a hard one sheds a block sideways. |
+| 2 | `stopped` | `collisions.rs` | **A collision its pile has stopped** (version 15): the two plates the forces of the last step turned as one (`World::locked`, see step 21) are one plate from now on; the journal says `EndedWelded`. No count of quiet steps, no speed under which plates "weld", no block pushed out sideways (the escape script is gone). |
 | 3 | `troughs` | `rifts.rs` | Rifts: troughs begin where a plate is pulled apart and weak (`weak`: cold, warm mantle, a suture or failed rift of the history, the crust's age: so the mosaic's belts are weak and its cores strong), grow cell by cell toward the weakest way through the crust `RIFT_AHEAD` cells ahead of each tip (`ahead`), stretch and thin it (each cell from the day it was reached), cut the plate once they cross it, then unzip; or are abandoned. |
 | 4 | `turn` | `crust.rs` | The plates turn: pieces change their turn, bits of floor move, and are sorted by cell. |
-| 5 | `meet` | `collisions.rs` | Pieces that meet: crust run under another piece piles on it (suture). |
+| 5 | `meet` | `collisions.rs` | Pieces that meet: crust run under another piece piles on it (suture): on the thinnest crust of that plate within `PILE_REACH` cells (2) of the crust above, so a range squeezed on widens. No ceiling on a pile's thickness (version 15; 70 km until then, the rest "waited under"). |
 | 6 | `sink_and_dock` | `trenches.rs` | Floor under a continent sinks (active margin); terranes and arcs dock. |
 | 7 | `draw_floor` | `trenches.rs` | The grid's view; ocean under ocean (the older sinks), island arcs. |
 | 8 | `holes_and_gaps` | `floor.rs` | Holes of the floor's sampling mended; a gap beside stretched crust filled with that crust's own width while any is left; other gaps between parting plates filled with new floor; rift margins. |
 | 9 | `specks` | `plates.rs` | A lone cell of a plate joins the plate around it. |
-| 10 | `piles_and_silt` | `wear.rs` | Piles spread and wear; their silt builds the margins out. |
+| 10 | `piles_and_silt` | `wear.rs` | Piles flow and wear; their silt builds the margins out. Version 15: crust flows out from under a pile as the sixth power of what it has above a continent's 35 km (`THICK_SPREAD`: 6 ‰ of the difference a step at 50 km, 130 at 60, the whole at 70), worked out in `SPREAD_PARTS` parts of a step: a range keeps its root, a plateau is flat and widens. A pile loses `mountain_wear` (25 ‰, was 100) of its excess a step: half in 140 My. A km of extra crust stands 150 m higher (`ISOSTASY_M`, `crust.rs`; 100 until version 14). |
 | 11 | `margins_give_way` | `trenches.rs` | **A trench is born** (version 14). The floor beside a continent of its own plate (a passive margin) bends down under its own weight: each shore cell keeps how far (`Rock::sag`), which grows by `SAG_M_MY` m a My times the floor's weight (`slab_weight` of its age: nothing under 10 My, full at 80), times how hard the floor pushes its continent along (read from the forces: the drag on the continent as it moves, less the forces on the continent itself, shared among the plate's shore cells; pressed as hard as a full slab pulls, twice as fast; pulled as hard, not at all). At `SAG_BREAK_M` the floor gives way: that ocean's floor on this plate becomes a plate (`BornOfTrench` in the journal) and a slab hangs where it gave way. An unpressed margin of a new ocean gives way about 160 My after the ocean opened; old floor that became a margin, after 100 My. |
 | 12 | `one_piece` | `plates.rs` | A plate is one piece: parts cut off become plates or are captured, crumbs absorbed; plates parted. |
 | 13 | `hotspots_mark` | `heat.rs` | Hotspots mark and lift the crust over them. |
@@ -111,9 +111,9 @@ naming the parts of the world it uses.
 | 16 | `look_at` | `forces.rs` | What the plates do now: kinds of boundaries, margins (`look`). **A trench is a state** (version 14, `World::hung`): floor that sinks under another plate goes on sinking where a slab hung at the step before, there or a cell away, however slowly the plates close (it began at 2 mm a year, `FORCE_LEAST_UM`), and its slab pulls by its weight; the slab is lost where the plates part at 2 mm a year. So a trench lasts through a slow spell, moves with its plates, and runs on along a boundary a cell a step. |
 | 17 | `warm_step` | `heat.rs` | The mantle's heat under the crust as it lies (`warm`). |
 | 18 | `sea_and_weather` | `wear.rs` | The sea level; relief wears down and fills (`weather`). |
-| 19 | `progress` | `collisions.rs` | Collisions begin, last, end. |
+| 19 | `progress` | `collisions.rs` | Collisions begin, last, end: between continents only (a terrane or an arc that meets a continent docks, step 6). Each record (`Collision`) keeps its two continents' sizes, its dates (begun, ended), how it ended (`stopped`: by its pile), the middle of its front, the way it squeezed and its thickest crust. The piles at the fronts (`Step::piles`): the thickest crust at or a cell from each side of a cell where two plates' continents touch, as a weight (`forces::pile_weight`). |
 | 20 | `write` | `record.rs` | The step's layers and its journal of events. |
-| 21 | `next` | `forces.rs` | The forces and the plates' turns for the next step (`drive`): the crust that still joins two plates a rift has cut holds them there (`Bridge`); boundaries that open, lava floods. |
+| 21 | `next` | `forces.rs` | The forces and the plates' turns for the next step (`drive`): the crust that still joins two plates a rift has cut holds them there (`Bridge`); boundaries that open, lava floods. **A pile pushes back** (version 15, in place of the grip that took a share of the speed away): a force on the two plates, `Settings::pile_push` times the pile's weight (the difference of the squares of its thickness and a continent's) at each side of their front, against their closing only. While the forces press harder the plates close, slower; once the pile holds all they press with, the two turn as one (`Drive::locked`) if they are in a collision, or stop closing if a rift had cut them. |
 
 Steps 1 to 15 do not run at step 0. Other things a module holds:
 `pieces.rs` the rigid pieces (`Land`: lattice, `cover`, `kin`, `spread`),
@@ -140,7 +140,7 @@ current folder). With no name, every scene.
 | Scene | What is written | What it shows |
 |---|---|---|
 | `rift` | One continent of 3,000 km on its plate, the forces free, 32 steps. | The lid warms the mantle, a trough begins and grows, the plate is cut once it has crossed, the ocean unzips. |
-| `collision` | Two continents driven at each other at 60 mm a year each. | They meet, pile up, weld once stopped. |
+| `collision` | Two continents driven at each other at 60 mm a year each for 6 steps, then left to the forces (`Scene::free_from`), 20 steps. | They meet and pile up; the slabs beside the front go on pulling, the pile grows to some 75-90 km, flows sideways and pushes back. The scene's two plates are the two hemispheres, so the pull never ends and this collision does not stop: a stop is seen in the worlds (the bilan's section 9). |
 | `trench` | An ocean plate driven under a continent that stands still. | An active margin and its arc. |
 | `arcs` | Two ocean plates driven at each other, no continent near. | The older floor sinks, island arcs grow. |
 | `carried` | A continent carried 20 steps by its plate. | A rigid piece: its cells unchanged. |
@@ -158,8 +158,7 @@ change of the model's code, not done in the tooling round.
 
 The history keeps a journal (`History::journal`, `history/record.rs`:
 `Event`, `What`): for each step, what happened to the plates, with its
-cause and its place. A plate born (of which rift, of which margin giving way, escaping which
-collision, cut off which plate), a plate ended (welded, crumb, enclosed,
+cause and its place. A plate born (of which rift, of which margin giving way, cut off which plate), a plate ended (welded, crumb, enclosed,
 no cell left), a plate that moves as one with another (`MovesWith`: the
 map then draws them as one) or alone again, a rift begun or abandoned, a
 collision begun, terranes docked, islands risen. Recording only: no

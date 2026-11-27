@@ -301,9 +301,9 @@ fn history_json(world: &Planet) -> serde_json::Value {
             .collect::<Vec<_>>(),
         "collisions": h.collisions.iter().map(|c| json!([c.from_my, c.a, c.b,
             if c.welded_my == planet::history::NEVER { -1 } else { i64::from(c.welded_my) },
-            c.closed_km, c.front_cells, c.steps])).collect::<Vec<_>>(),
-        "escapes": h.escapes.iter().map(|e| json!([e.my, e.from, e.block, e.km2]))
-            .collect::<Vec<_>>(),
+            c.closed_km, c.front_cells, c.steps,
+            if c.ended_my == planet::history::NEVER { -1 } else { i64::from(c.ended_my) },
+            c.stopped, c.at, c.squeeze, c.thick])).collect::<Vec<_>>(),
         "lips": h.lips.iter().map(|l| json!([l.my, l.km2])).collect::<Vec<_>>(),
         "hotspot_chains": world.hotspots.iter().map(|hs| json!([hs.track.len(),
             hs.track.last().map_or(0, |m| m.1)])).collect::<Vec<_>>(),

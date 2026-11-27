@@ -445,7 +445,6 @@ fn the_journal_names_the_rule_behind_every_plate_that_appears_or_disappears() {
                             || told(&[
                                 What::BornOfRift,
                                 What::BornOfTrench,
-                                What::BornEscaping,
                                 What::BornCutOff,
                                 What::MovesAlone
                             ]),
@@ -557,6 +556,7 @@ fn an_old_passive_margin_bends_step_after_step_then_gives_way() {
             .collect(),
         continent_plates: 1,
         plates: 3,
+        free_from: usize::MAX,
         turns: Vec::new(),
     };
     let settings = Settings {

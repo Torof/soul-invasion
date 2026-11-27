@@ -34,7 +34,6 @@ pub(crate) struct World<'a> {
     // The plates: their turns, who moves with whom, who has parted.
     pub(super) omega: Vec<V3>,
     pub(super) group: [u8; MAXP],
-    pub(super) pushes: Vec<Push>,
     pub(super) parted: [[bool; MAXP]; MAXP],
     pub(super) broken: [[bool; MAXP]; MAXP],
     pub(super) alias: [u8; MAXP],
@@ -47,7 +46,6 @@ pub(crate) struct World<'a> {
     pub(super) free: Vec<u8>,
     pub(super) renamed: Vec<usize>,
     pub(super) unnamed: u32,
-    pub(super) young: usize,
     pub(super) edges_last: (Vec<Spot>, Vec<Spot>, Vec<Spot>),
     // The crust: the continents' pieces, the bits of ocean floor, the
     // hotspots' marks, and the grid's view of them.
@@ -65,13 +63,10 @@ pub(crate) struct World<'a> {
     pub(super) hidden_now: [u32; 3],
     // Collisions in progress.
     pub(super) contact: Vec<[usize; MAXP]>,
-    pub(super) closing_of: Vec<[i64; MAXP]>,
-    pub(super) quiet: Vec<[usize; MAXP]>,
-    pub(super) front_of: Vec<[i64; MAXP]>,
     pub(super) record_of: Vec<[usize; MAXP]>,
-    pub(super) escaped: Vec<[bool; MAXP]>,
-    pub(super) shed: [bool; MAXP],
-    pub(super) fronts: Vec<Front>,
+    /// The pairs of plates a collision's pile has stopped, from the
+    /// forces of the last step (`forces::drive_from`).
+    pub(super) locked: Vec<(u8, u8)>,
     // Rifts in progress, arcs, silt.
     pub(super) troughs: Vec<Trough>,
     /// How fast each plate's best line would have stretched at the last
@@ -84,7 +79,6 @@ pub(crate) struct World<'a> {
     pub(super) welds: Vec<Weld>,
     pub(super) accretions: Vec<Accretion>,
     pub(super) collisions: Vec<Collision>,
-    pub(super) escapes: Vec<Escape>,
     pub(super) captures: Vec<Capture>,
     pub(super) cut_off: usize,
     pub(super) built_km2: Vec<i64>,
@@ -164,15 +158,6 @@ impl World<'_> {
                     tr.plate = heir;
                 }
             }
-            for push in &mut self.pushes {
-                for name in [&mut push.plates.0, &mut push.plates.1] {
-                    if *name as usize == p && gone {
-                        push.strength = 0;
-                    } else if *name as usize == p {
-                        *name = heir;
-                    }
-                }
-            }
             for q in 0..MAXP {
                 if self.alias[q] as usize == p {
                     self.alias[q] = if gone { q as u8 } else { heir };
@@ -181,15 +166,10 @@ impl World<'_> {
                     self.parted[a][b] = true;
                     self.broken[a][b] = false;
                     self.contact[a][b] = 0;
-                    self.closing_of[a][b] = 0;
-                    self.quiet[a][b] = 0;
-                    self.front_of[a][b] = 0;
                     self.record_of[a][b] = usize::MAX;
-                    self.escaped[a][b] = false;
                 }
             }
             self.alias[p] = p as u8;
-            self.shed[p] = false;
             self.pulled[p] = 0;
             self.silt[p] = 0;
             self.born_t[p] = 0;
@@ -263,7 +243,8 @@ pub(super) struct Step {
     /// What the plates do now (`forces::look`).
     pub(super) seen: Look,
     pub(super) margin_of: Vec<u8>,
-    pub(super) grips: Vec<Grip>,
+    /// The collisions' piles (`collisions::progress`).
+    pub(super) piles: Vec<Pile>,
 }
 
 impl Step {
@@ -300,7 +281,7 @@ impl Step {
                 hung: Vec::new(),
             },
             margin_of: Vec::new(),
-            grips: Vec::new(),
+            piles: Vec::new(),
         }
     }
 }
@@ -322,6 +303,9 @@ pub struct Scene {
     /// Plates whose turn is imposed at every step: the turn's axis
     /// scaled by its speed in µm a year (0 holds the plate still).
     pub turns: Vec<(u8, V3)>,
+    /// The step from which the turns are imposed no more and the forces
+    /// alone turn the plates (`usize::MAX`: never).
+    pub free_from: usize,
 }
 
 #[cfg(test)]

@@ -321,7 +321,6 @@ pub(crate) fn begin<'a>(
         }
     }
     let hotspots = &hotspots[..];
-    let pushes: Vec<Push> = Vec::new();
     // The plumes may flood a breaking continent.
     let plumes: Vec<V3> = hotspots.to_vec();
     // A plume floods once.
@@ -352,7 +351,6 @@ pub(crate) fn begin<'a>(
     let welds: Vec<Weld> = Vec::new();
     let accretions: Vec<Accretion> = Vec::new();
     let collisions: Vec<Collision> = Vec::new();
-    let escapes: Vec<Escape> = Vec::new();
     let captures: Vec<Capture> = Vec::new();
     let cut_off = 0;
     let built_km2 = vec![0];
@@ -361,18 +359,12 @@ pub(crate) fn begin<'a>(
     // Collisions in progress: the step of first contact (+1), the mean
     // closing seen last, µm a year, and the front's cells.
     let contact = vec![[0_usize; MAXP]; MAXP];
-    let closing_of = vec![[0_i64; MAXP]; MAXP];
     // Steps each collision has stood still.
-    let quiet = vec![[0_usize; MAXP]; MAXP];
     // The rifts in progress and the abandoned ones, and the forces at
     // the plates' edges read at the last step.
     let troughs: Vec<Trough> = Vec::new();
     let edges_last: (Vec<Spot>, Vec<Spot>, Vec<Spot>) = (Vec::new(), Vec::new(), Vec::new());
-    let front_of = vec![[0_i64; MAXP]; MAXP];
     let record_of = vec![[usize::MAX; MAXP]; MAXP];
-    let escaped = vec![[false; MAXP]; MAXP];
-    let shed = [false; MAXP];
-    let young = 2 * s.rift_steps;
     let arc_steps = s.arc_steps.clamp(1, 250) as u8;
     // The crust (version 10). The continents are rigid pieces: every
     // cell of continental crust lives in its piece's own lattice, placed
@@ -430,14 +422,12 @@ pub(crate) fn begin<'a>(
         s,
         &plate,
         &rock,
-        &pushes,
-        &alias,
         &heat,
         Edges {
             slab: &[],
             suction: &[],
             ridge: &[],
-            grips: &[],
+            piles: &[],
             bridges: &[],
         },
         None,
@@ -459,14 +449,12 @@ pub(crate) fn begin<'a>(
         s,
         &plate,
         &rock,
-        &pushes,
-        &alias,
         &heat,
         Edges {
             slab: &seen.slab,
             suction: &seen.suction,
             ridge: &seen.ridge,
-            grips: &[],
+            piles: &[],
             bridges: &[],
         },
         None,
@@ -492,7 +480,6 @@ pub(crate) fn begin<'a>(
         }
     }
     let event = vec![Margin::Inland as u8; CELLS];
-    let fronts: Vec<Front> = Vec::new();
     let last_kind = vec![0_u8; CELLS];
     let next_bit = CELLS as u32;
     let shown_now = vec![0_u8; CELLS];
@@ -519,7 +506,6 @@ pub(crate) fn begin<'a>(
         hotspots: hotspots.to_vec(),
         plumes,
         spent,
-        pushes,
         parted,
         broken,
         alias,
@@ -532,23 +518,17 @@ pub(crate) fn begin<'a>(
         welds,
         accretions,
         collisions,
-        escapes,
         captures,
         cut_off,
         built_km2,
         lips,
         silt,
         contact,
-        closing_of,
-        quiet,
         troughs,
         pulled: [0; MAXP],
         edges_last,
-        front_of,
         record_of,
-        escaped,
-        shed,
-        young,
+        locked: Vec::new(),
         arc_steps,
         land,
         bits,
@@ -583,7 +563,6 @@ pub(crate) fn begin<'a>(
         omega,
         group,
         event,
-        fronts,
         last_kind,
         next_bit,
         shown_now,
