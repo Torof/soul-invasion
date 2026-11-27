@@ -28,8 +28,13 @@ use crate::{BodyId, GATHER_REACH_MM, Intention, ItemId, World};
 
 use super::{AROUND, Decision, Doing, Mind, News, Way, Why, today, walkable};
 
-/// The most deeds a body holds in its ways.
-pub const DEEDS: usize = 6;
+/// The most deeds a body holds in its ways. Sixteen (27 November 2026;
+/// six before): a trial holds every deed it tried until its judge
+/// forgets those that served nothing, and with six, a trial that had put
+/// stones and branches in its hollow had no room left to learn the
+/// put-in of food, and was given up while it carried more than its arms
+/// (five of thirteen in the run of seed 37).
+pub const DEEDS: usize = 16;
 
 /// No thing: a deed done with nothing in hand.
 pub const NOTHING: u16 = u16::MAX;
@@ -1575,6 +1580,25 @@ mod tests {
             assert!(deeds.add(deed));
         }
         deeds
+    }
+
+    #[test]
+    fn a_trial_that_tried_eight_things_for_nothing_still_learns_the_ninth() {
+        let mut hands = Deeds::default();
+        for on in 0..8 {
+            assert!(hands.add(Deed {
+                gesture: Gesture::PutIn,
+                on,
+                with: 99,
+            }));
+        }
+        let food = Deed {
+            gesture: Gesture::PutIn,
+            on: 50,
+            with: 99,
+        };
+        assert!(hands.add(food), "room is left for the deed that serves");
+        assert!(hands.contains(food));
     }
 
     #[test]
