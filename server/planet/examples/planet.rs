@@ -14,7 +14,9 @@
 //! settings), and `graine-N.json` with the numbers. With `PLANET_LAYERS`
 //! set, also each map's layers in `couches/` for the interactive page
 //! (`carte.html`): the planet's and its history's for every seed, the
-//! continent's for `PLANET_CONTINENTS` (default every seed).
+//! continent's for `PLANET_CONTINENTS` (default every seed). The seeds
+//! and the steps' layers are made on every core (`PLANET_THREADS` to
+//! change it); what is written does not depend on the threads.
 
 #![allow(
     clippy::many_single_char_names,
@@ -44,6 +46,9 @@ mod png;
 #[path = "common/planet_layers.rs"]
 mod layers;
 
+#[path = "common/par.rs"]
+mod par;
+
 const MAP_W: usize = 1024;
 const MAP_H: usize = 512;
 
@@ -70,7 +75,11 @@ fn main() {
         || (1..=6).collect(),
         |s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect(),
     );
-    for &seed in &seeds {
+    // The seeds are made on several threads, and the steps' layers of
+    // each seed too; the lines are printed in the order of the seeds.
+    let threads = par::threads();
+    let inner = (threads / seeds.len().max(1)).max(1);
+    let lines = par::par_map(&seeds, threads, |&seed| {
         let start = Instant::now();
         let mut world = Planet::with(seed, &settings);
         let born = start.elapsed();
@@ -106,9 +115,10 @@ fn main() {
             let dir = out.join("couches");
             std::fs::create_dir_all(&dir).expect("the layers' folder");
             layers::planet_layers(&dir, &world, chosen);
-            for t in 0..=world.history.last() {
+            let steps: Vec<usize> = (0..=world.history.last()).collect();
+            par::par_map(&steps, inner, |&t| {
                 layers::step_layers(&dir, &world.at_step(t), chosen);
-            }
+            });
             let continents = std::env::var("PLANET_CONTINENTS").ok();
             if let Some(z) = chosen
                 && continents
@@ -218,10 +228,13 @@ fn main() {
             serde_json::to_string_pretty(&summary).expect("json"),
         )
         .expect("the summary");
-        println!(
+        format!(
             "seed {seed}: born {born:?}, all {elapsed:?}, site {}",
             site.is_some()
-        );
+        )
+    });
+    for line in lines {
+        println!("{line}");
     }
 }
 

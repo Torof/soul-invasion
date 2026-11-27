@@ -14,6 +14,12 @@
 //! ground below sea level inside the continents (linked to the ocean or
 //! not) and what makes it change; whether a continent moves with its
 //! plate; the rifts; the seconds a planet takes.
+//!
+//! The planets are made on every core (`PLANET_THREADS` to change it),
+//! each counted alone, and their counts added in the order of the seeds:
+//! the table does not depend on the threads. Only its last row does, the
+//! seconds a planet takes while the other cores work too; for a planet's
+//! time alone, `PLANET_THREADS=1`.
 
 #![allow(
     clippy::print_stdout,
@@ -31,6 +37,9 @@ use planet::history::{self, MAXP, OCEAN, Piece};
 use planet::{CELLS, Planet, Settings, V3, dot, km_between, normalize};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
+
+#[path = "common/par.rs"]
+mod par;
 
 const CAUSES: [&str; 16] = [
     "the sea level alone",
@@ -152,6 +161,337 @@ struct Count {
     rift_cells: Vec<i64>,
 }
 
+impl Count {
+    /// Another planet's count added to this one.
+    fn add(&mut self, o: Self) {
+        fn sum<const N: usize>(a: &mut [u64; N], b: [u64; N]) {
+            for (x, y) in a.iter_mut().zip(b) {
+                *x += y;
+            }
+        }
+        let Self {
+            steps,
+            planets,
+            followed,
+            far_followed,
+            flips,
+            far_flips,
+            rigid,
+            rigid_moved,
+            rigid_off,
+            plates_today,
+            plates_through,
+            lives,
+            plates_start,
+            hollows,
+            hollow_km2,
+            hollow_painted_sea_km2,
+            linked_km2,
+            sunk,
+            risen,
+            reached,
+            cut,
+            moved,
+            slid,
+            slid_worst_km,
+            switched,
+            rifts,
+            rift_my,
+            failed_my,
+            rift_cells,
+        } = o;
+        self.steps += steps;
+        self.planets += planets;
+        self.followed += followed;
+        self.far_followed += far_followed;
+        sum(&mut self.flips, flips);
+        sum(&mut self.far_flips, far_flips);
+        for k in 0..3 {
+            sum(&mut self.rigid[k], rigid[k]);
+            sum(&mut self.sunk[k], sunk[k]);
+            sum(&mut self.risen[k], risen[k]);
+        }
+        self.rigid_moved += rigid_moved;
+        self.rigid_off = self.rigid_off.max(rigid_off);
+        sum(&mut self.plates_today, plates_today);
+        sum(&mut self.plates_through, plates_through);
+        sum(&mut self.lives, lives);
+        self.plates_start += plates_start;
+        sum(&mut self.hollows, hollows);
+        self.hollow_km2 += hollow_km2;
+        self.hollow_painted_sea_km2 += hollow_painted_sea_km2;
+        self.linked_km2 += linked_km2;
+        self.reached += reached;
+        self.cut += cut;
+        self.moved += moved;
+        self.slid += slid;
+        self.slid_worst_km = self.slid_worst_km.max(slid_worst_km);
+        sum(&mut self.switched, switched);
+        sum(&mut self.rifts, rifts);
+        self.rift_my.extend(rift_my);
+        self.failed_my.extend(failed_my);
+        self.rift_cells.extend(rift_cells);
+    }
+}
+
+/// One planet, counted alone: the planets are made on several threads and
+/// their counts added in the order of the seeds.
+fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
+    let mut n = Count::default();
+    let mut volume = (1000_i64, 1000_i64);
+    let mut area = (1000_i64, 1000_i64);
+    let clock = std::time::Instant::now();
+    let world = Planet::with(seed, settings);
+    let seconds = clock.elapsed().as_secs_f64();
+    let h = &world.history;
+    let sphere = &world.sphere;
+    let links = &sphere.links;
+    let last = h.last();
+    n.planets += 1;
+    n.plates_start += h.plates_at_start.1 as u64;
+    let mut prev: Option<HashMap<u32, Seen>> = None;
+    let mut volume0 = 0_i64;
+    let mut sea_before = world.at_step(0).sea_rise_m;
+    let mut first_t = [usize::MAX; MAXP];
+    let mut last_t = [0_usize; MAXP];
+    for t in 0..=last {
+        let now = world.at_step(t);
+        let pieces = now.pieces();
+        // The crust kept.
+        let vol: i64 = pieces
+            .iter()
+            .flat_map(|p| &p.tiles)
+            .map(|x| i64::from(x.thick) * i64::from(x.area_km2))
+            .sum();
+        if t == 0 {
+            volume0 = vol;
+        }
+        let share = vol * 1000 / volume0;
+        volume = (volume.0.min(share), volume.1.max(share));
+        let share = h.continental_km2[t] * 1000 / h.continental_km2[0];
+        area = (area.0.min(share), area.1.max(share));
+        // The plates.
+        let mut km2 = [0_i64; MAXP];
+        for c in 0..CELLS {
+            km2[h.plate[t][c] as usize] += i64::from(sphere.area_km2[c]);
+        }
+        for p in 0..MAXP {
+            if km2[p] == 0 {
+                continue;
+            }
+            first_t[p] = first_t[p].min(t);
+            last_t[p] = t;
+            let class = PLATE_KM2.iter().filter(|&&k| km2[p] >= k).count();
+            n.plates_through[class] += 1;
+            if t == last {
+                n.plates_today[class] += 1;
+            }
+        }
+        // The water on the continents: ground below the sea's level,
+        // linked to the ocean (a path of such ground to the ocean's
+        // floor) or not (a hollow).
+        let low_cell: Vec<bool> = now.elevation.iter().map(|&e| e <= 0).collect();
+        let floor: Vec<(usize, u32)> = (0..CELLS)
+            .filter(|&c| h.class[t][c] == OCEAN)
+            .map(|c| (c, 0))
+            .collect();
+        let (from_ocean, _) = sphere.spread(&floor, |_, _| true, 2_000);
+        let mut water = vec![0_u8; CELLS];
+        for c in 0..CELLS {
+            if h.class[t][c] != OCEAN && low_cell[c] {
+                water[c] = if now.basin[c] {
+                    1
+                } else if from_ocean[c] >= INLAND_KM {
+                    2
+                } else {
+                    3
+                };
+            }
+        }
+        let mut size = vec![0_u8; CELLS];
+        let mut done = vec![false; CELLS];
+        for c0 in 0..CELLS {
+            if water[c0] != 1 || done[c0] {
+                continue;
+            }
+            let (mut stack, mut cells) = (vec![c0], Vec::new());
+            done[c0] = true;
+            while let Some(c) = stack.pop() {
+                cells.push(c);
+                for &(m, _) in &links[c] {
+                    let m = m as usize;
+                    if water[m] == 1 && !done[m] {
+                        done[m] = true;
+                        stack.push(m);
+                    }
+                }
+            }
+            let km2: i64 = cells.iter().map(|&c| i64::from(sphere.area_km2[c])).sum();
+            let class = SIZES.iter().position(|s| km2 < s.1).expect("a size");
+            n.hollows[class] += 1;
+            n.hollow_km2 += km2 as u64;
+            for c in cells {
+                size[c] = class as u8;
+            }
+        }
+        for c in 0..CELLS {
+            if water[c] == 2 {
+                n.linked_km2 += u64::from(sphere.area_km2[c]);
+            }
+        }
+        // Every cell of crust, followed by its name in its piece.
+        let d_sea = now.sea_rise_m - sea_before;
+        sea_before = now.sea_rise_m;
+        let mut drawn: HashMap<u32, usize> = HashMap::new();
+        for c in 0..CELLS {
+            if h.class[t][c] != OCEAN {
+                drawn.insert(h.id_at[t][c], c);
+            }
+        }
+        let mut seen: HashMap<u32, Seen> = HashMap::new();
+        if prev.is_some() {
+            n.steps += 1;
+        }
+        for (k, piece) in pieces.iter().enumerate() {
+            for (i, x) in piece.tiles.iter().enumerate() {
+                let pos = piece.place(sphere, i);
+                let cell = sphere.cell_of(pos);
+                let shown = drawn.get(&x.id).copied();
+                let me = Seen {
+                    dry: now.tile_dry(k, i),
+                    low: !x.under && now.tile_height(x) <= 0,
+                    far: now.near[cell].0 > FAR_KM,
+                    under: x.under,
+                    high: i64::from(x.high),
+                    pile: (i64::from(x.thick) - 350).max(0) * 10,
+                    lip: i64::from(x.margins & history::LIP != 0) * 350,
+                    pos,
+                    own: x.own,
+                    water: shown.map_or(0, |c| water[c]),
+                    size: shown.map_or(0, |c| size[c]),
+                };
+                seen.insert(x.id, me);
+                let Some(was) = &prev else {
+                    continue;
+                };
+                // Does it move with its plate?
+                if let Some(b) = was.get(&x.id) {
+                    n.moved += 1;
+                    let with = |p: u8| {
+                        let w = h.turned_at[t][p as usize];
+                        km_between(history::carried(w, settings.step_my, b.pos), pos)
+                    };
+                    let off = with(b.own);
+                    if x.switch != 0 || x.own != b.own {
+                        n.switched[x.switch as usize] += 1;
+                    } else if off > SLIDE_KM {
+                        n.slid += 1;
+                        n.slid_worst_km = n.slid_worst_km.max(off);
+                    }
+                }
+                if x.under {
+                    continue;
+                }
+                let (cause, b) = match was.get(&x.id) {
+                    None => (14, None),
+                    Some(b) if b.under => (13, None),
+                    Some(b) => {
+                        let known: i64 = x.why.iter().map(|&w| i64::from(w)).sum();
+                        let dp = me.pile - b.pile;
+                        let mut parts = vec![
+                            (-d_sea, 0),
+                            (dp, if dp > 0 { 9 } else { 10 }),
+                            (me.lip - b.lip, 11),
+                            (me.high - b.high - known, 12),
+                        ];
+                        parts.extend((0..8).map(|k| (i64::from(x.why[k]), k + 1)));
+                        let sign = if me.low { -1 } else { 1 };
+                        let &(_, cause) = parts
+                            .iter()
+                            .max_by_key(|p| (p.0 * sign, std::cmp::Reverse(p.1)))
+                            .expect("parts");
+                        (cause, Some(*b))
+                    }
+                };
+                let (was_dry, was_low, far) =
+                    b.map_or((false, true, me.far), |b| (b.dry, b.low, me.far && b.far));
+                n.followed += 1;
+                n.far_followed += u64::from(far);
+                if me.dry != was_dry {
+                    // Painted otherwise with no change of level: the
+                    // hollow's link to the ocean.
+                    let cause = if me.low == was_low && b.is_some() {
+                        15
+                    } else {
+                        cause
+                    };
+                    n.flips[cause] += 1;
+                    n.far_flips[cause] += u64::from(far);
+                }
+                let Some(b) = b else {
+                    continue;
+                };
+                let km2 = u64::from(x.area_km2);
+                let place = |w: u8, s: u8| match w {
+                    1 => Some(usize::from(s >= 2)),
+                    2 => Some(2),
+                    _ => None,
+                };
+                if me.low && !b.low {
+                    if let Some(k) = place(me.water, me.size) {
+                        n.sunk[k][cause] += km2;
+                    }
+                } else if !me.low && b.low {
+                    if let Some(k) = place(b.water, b.size) {
+                        n.risen[k][cause] += km2;
+                    }
+                } else if me.low {
+                    n.reached += km2 * u64::from(b.water == 1 && me.water >= 2);
+                    n.cut += km2 * u64::from(b.water >= 2 && me.water == 1);
+                }
+            }
+        }
+        for c in 0..CELLS {
+            if water[c] == 1 && seen.get(&h.id_at[t][c]).is_some_and(|x| !x.dry) {
+                n.hollow_painted_sea_km2 += u64::from(sphere.area_km2[c]);
+            }
+        }
+        prev = Some(seen);
+    }
+    for p in 0..MAXP {
+        if first_t[p] != usize::MAX && last_t[p] < last {
+            let life = last_t[p] - first_t[p] + 1;
+            n.lives[[1, 3, 9].iter().filter(|&&k| life > k).count()] += 1;
+        }
+    }
+    // The rigid pieces.
+    for (k, span) in [1_usize, 5, 20].into_iter().enumerate() {
+        for t in 0..=last.saturating_sub(span) {
+            for a in h.pieces_at[t].iter().filter(|a| a.tiles.len() >= 30) {
+                let Some(b) = h.pieces_at[t + span].iter().find(|b| b.frame == a.frame) else {
+                    continue;
+                };
+                n.rigid[k][0] += 1;
+                let then: HashMap<u32, usize> =
+                    a.tiles.iter().enumerate().map(|(i, x)| (x.id, i)).collect();
+                let mut kept = 0;
+                for (j, x) in b.tiles.iter().enumerate() {
+                    let Some(&i) = then.get(&x.id) else {
+                        continue;
+                    };
+                    kept += 1;
+                    n.rigid_moved += u64::from(a.tiles[i].at != x.at);
+                    let off = km_between(back(a, a.place(sphere, i)), back(b, b.place(sphere, j)));
+                    n.rigid_off = n.rigid_off.max(off.unsigned_abs());
+                }
+                n.rigid[k][1] += u64::from(kept == a.tiles.len() && b.tiles.len() == kept);
+            }
+        }
+    }
+    rifts(&world, &mut n);
+    (n, [volume, area], seconds)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |name: &str| {
@@ -180,257 +520,11 @@ fn main() {
     let mut volume = (1000_i64, 1000_i64);
     let mut area = (1000_i64, 1000_i64);
     let mut seconds = Vec::new();
-    for &seed in &seeds {
-        let clock = std::time::Instant::now();
-        let world = Planet::with(seed, &settings);
-        seconds.push(clock.elapsed().as_secs_f64());
-        let h = &world.history;
-        let sphere = &world.sphere;
-        let links = &sphere.links;
-        let last = h.last();
-        n.planets += 1;
-        n.plates_start += h.plates_at_start.1 as u64;
-        let mut prev: Option<HashMap<u32, Seen>> = None;
-        let mut volume0 = 0_i64;
-        let mut sea_before = world.at_step(0).sea_rise_m;
-        let mut first_t = [usize::MAX; MAXP];
-        let mut last_t = [0_usize; MAXP];
-        for t in 0..=last {
-            let now = world.at_step(t);
-            let pieces = now.pieces();
-            // The crust kept.
-            let vol: i64 = pieces
-                .iter()
-                .flat_map(|p| &p.tiles)
-                .map(|x| i64::from(x.thick) * i64::from(x.area_km2))
-                .sum();
-            if t == 0 {
-                volume0 = vol;
-            }
-            let share = vol * 1000 / volume0;
-            volume = (volume.0.min(share), volume.1.max(share));
-            let share = h.continental_km2[t] * 1000 / h.continental_km2[0];
-            area = (area.0.min(share), area.1.max(share));
-            // The plates.
-            let mut km2 = [0_i64; MAXP];
-            for c in 0..CELLS {
-                km2[h.plate[t][c] as usize] += i64::from(sphere.area_km2[c]);
-            }
-            for p in 0..MAXP {
-                if km2[p] == 0 {
-                    continue;
-                }
-                first_t[p] = first_t[p].min(t);
-                last_t[p] = t;
-                let class = PLATE_KM2.iter().filter(|&&k| km2[p] >= k).count();
-                n.plates_through[class] += 1;
-                if t == last {
-                    n.plates_today[class] += 1;
-                }
-            }
-            // The water on the continents: ground below the sea's level,
-            // linked to the ocean (a path of such ground to the ocean's
-            // floor) or not (a hollow).
-            let low_cell: Vec<bool> = now.elevation.iter().map(|&e| e <= 0).collect();
-            let floor: Vec<(usize, u32)> = (0..CELLS)
-                .filter(|&c| h.class[t][c] == OCEAN)
-                .map(|c| (c, 0))
-                .collect();
-            let (from_ocean, _) = sphere.spread(&floor, |_, _| true, 2_000);
-            let mut water = vec![0_u8; CELLS];
-            for c in 0..CELLS {
-                if h.class[t][c] != OCEAN && low_cell[c] {
-                    water[c] = if now.basin[c] {
-                        1
-                    } else if from_ocean[c] >= INLAND_KM {
-                        2
-                    } else {
-                        3
-                    };
-                }
-            }
-            let mut size = vec![0_u8; CELLS];
-            let mut done = vec![false; CELLS];
-            for c0 in 0..CELLS {
-                if water[c0] != 1 || done[c0] {
-                    continue;
-                }
-                let (mut stack, mut cells) = (vec![c0], Vec::new());
-                done[c0] = true;
-                while let Some(c) = stack.pop() {
-                    cells.push(c);
-                    for &(m, _) in &links[c] {
-                        let m = m as usize;
-                        if water[m] == 1 && !done[m] {
-                            done[m] = true;
-                            stack.push(m);
-                        }
-                    }
-                }
-                let km2: i64 = cells.iter().map(|&c| i64::from(sphere.area_km2[c])).sum();
-                let class = SIZES.iter().position(|s| km2 < s.1).expect("a size");
-                n.hollows[class] += 1;
-                n.hollow_km2 += km2 as u64;
-                for c in cells {
-                    size[c] = class as u8;
-                }
-            }
-            for c in 0..CELLS {
-                if water[c] == 2 {
-                    n.linked_km2 += u64::from(sphere.area_km2[c]);
-                }
-            }
-            // Every cell of crust, followed by its name in its piece.
-            let d_sea = now.sea_rise_m - sea_before;
-            sea_before = now.sea_rise_m;
-            let mut drawn: HashMap<u32, usize> = HashMap::new();
-            for c in 0..CELLS {
-                if h.class[t][c] != OCEAN {
-                    drawn.insert(h.id_at[t][c], c);
-                }
-            }
-            let mut seen: HashMap<u32, Seen> = HashMap::new();
-            if prev.is_some() {
-                n.steps += 1;
-            }
-            for (k, piece) in pieces.iter().enumerate() {
-                for (i, x) in piece.tiles.iter().enumerate() {
-                    let pos = piece.place(sphere, i);
-                    let cell = sphere.cell_of(pos);
-                    let shown = drawn.get(&x.id).copied();
-                    let me = Seen {
-                        dry: now.tile_dry(k, i),
-                        low: !x.under && now.tile_height(x) <= 0,
-                        far: now.near[cell].0 > FAR_KM,
-                        under: x.under,
-                        high: i64::from(x.high),
-                        pile: (i64::from(x.thick) - 350).max(0) * 10,
-                        lip: i64::from(x.margins & history::LIP != 0) * 350,
-                        pos,
-                        own: x.own,
-                        water: shown.map_or(0, |c| water[c]),
-                        size: shown.map_or(0, |c| size[c]),
-                    };
-                    seen.insert(x.id, me);
-                    let Some(was) = &prev else {
-                        continue;
-                    };
-                    // Does it move with its plate?
-                    if let Some(b) = was.get(&x.id) {
-                        n.moved += 1;
-                        let with = |p: u8| {
-                            let w = h.turned_at[t][p as usize];
-                            km_between(history::carried(w, settings.step_my, b.pos), pos)
-                        };
-                        let off = with(b.own);
-                        if x.switch != 0 || x.own != b.own {
-                            n.switched[x.switch as usize] += 1;
-                        } else if off > SLIDE_KM {
-                            n.slid += 1;
-                            n.slid_worst_km = n.slid_worst_km.max(off);
-                        }
-                    }
-                    if x.under {
-                        continue;
-                    }
-                    let (cause, b) = match was.get(&x.id) {
-                        None => (14, None),
-                        Some(b) if b.under => (13, None),
-                        Some(b) => {
-                            let known: i64 = x.why.iter().map(|&w| i64::from(w)).sum();
-                            let dp = me.pile - b.pile;
-                            let mut parts = vec![
-                                (-d_sea, 0),
-                                (dp, if dp > 0 { 9 } else { 10 }),
-                                (me.lip - b.lip, 11),
-                                (me.high - b.high - known, 12),
-                            ];
-                            parts.extend((0..8).map(|k| (i64::from(x.why[k]), k + 1)));
-                            let sign = if me.low { -1 } else { 1 };
-                            let &(_, cause) = parts
-                                .iter()
-                                .max_by_key(|p| (p.0 * sign, std::cmp::Reverse(p.1)))
-                                .expect("parts");
-                            (cause, Some(*b))
-                        }
-                    };
-                    let (was_dry, was_low, far) =
-                        b.map_or((false, true, me.far), |b| (b.dry, b.low, me.far && b.far));
-                    n.followed += 1;
-                    n.far_followed += u64::from(far);
-                    if me.dry != was_dry {
-                        // Painted otherwise with no change of level: the
-                        // hollow's link to the ocean.
-                        let cause = if me.low == was_low && b.is_some() {
-                            15
-                        } else {
-                            cause
-                        };
-                        n.flips[cause] += 1;
-                        n.far_flips[cause] += u64::from(far);
-                    }
-                    let Some(b) = b else {
-                        continue;
-                    };
-                    let km2 = u64::from(x.area_km2);
-                    let place = |w: u8, s: u8| match w {
-                        1 => Some(usize::from(s >= 2)),
-                        2 => Some(2),
-                        _ => None,
-                    };
-                    if me.low && !b.low {
-                        if let Some(k) = place(me.water, me.size) {
-                            n.sunk[k][cause] += km2;
-                        }
-                    } else if !me.low && b.low {
-                        if let Some(k) = place(b.water, b.size) {
-                            n.risen[k][cause] += km2;
-                        }
-                    } else if me.low {
-                        n.reached += km2 * u64::from(b.water == 1 && me.water >= 2);
-                        n.cut += km2 * u64::from(b.water >= 2 && me.water == 1);
-                    }
-                }
-            }
-            for c in 0..CELLS {
-                if water[c] == 1 && seen.get(&h.id_at[t][c]).is_some_and(|x| !x.dry) {
-                    n.hollow_painted_sea_km2 += u64::from(sphere.area_km2[c]);
-                }
-            }
-            prev = Some(seen);
-        }
-        for p in 0..MAXP {
-            if first_t[p] != usize::MAX && last_t[p] < last {
-                let life = last_t[p] - first_t[p] + 1;
-                n.lives[[1, 3, 9].iter().filter(|&&k| life > k).count()] += 1;
-            }
-        }
-        // The rigid pieces.
-        for (k, span) in [1_usize, 5, 20].into_iter().enumerate() {
-            for t in 0..=last.saturating_sub(span) {
-                for a in h.pieces_at[t].iter().filter(|a| a.tiles.len() >= 30) {
-                    let Some(b) = h.pieces_at[t + span].iter().find(|b| b.frame == a.frame) else {
-                        continue;
-                    };
-                    n.rigid[k][0] += 1;
-                    let then: HashMap<u32, usize> =
-                        a.tiles.iter().enumerate().map(|(i, x)| (x.id, i)).collect();
-                    let mut kept = 0;
-                    for (j, x) in b.tiles.iter().enumerate() {
-                        let Some(&i) = then.get(&x.id) else {
-                            continue;
-                        };
-                        kept += 1;
-                        n.rigid_moved += u64::from(a.tiles[i].at != x.at);
-                        let off =
-                            km_between(back(a, a.place(sphere, i)), back(b, b.place(sphere, j)));
-                        n.rigid_off = n.rigid_off.max(off.unsigned_abs());
-                    }
-                    n.rigid[k][1] += u64::from(kept == a.tiles.len() && b.tiles.len() == kept);
-                }
-            }
-        }
-        rifts(&world, &mut n);
+    for (one, [v, a], s) in par::par_map(&seeds, par::threads(), |&seed| planet(seed, &settings)) {
+        n.add(one);
+        volume = (volume.0.min(v.0), volume.1.max(v.1));
+        area = (area.0.min(a.0), area.1.max(a.1));
+        seconds.push(s);
     }
     let round = |x: f64| (x * 1000.0).round() / 1000.0;
     let pc = |a: u64, b: u64| round(100.0 * a as f64 / b.max(1) as f64);
