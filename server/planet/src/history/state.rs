@@ -96,8 +96,21 @@ pub(crate) struct World<'a> {
     pub(super) continental_km2: Vec<i64>,
     pub(super) shortened_km2: Vec<i64>,
     pub(super) made_km2: Vec<i64>,
+    /// Turns a written scene imposes on plates (the bench); none in a
+    /// planet's history.
+    pub(super) imposed: Vec<(u8, V3)>,
     /// What the mechanisms of one step hand to one another.
     pub(super) step: Step,
+}
+
+impl World<'_> {
+    /// A scene's imposed turns replace the forces' (nothing to do in a
+    /// planet's history).
+    pub(super) fn impose(&mut self) {
+        for &(p, turn) in &self.imposed {
+            self.omega[p as usize] = turn;
+        }
+    }
 }
 
 /// What the mechanisms of one step hand to one another; made anew at
@@ -178,4 +191,23 @@ impl Step {
             grips: Vec::new(),
         }
     }
+}
+
+/// A written scene for the bench (`examples/banc.rs`): continents and
+/// plates laid by hand on the grid, in place of the supercontinent and
+/// the plates a seed draws, and turns imposed on some plates in place
+/// of the turns the forces give them. Everything else is the model.
+#[derive(Debug, Clone)]
+pub struct Scene {
+    /// Each cell: continental crust or ocean floor.
+    pub continent: Vec<bool>,
+    /// Each cell's plate; the plates under continents come first.
+    pub plate: Vec<u8>,
+    /// How many plates carry continent, and how many plates in all.
+    pub continent_plates: usize,
+    /// How many plates in all.
+    pub plates: usize,
+    /// Plates whose turn is imposed at every step: the turn's axis
+    /// scaled by its speed in µm a year (0 holds the plate still).
+    pub turns: Vec<(u8, V3)>,
 }

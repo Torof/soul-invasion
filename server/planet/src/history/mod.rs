@@ -107,7 +107,7 @@ mod state;
 mod trenches;
 mod wear;
 
-pub use self::{crust::*, forces::*, pieces::*, record::*, settings::*};
+pub use self::{crust::*, forces::*, pieces::*, record::*, settings::*, state::Scene};
 use self::{heat::*, plates::*, rifts::*, start::*, state::*, trenches::*};
 
 // The draws' purposes.
@@ -125,9 +125,22 @@ pub(super) const P_ESCAPE: u64 = 0x0c50_010b;
 
 /// The history of the planet born from `seed`.
 pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old: (&[bool], &[bool])) -> History {
-    let mut world = begin(seed, s, sphere, old);
+    let mut world = begin(seed, s, sphere, old, None);
     for t in 0..=s.steps {
         advance(&mut world, t);
+    }
+    finish(world)
+}
+
+/// The history of a written scene (the bench): the model's own steps on
+/// continents and plates laid by hand.
+pub fn run_scene(seed: u64, s: &Settings, sphere: &Sphere, scene: &Scene) -> History {
+    let none = vec![false; CELLS];
+    let mut world = begin(seed, s, sphere, (&none, &none), Some(scene));
+    world.impose();
+    for t in 0..=s.steps {
+        advance(&mut world, t);
+        world.impose();
     }
     finish(world)
 }

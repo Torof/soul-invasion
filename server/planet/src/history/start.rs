@@ -52,6 +52,7 @@ pub(crate) fn begin<'a>(
     s: &'a Settings,
     sphere: &'a Sphere,
     (old_suture, old_rift): (&[bool], &[bool]),
+    scene: Option<&Scene>,
 ) -> World<'a> {
     assert_eq!(s.radius_km, RADIUS_KM, "only the Earth's radius for now");
     let total_my = s.steps as i64 * s.step_my;
@@ -120,6 +121,16 @@ pub(crate) fn begin<'a>(
             best.1 as u8
         })
         .collect();
+    // A written scene (the bench) lays its own continents and plates.
+    let (inside, plate, kc, plates) = match scene {
+        Some(scene) => (
+            scene.continent.clone(),
+            scene.plate.clone(),
+            scene.continent_plates,
+            scene.plates,
+        ),
+        None => (inside, plate, kc, seeds.len()),
+    };
     // The ocean's floor at the start: as if spread from the plates'
     // borders, so it too carries stripes.
     let ridges: Vec<(usize, u32)> = (0..CELLS)
@@ -328,7 +339,7 @@ pub(crate) fn begin<'a>(
         *a = k as u8;
     }
     let born_t = [0_usize; MAXP];
-    let next_id = seeds.len();
+    let next_id = plates;
     let rifts: Vec<Rift> = Vec::new();
     let welds: Vec<Weld> = Vec::new();
     let accretions: Vec<Accretion> = Vec::new();
@@ -448,7 +459,8 @@ pub(crate) fn begin<'a>(
         field,
         crust_cut,
         upwelling,
-        plates_at_start: (kc, seeds.len()),
+        plates_at_start: (kc, plates),
+        imposed: scene.map_or_else(Vec::new, |scene| scene.turns.clone()),
         placed,
         rough,
         broad,
