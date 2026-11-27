@@ -216,8 +216,13 @@ pub(super) type Load = (V3, V3, i64, bool);
 /// mantle's drag and no faster than a plate may go (`top`), as a plate
 /// does. The line is the great circle through
 /// `x` whose pole is `n`. None where a side holds no continent beyond
-/// the stretched zone: a rift tears a continent, not its shore.
-pub(super) fn parting(loads: &[Load], x: V3, n: V3, (v0, top): (i64, i64)) -> Option<i64> {
+/// the stretched zone: a rift tears a continent, not its shore. With it,
+/// the drag the two sides share (the product of their drags over their
+/// sum): the tension across the line is the speed times that drag, the
+/// force that must cross the line for the two sides to go on as one. A
+/// small side is carried along for little: the tension across a crumb
+/// is small however fast its two sides would part.
+pub(super) fn parting(loads: &[Load], x: V3, n: V3, (v0, top): (i64, i64)) -> Option<(i64, i64)> {
     let band = sin(i64::from(STRETCH_KM) * ONE / RADIUS_KM);
     let mut tq = [[0_i64; 3]; 2];
     let mut rs = [0_i64; 2];
@@ -241,7 +246,9 @@ pub(super) fn parting(loads: &[Load], x: V3, n: V3, (v0, top): (i64, i64)) -> Op
             w
         }
     });
-    Some(dot(sub(cross(w[1], x), cross(w[0], x)), n))
+    let shared =
+        (i128::from(rs[0]) * i128::from(rs[1]) / i128::from((rs[0] + rs[1]).max(1))) as i64;
+    Some((dot(sub(cross(w[1], x), cross(w[0], x)), n), shared))
 }
 
 /// The plates' turns from the torques on them (see [`drive`]).
@@ -827,4 +834,23 @@ pub(super) fn next(world: &mut World) {
         std::mem::take(&mut seen.suction),
         std::mem::take(&mut seen.ridge),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pile_pushes_back_as_the_difference_of_the_squares_of_the_thicknesses() {
+        let whole = i64::from(CONTINENT_THICK);
+        assert_eq!(pile_weight(whole), 0);
+        assert_eq!(pile_weight(whole - 100), 0);
+        assert_eq!(pile_weight(2 * whole), 1000);
+        // 50 km of crust: (50² - 35²) / (70² - 35²).
+        assert_eq!(
+            pile_weight(500),
+            (500 * 500 - 350 * 350) * 1000 / (3 * 350 * 350)
+        );
+        assert!(pile_weight(3 * whole) > 2 * pile_weight(2 * whole));
+    }
 }

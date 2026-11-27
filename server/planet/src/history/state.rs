@@ -69,8 +69,8 @@ pub(crate) struct World<'a> {
     pub(super) locked: Vec<(u8, u8)>,
     // Rifts in progress, arcs, silt.
     pub(super) troughs: Vec<Trough>,
-    /// How fast each plate's best line would have stretched at the last
-    /// step, µm a year (a trough begins where the pull has lasted).
+    /// The tension across each plate's most pulled line at the last step,
+    /// ‰ of what its section holds (a trough begins where it has lasted).
     pub(super) pulled: [i64; MAXP],
     pub(super) arc_steps: u8,
     pub(super) silt: [i64; MAXP],

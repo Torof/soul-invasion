@@ -29,9 +29,20 @@ pub(super) const CORE_MY: i64 = 3_000;
 /// opens there.
 pub(super) const RIFT_WIDTH_KM: i64 = 200;
 pub(super) const BREAK_THICK: u16 = 150;
-/// A trough exists once its line stretches this fast, µm a year; below
-/// it for this many steps it is abandoned (a failed rift).
-pub(super) const RIFT_LEAST_UM: i64 = 1_000;
+/// What a plate's section holds (version 15). The tension across a line
+/// through a plate (`forces::parting`: how fast its two sides would part
+/// if nothing held them, times the drag they share) is borne by the
+/// whole section of the plate along that line. Each cell of the section
+/// holds as its lithosphere is strong ([`holds`]): a continent's crust
+/// by its thickness and the inverse of its weakness ([`weak`]: an old
+/// cold core ten times a warm young belt), the ocean floor as much as
+/// the strongest crust once it is old, and little while it is young and
+/// thin. A trough begins, and goes on stretching, where the tension is
+/// more than the section holds: [`Settings::crust_holds`] is the tension a
+/// cell of the strongest crust holds, the one number for the strength of
+/// the lithosphere.
+/// A trough the tension has left for this many steps is abandoned (a
+/// failed rift).
 pub(super) const RIFT_IDLE: usize = 4;
 /// Each tip of a trough grows as fast as the trough stretches: this
 /// many km for each km of opening (the East African rift: ~4 mm a year
@@ -41,10 +52,10 @@ pub(super) const RIFT_IDLE: usize = 4;
 /// two cells ahead; a step off the line counts for less, as the pull
 /// across it does.
 pub(super) const RIFT_GROW: i64 = 10;
-/// A tip feels the crust this many cells ahead of it (some 700 km: the
-/// pull gathers ahead of a tear over a few thicknesses of the plate):
-/// it steps toward the weakest way through them.
-pub(super) const RIFT_AHEAD: i64 = 8;
+/// A tip feels the crust this far ahead of it, km (the pull gathers
+/// ahead of a tear over a few thicknesses of the plate): it steps toward
+/// the weakest way through it.
+pub(super) const RIFT_AHEAD_KM: i64 = 368;
 /// A trough's line is the line through its ends once it is this many
 /// cells long (less before, by its length).
 pub(super) const RIFT_LINE_CELLS: i64 = 20;
@@ -86,6 +97,40 @@ pub(super) fn weak(heat: i32, r: &Rock, now_my: u16) -> i64 {
     };
     let age = i64::from(r.born_my.saturating_sub(now_my)).min(CORE_MY);
     WEAK_COLD + warm + seam + WEAK_YOUNG * (CORE_MY - age) / CORE_MY
+}
+
+/// What a cell of a plate's section holds of the tension across it, per
+/// hundred thousand of what a cell of the strongest crust holds (see
+/// [`CRUST_HOLDS`]): the inverse of its weakness, by its thickness for a
+/// continent's crust; for the ocean floor by the thickness of its
+/// lithosphere, which grows as the square root of its age up to `full_my`.
+pub(super) fn holds(heat: i32, r: &Rock, now_my: u16, full_my: i64) -> i64 {
+    let strong = 1_000_000 * WEAK_COLD / weak(heat, r, now_my);
+    if r.class == OCEAN {
+        let age = i64::from(r.born_my.saturating_sub(now_my)).min(full_my);
+        strong * (age * 1_000_000 / full_my.max(1)).isqrt() / 1000
+    } else {
+        strong * i64::from(r.thick) / i64::from(CONTINENT_THICK)
+    }
+}
+
+/// The tension across a line, ‰ of what its section holds: `pull` (the
+/// speed its two sides would part at, µm a year), the drag they share,
+/// the section's hold (the sum of [`holds`] along it) and what a cell of
+/// the strongest crust holds ([`Settings::crust_holds`]).
+pub(super) fn tension(pull: i64, shared: i64, held: i64, strongest: i64) -> i64 {
+    if pull <= 0 {
+        return 0;
+    }
+    (i128::from(pull) * i128::from(shared) * 100
+        / (i128::from(strongest.max(1)) * i128::from(held.max(1)))) as i64
+}
+
+/// The most a section may hold for the tension across it to reach
+/// `stress` ‰ of that ([`tension`], turned round).
+pub(super) fn held_at_most(pull: i64, shared: i64, strongest: i64, stress: i64) -> i64 {
+    (i128::from(pull.max(0)) * i128::from(shared) * 100
+        / (i128::from(strongest.max(1)) * i128::from(stress.max(1)))) as i64
 }
 
 /// A stretched cell's weakness: its own, and the whole as the square of
@@ -196,6 +241,47 @@ impl Sheet<'_> {
             scale(from, cos(angle)),
             scale(dir, sin(angle)),
         )))
+    }
+
+    /// What the plate's section along the line through `x` heading `dir`
+    /// holds: the sum of [`holds`] over its cells, both ways from `x`
+    /// until the plate ends (three cells of another plate). None once it
+    /// holds more than `most` (the walk stops there: such a section
+    /// cannot tear, see [`held_at_most`]).
+    fn section(
+        &self,
+        pl: u8,
+        (x, dir): (V3, V3),
+        (heat, now_my, full_my): (&[i32], u16, i64),
+        most: i64,
+    ) -> Option<i64> {
+        let around = TAU / 2 * RADIUS_KM / ONE / CELL_KM;
+        let at = self.sphere.cell_of(x);
+        let hold = |c: usize| holds(heat[c], &self.rock[c], now_my, full_my);
+        let mut sum = hold(at);
+        for way in [dir, dir.map(|v| -v)] {
+            let (mut last, mut off) = (at, 0);
+            for k in 1..=around {
+                let c = self.cell(x, way, k);
+                if c == last {
+                    continue;
+                }
+                last = c;
+                if self.plate[c] == pl {
+                    off = 0;
+                    sum += hold(c);
+                    if sum > most {
+                        return None;
+                    }
+                } else {
+                    off += 1;
+                    if off == 3 {
+                        break;
+                    }
+                }
+            }
+        }
+        Some(sum)
     }
 
     /// Whether the plate's continent ends ahead: three cells of sea, or
@@ -514,8 +600,19 @@ pub(super) fn troughs(world: &mut World) {
             rock,
         };
         // The share of the pull each cell of the line lets through, as
-        // far as it has necked; the trough's rate is their mean.
-        let pull = parting(&loads[pl as usize], mid, n, speeds).unwrap_or(0);
+        // far as it has necked; the trough's rate is their mean. It
+        // stretches while the tension is more than its section holds
+        // (the thinned crust of its own line holds less: a trough that
+        // has begun goes on under a weaker pull).
+        let (pull, shared) = parting(&loads[pl as usize], mid, n, speeds).unwrap_or((0, 0));
+        let stress = sheet
+            .section(
+                pl,
+                (mid, normalize(cross(n, mid))),
+                (heat, now_my, s.slab_age_my),
+                held_at_most(pull, shared, s.crust_holds, 1000),
+            )
+            .map_or(0, |held| tension(pull, shared, held, s.crust_holds));
         let share: Vec<i64> = (0..path.len())
             .map(|j| {
                 let c = &land.cells[path[j] as usize];
@@ -528,7 +625,7 @@ pub(super) fn troughs(world: &mut World) {
             tr.path = path;
             tr.ext = ext;
         };
-        if rate < RIFT_LEAST_UM {
+        if stress < 1000 || rate <= 0 {
             troughs[k].idle += 1;
             if troughs[k].idle >= RIFT_IDLE {
                 troughs[k].failed = true;
@@ -573,7 +670,7 @@ pub(super) fn troughs(world: &mut World) {
                             &mut seen,
                             j,
                             &|x| heading(e, x),
-                            RIFT_AHEAD - 1,
+                            RIFT_AHEAD_KM / CELL_KM - 1,
                         );
                         let key = (worth + next, std::cmp::Reverse(j), km);
                         if best.is_none_or(|b| key > b) {
@@ -793,10 +890,11 @@ pub(super) fn troughs(world: &mut World) {
         k += 1;
         !over[k - 1]
     });
-    // A plate with no trough begins to tear where the pull across its
-    // weakest crust stretches it fast enough, and did at the step
+    // A plate with no trough begins to tear where the tension across
+    // it is more than its section holds there, and was at the step
     // before (a pull of one step tears nothing), along a line with
-    // crust to tear ahead.
+    // crust to tear ahead: at the weakest spots of its continent, along
+    // the line where the tension is the most of what the section holds.
     let sheet = Sheet {
         sphere,
         plate: &*plate,
@@ -832,21 +930,34 @@ pub(super) fn troughs(world: &mut World) {
             }
         }
         let mut best: Option<(i64, std::cmp::Reverse<usize>, usize, V3)> = None;
-        for (order, &(w, i)) in picked.iter().enumerate() {
+        for (order, &(_, i)) in picked.iter().enumerate() {
             let x = land.cells[i].pos;
             let (e, nn) = (east_at(x), north_at(x, east_at(x)));
             for a in 0..12 {
                 let angle = a * TAU / 24;
                 let n = normalize(add(scale(e, cos(angle)), scale(nn, sin(angle))));
-                let Some(pull) = parting(&loads[p], x, n, speeds) else {
+                let Some((pull, shared)) = parting(&loads[p], x, n, speeds) else {
                     continue;
                 };
                 let line = normalize(cross(n, x));
                 if sheet.shore(p as u8, x, line) && sheet.shore(p as u8, x, line.map(|v| -v)) {
                     continue;
                 }
+                if pull <= 0 {
+                    continue;
+                }
+                // Only a line that tears, and more than the best so far.
+                let least = best.map_or(1000, |b| (b.0 + 1).max(1000));
+                let Some(held) = sheet.section(
+                    p as u8,
+                    (x, line),
+                    (heat, now_my, s.slab_age_my),
+                    held_at_most(pull, shared, s.crust_holds, least),
+                ) else {
+                    continue;
+                };
                 let key = (
-                    pull * w / 1000,
+                    tension(pull, shared, held, s.crust_holds),
                     std::cmp::Reverse(order * 12 + a as usize),
                     i,
                     n,
@@ -857,8 +968,8 @@ pub(super) fn troughs(world: &mut World) {
             }
         }
         let before = std::mem::replace(&mut pulled[p], best.map_or(0, |b| b.0));
-        if let Some((rate, _, i, n)) = best
-            && rate.min(before) >= RIFT_LEAST_UM
+        if let Some((stress, _, i, n)) = best
+            && stress.min(before) >= 1000
         {
             troughs.push(Trough {
                 record: rifts.len(),
@@ -888,7 +999,7 @@ pub(super) fn troughs(world: &mut World) {
                 bow_km: 0,
                 cut_cells: 0,
                 belt_cells: 0,
-                pull: 0,
+                pull: stress.min(i64::from(u32::MAX)) as u32,
             });
             journal.push(Event::rift(
                 What::RiftBegun,
@@ -929,5 +1040,62 @@ pub(super) fn margins_sink(world: &mut World) {
                 r.sunk = lift(r.sunk, more);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rock(class: u8, age: u16, thick: u16) -> Rock {
+        Rock {
+            class,
+            piece: 0,
+            margins: 0,
+            arc: 0,
+            rift: 0,
+            born_my: age,
+            orogeny: NEVER,
+            home: 0,
+            thick,
+            high: 0,
+            cool: 0,
+            sunk: 0,
+            sag: 0,
+            why: [0; CAUSES],
+        }
+    }
+
+    #[test]
+    fn old_cold_crust_holds_more_than_a_young_belt_and_old_floor_more_than_young() {
+        let core = holds(0, &rock(CONTINENT, 3_000, CONTINENT_THICK), 0, 80);
+        let belt = holds(0, &rock(CONTINENT, 300, CONTINENT_THICK), 0, 80);
+        let thinned = holds(0, &rock(CONTINENT, 300, BREAK_THICK), 0, 80);
+        let warm = holds(
+            WEAK_HOT as i32,
+            &rock(CONTINENT, 300, CONTINENT_THICK),
+            0,
+            80,
+        );
+        assert!(core > 4 * belt, "{core} {belt}");
+        assert!(belt > 2 * thinned && belt > warm, "{belt} {thinned} {warm}");
+        let floor = |age| holds(0, &rock(OCEAN, age, OCEAN_THICK), 0, 80);
+        assert_eq!(floor(0), 0);
+        assert_eq!(floor(80), core);
+        assert_eq!(floor(200), core);
+        assert_eq!(2 * floor(20), floor(80));
+    }
+
+    #[test]
+    fn the_tension_across_a_crumb_is_small_however_fast_its_sides_would_part() {
+        // The same parting speed across the same section: a side that
+        // drags little is carried along for little.
+        let section = 20 * 1_000_000;
+        let wide = tension(30_000, 5_000_000, section, 300);
+        let crumb = tension(30_000, 50_000, section, 300);
+        assert!(wide >= 1000 && crumb < 1000, "{wide} {crumb}");
+        assert_eq!(tension(-5_000, 5_000_000, section, 300), 0);
+        // A weaker section tears under the same pull.
+        assert!(tension(30_000, 50_000, section / 200, 300) >= 1000);
     }
 }

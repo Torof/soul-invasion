@@ -16,7 +16,7 @@ use super::*;
 /// difference ([`SPREAD_MOST`]: beyond it the sum would overshoot):
 /// limits of the arithmetic, not of the crust.
 pub(super) const THICK_SPREAD: i64 = 1000;
-pub(super) const SPREAD_PARTS: i64 = 4;
+pub(super) const SPREAD_PARTS: i64 = 8;
 pub(super) const SPREAD_MOST: i64 = 1000;
 /// Each step a continent loses [`Settings::mountain_wear`] of its
 /// thickness above a continent's (wear); the silt builds its plate's
@@ -125,21 +125,27 @@ pub(super) fn piles_and_silt(world: &mut World) {
     let whole = i64::from(CONTINENT_THICK);
     let mut thick: Vec<i64> = land.cells.iter().map(|c| i64::from(c.rock.thick)).collect();
     for _ in 0..SPREAD_PARTS {
-        let pile = |i: usize| thick[i].max(whole);
-        let spread: Vec<i64> = (0..land.cells.len())
-            .map(|i| {
-                land.kin(sphere, i)
-                    .filter(|&(j, _)| land.cells[j].plate == land.cells[i].plate)
-                    .map(|(j, _)| {
-                        let part = (pile(j).max(pile(i)) - whole) * 1000 / whole;
-                        let cube = part * part / 1000 * part / 1000;
-                        let rate = (THICK_SPREAD * cube / 1000 * cube / 1000 / SPREAD_PARTS)
-                            .min(SPREAD_MOST);
-                        (pile(j) - pile(i)) * rate / 1000 / 8
-                    })
-                    .sum()
-            })
-            .collect();
+        // Only a pile flows: each pair of neighbours of which one at
+        // least stands above a continent's thickness, once.
+        let mut spread = vec![0_i64; thick.len()];
+        for i in 0..thick.len() {
+            if thick[i] <= whole {
+                continue;
+            }
+            for (j, _) in land.kin(sphere, i) {
+                if land.cells[j].plate != land.cells[i].plate || (thick[j] > whole && j < i) {
+                    continue;
+                }
+                let (mine, theirs) = (thick[i], thick[j].max(whole));
+                let part = (mine.max(theirs) - whole) * 1000 / whole;
+                let cube = part * part / 1000 * part / 1000;
+                let rate =
+                    (THICK_SPREAD * cube / 1000 * cube / 1000 / SPREAD_PARTS).min(SPREAD_MOST);
+                let flow = (theirs - mine) * rate / 1000 / 8;
+                spread[i] += flow;
+                spread[j] -= flow;
+            }
+        }
         for i in 0..thick.len() {
             thick[i] += spread[i];
         }

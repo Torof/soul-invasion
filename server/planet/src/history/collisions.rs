@@ -5,9 +5,11 @@
 use super::*;
 
 /// Crust run under another piece thickens the thinnest crust within this
-/// many cells of the crust above it (a range is a few hundred km wide,
-/// not one cell of the grid).
-pub(super) const PILE_REACH: usize = 2;
+/// many cells of the crust above it (some 370 km: a range is a few
+/// hundred km wide, not one cell of the grid, and the squeeze of five
+/// million years reaches that far behind a front), on whatever piece of
+/// that plate it lies.
+pub(super) const PILE_REACH: usize = 4;
 
 /// Step 2. A collision the pile has stopped: the forces press its two
 /// plates together no harder than the thickened crust pushes back
@@ -153,13 +155,37 @@ pub(super) fn meet(world: &mut World) {
             let o = &land.cells[k];
             !o.dead && !o.under && o.plate == above.plate
         };
+        // The crust above and, where other pieces of its plate lie
+        // against it (a docked terrane, a welded continent), their crust
+        // at the same place and around it.
         let mut near = vec![j];
-        let mut ring = 0..1;
+        let mut seen = std::collections::HashSet::from([j]);
+        let around = above.cell as usize;
+        for &frame in &land.near[around] {
+            if frame == above.frame {
+                continue;
+            }
+            for m in
+                std::iter::once(around).chain(sphere.links[around].iter().map(|l| l.0 as usize))
+            {
+                let at = sphere.cell_of(normalize(apply(
+                    &land.back[frame as usize],
+                    sphere.centre[m],
+                )));
+                if let Some(k) = land.get(frame, at as u32)
+                    && fits(k)
+                    && seen.insert(k)
+                {
+                    near.push(k);
+                }
+            }
+        }
+        let mut ring = 0..near.len();
         for _ in 0..PILE_REACH {
             for a in ring.clone() {
                 let from = near[a];
                 for (k, _) in land.kin(sphere, from) {
-                    if fits(k) && !near.contains(&k) {
+                    if fits(k) && seen.insert(k) {
                         near.push(k);
                     }
                 }

@@ -63,6 +63,14 @@ pub struct Settings {
     /// as a trench holds, at 70 km, about one and a half times what the
     /// trench's slab pulls with.
     pub pile_push: i64,
+    /// The strength of the lithosphere: the tension a cell of the
+    /// strongest crust (old, cold, a continent's thickness; or old ocean
+    /// floor) holds across a plate's section, in the forces' units (mm a
+    /// year of parting times the drag of a thousand cells of ocean
+    /// floor). A rift begins where the tension across a plate is more
+    /// than its section holds (`rifts::holds`); weaker crust holds less
+    /// (a warm young belt a tenth of this).
+    pub crust_holds: i64,
     /// The mantle's heat moves the continents: mm a year down a slope of
     /// the heat field as steep as under a supercontinent's edge (hot
     /// under a large continent, cold where slabs sink).
@@ -130,6 +138,7 @@ impl Default for Settings {
             speed_mm: (10, 250),
             mantle_drag_mm: 150,
             pile_push: 4_000,
+            crust_holds: 300,
             heat_push: 150,
             slab_pull: 7_500,
             slab_age_my: 80,
