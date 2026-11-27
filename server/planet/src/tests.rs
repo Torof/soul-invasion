@@ -444,6 +444,7 @@ fn the_journal_names_the_rule_behind_every_plate_that_appears_or_disappears() {
                         renamed
                             || told(&[
                                 What::BornOfRift,
+                                What::BornOfTrench,
                                 What::BornEscaping,
                                 What::BornCutOff,
                                 What::MovesAlone
@@ -490,4 +491,100 @@ fn the_journal_names_the_rule_behind_every_plate_that_appears_or_disappears() {
         }
         assert!(!cut.is_empty(), "seed {seed}: no plate born of a rift");
     }
+}
+
+#[test]
+fn the_supercontinent_is_ringed_by_trenches_and_the_plates_move_from_the_start() {
+    for seed in [9, 14] {
+        let world = made(seed);
+        let h = &world.history;
+        // Its plates carry no floor: the old ocean around it is other
+        // plates', and sinks under its rim.
+        let supercontinent = h.plates_at_start.0;
+        assert!((0..CELLS).all(|c| {
+            (h.class[0][c] == history::CONTINENT) == ((h.plate[0][c] as usize) < supercontinent)
+                || h.class[0][c] == history::TERRANE
+        }));
+        let trench = Kind::Trench as u8 + 1;
+        let rim = (0..CELLS)
+            .filter(|&c| {
+                h.class[0][c] == history::OCEAN
+                    && world.sphere.links[c]
+                        .iter()
+                        .any(|&(n, _)| h.class[0][n as usize] == history::CONTINENT)
+            })
+            .count();
+        let sinking = (0..CELLS).filter(|&c| h.kind[0][c] == trench).count();
+        assert!(
+            2 * sinking >= rim,
+            "seed {seed}: {sinking} cells of trench at the start for a rim of {rim}"
+        );
+        // The slabs pull from the start: no still world.
+        let mut cells = [0_i64; history::MAXP];
+        for &p in &h.plate[0] {
+            cells[p as usize] += 1;
+        }
+        let speed = (0..history::MAXP)
+            .map(|p| cells[p] * h.motion[0][p].speed_mm)
+            .sum::<i64>()
+            / CELLS as i64;
+        assert!(speed >= 10, "seed {seed}: {speed} mm a year at the start");
+    }
+}
+
+#[test]
+fn an_old_passive_margin_bends_step_after_step_then_gives_way() {
+    use history::What;
+    // A continent alone on its plate with the old floor around it, two
+    // ocean plates beyond, the forces free (the bench's `margin`).
+    let sphere = Sphere::new();
+    let at = |lon: i64| from_lat_lon(0, lon * 10);
+    let seeds = [at(0), at(120), at(-120)];
+    let scene = history::Scene {
+        continent: sphere
+            .centre
+            .iter()
+            .map(|&x| km_between(x, seeds[0]) < 1400)
+            .collect(),
+        plate: sphere
+            .centre
+            .iter()
+            .map(|&x| {
+                (0..3)
+                    .min_by_key(|&k| (km_between(x, seeds[k]), k))
+                    .expect("a plate") as u8
+            })
+            .collect(),
+        continent_plates: 1,
+        plates: 3,
+        turns: Vec::new(),
+    };
+    let settings = Settings {
+        steps: 30,
+        terranes: (0, 0),
+        hotspots: (0, 0),
+        ..Settings::default()
+    };
+    let h = history::run_scene(1, &settings, &sphere, &scene);
+    let born: Vec<(usize, history::Event)> = h
+        .journal
+        .iter()
+        .enumerate()
+        .flat_map(|(t, events)| events.iter().map(move |&e| (t, e)))
+        .filter(|(_, e)| e.what == What::BornOfTrench)
+        .collect();
+    let &(t, first) = born.first().expect("a trench is born");
+    // Not at once: the floor is at its heaviest and takes a hundred
+    // million years to bend that far.
+    assert!(t >= 15, "the margin gave way at step {t}");
+    // Before, no floor sinks along the continent; after, the floor that
+    // left is a plate, and it sinks.
+    let trench = Kind::Trench as u8 + 1;
+    let sinking = |t: usize| (0..CELLS).filter(|&c| h.kind[t][c] == trench).count();
+    assert_eq!(sinking(t - 1), 0);
+    assert!(h.plate[t].contains(&first.plate));
+    assert!(!h.plate[t - 1].contains(&first.plate));
+    assert!(sinking(t) > 0);
+    // The tear runs on along the margin.
+    assert!(sinking((t + 3).min(h.last())) > 2 * sinking(t));
 }

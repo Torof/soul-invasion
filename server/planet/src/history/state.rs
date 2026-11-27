@@ -25,6 +25,9 @@ pub(crate) struct World<'a> {
     // The mantle.
     pub(super) deep: Vec<i32>,
     pub(super) heat: Vec<i32>,
+    /// The cells under which a slab of ocean floor hangs in the mantle:
+    /// the trenches as they stood at the last step (`forces::look`).
+    pub(super) hung: Vec<bool>,
     pub(super) hotspots: Vec<V3>,
     pub(super) plumes: Vec<V3>,
     pub(super) spent: Vec<bool>,
@@ -294,6 +297,7 @@ impl Step {
                 suction: Vec::new(),
                 ridge: Vec::new(),
                 front: Vec::new(),
+                hung: Vec::new(),
             },
             margin_of: Vec::new(),
             grips: Vec::new(),

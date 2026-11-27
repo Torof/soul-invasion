@@ -16,8 +16,17 @@ pub(super) const PUSH_KEEP: i64 = 960;
 /// A plate keeps this much of its last motion each step, per mille (the
 /// rest comes from the forces of the step).
 pub(super) const INERTIA: i64 = 400;
-/// Convergence or divergence a slab or a ridge needs, µm a year.
+/// Convergence a trench needs to begin where no slab hangs yet, and
+/// divergence a ridge needs, µm a year. A slab that hangs needs none: it
+/// pulls by its weight, and is lost only where the plates part this fast.
 pub(super) const FORCE_LEAST_UM: i64 = 2_000;
+
+/// How hard a slab of this age, millions of years, pulls, per mille of
+/// the pull at `full_my`: the floor's weight in the mantle. A floor
+/// younger than [`SLAB_YOUNG_MY`] is too light to pull.
+pub(super) fn slab_weight(age: i64, full_my: i64) -> i64 {
+    ((age - SLAB_YOUNG_MY) * 1000 / (full_my - SLAB_YOUNG_MY).max(1)).clamp(0, SLAB_MOST)
+}
 
 /// A push on two plates, an escaping block and
 /// the plate it leaves: away from a great circle (`normal`), growing
@@ -476,8 +485,15 @@ pub(super) struct Look {
     pub(super) suction: Vec<Spot>,
     pub(super) ridge: Vec<Spot>,
     pub(super) front: Vec<Front>,
+    /// The cells of floor that sink now: a slab hangs under each.
+    pub(super) hung: Vec<bool>,
 }
 
+/// `hung`: the cells under which a slab hung at the step before (version
+/// 14). A trench is a state, not only a motion: where a slab hangs, or
+/// hung a cell away (the trench moved, or the tear runs on along the
+/// boundary), the floor goes on sinking and its slab pulls by its weight
+/// however slowly the plates close; the slab is lost where they part.
 pub(super) fn look(
     sphere: &Sphere,
     plate: &[u8],
@@ -485,8 +501,10 @@ pub(super) fn look(
     rock: &mut [Rock],
     omega: &[V3],
     event: &[u8],
+    hung: &[bool],
     (now_my, full_my): (u16, i64),
 ) -> Look {
+    let mut hangs = vec![false; CELLS];
     let floor = floor_born(plate, rock);
     let mut kind = vec![0_u8; CELLS];
     let mut margin = vec![Margin::Inland as u8; CELLS];
@@ -550,16 +568,19 @@ pub(super) fn look(
             if k == Kind::Collision {
                 front.push((c, mine, other, normal, closing));
             }
-            if !mine_cont
-                && closing >= FORCE_LEAST_UM
-                && 2 * closing >= slide
-                && (theirs_cont || !mine_up)
-            {
+            let begins = closing >= FORCE_LEAST_UM && 2 * closing >= slide;
+            let goes_on = closing > -FORCE_LEAST_UM
+                && (hung[c] || sphere.links[c].iter().any(|&(n, _)| hung[n as usize]));
+            if !mine_cont && (begins || goes_on) && (theirs_cont || !mine_up) {
+                hangs[c] = true;
+                if k == Kind::Transform {
+                    // A trench the plates hardly close on is a trench.
+                    kind[c] = Kind::Trench as u8 + 1;
+                }
                 // An old slab is heavy: it pulls its plate, and draws the
                 // plate riding over it toward the trench.
                 let age = i64::from(rock[c].born_my.saturating_sub(now_my));
-                let weight = ((age - SLAB_YOUNG_MY) * 1000 / (full_my - SLAB_YOUNG_MY).max(1))
-                    .clamp(0, SLAB_MOST);
+                let weight = slab_weight(age, full_my);
                 if weight > 0 {
                     slab.push((c, mine, normal, weight));
                     suction.push((c, other, normal.map(|v| -v), weight));
@@ -596,6 +617,7 @@ pub(super) fn look(
         suction,
         ridge,
         front,
+        hung: hangs,
     }
 }
 
@@ -644,8 +666,10 @@ pub(super) fn look_at(world: &mut World) {
         &mut *rock,
         &*omega,
         &*event,
+        &world.hung,
         (now_my, s.slab_age_my),
     );
+    world.hung.clone_from(&seen.hung);
     // Each cell of crust's margin: what the view saw where it draws
     // it; a cell the view does not draw has its piece's margin there.
     *margin_of = vec![u8::MAX; land.cells.len()];

@@ -132,6 +132,7 @@ pub(super) fn holes_and_gaps(world: &mut World) {
         high: 0,
         cool: 0,
         sunk: 0,
+        sag: 0,
         why: [0; CAUSES],
     };
     let again = |q: usize, m: usize, rock: &[Rock], pending: &[bool]| {

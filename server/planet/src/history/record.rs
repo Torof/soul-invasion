@@ -78,6 +78,10 @@ pub enum What {
     /// `plate` is born: a large part of `other` cut off from the rest of
     /// it on the grid is a plate of its own, with the same motion.
     BornCutOff,
+    /// `plate` is born: the old floor of `other` gave way at its passive
+    /// margin and begins to sink under it (a trench is born); `km2` is
+    /// the floor that left.
+    BornOfTrench,
     /// `plate` has ended: welded to `other` after their collision stood
     /// still.
     EndedWelded,

@@ -38,7 +38,8 @@ pub struct Settings {
     /// How unequal those plates are, [`ONE`] units of the largest seed
     /// weight (0: all alike).
     pub plate_inequality: i64,
-    /// Oceanic plates at the start, around the supercontinent.
+    /// Oceanic plates at the start, around the supercontinent: they
+    /// carry all the ocean's floor, up to the supercontinent's rim.
     pub ocean_plates: (i64, i64),
     /// A plate younger than twice this many steps does not weld.
     pub rift_steps: usize,

@@ -29,6 +29,11 @@ pub(super) struct Rock {
     pub(super) cool: i16,
     /// How far stretching has lowered it in all, m.
     pub(super) sunk: i16,
+    /// A continent's shore at a passive margin: how far the old floor
+    /// beside it has bent down under its own weight, m
+    /// (`trenches::margins_give_way`). The shore keeps it: silt that
+    /// builds the shore out takes it along.
+    pub(super) sag: i16,
     /// What changed its height since the step before, m, by cause (see
     /// [`CAUSES`]).
     pub(super) why: [i16; CAUSES],

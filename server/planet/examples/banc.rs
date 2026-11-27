@@ -15,7 +15,8 @@
 //! other), `trench` (an ocean plate driven under a continent that stands
 //! still: an active margin, its arc), `arcs` (two ocean plates driven at
 //! each other: island arcs), `carried` (a continent carried 20 steps by
-//! its plate: a rigid piece). To add one, write a function like these
+//! its plate: a rigid piece), `margin` (a continent with old floor on
+//! its plate: the floor bends, gives way, a trench is born). To add one, write a function like these
 //! and name it in `SCENES`.
 //!
 //! A scene runs on the planet's whole grid (its cell count is a
@@ -58,7 +59,7 @@ struct Written {
 
 type Write = fn(&Sphere) -> Written;
 
-const SCENES: [(&str, &str, Write); 5] = [
+const SCENES: [(&str, &str, Write); 6] = [
     ("rift", "one continent, the forces free", rift),
     (
         "collision",
@@ -71,6 +72,11 @@ const SCENES: [(&str, &str, Write); 5] = [
         "carried",
         "a continent carried 20 steps by its plate",
         carried,
+    ),
+    (
+        "margin",
+        "a continent with old floor on its plate, the forces free",
+        margin,
     ),
 ];
 
@@ -208,6 +214,26 @@ fn carried(sphere: &Sphere) -> Written {
     }
 }
 
+/// A continent of 2,800 km across alone on its plate with the old floor
+/// around it, two ocean plates beyond, and the forces free: the floor at
+/// its passive margin bends under its own weight step after step, gives
+/// way (the plates' count goes up by one: the floor is a plate of its
+/// own), and the trench runs on along the margin as that floor begins to
+/// sink.
+fn margin(sphere: &Sphere) -> Written {
+    Written {
+        settings: plain(30),
+        scene: Scene {
+            continent: cap(sphere, (0, 0), 1400),
+            plate: nearest(sphere, &[(0, 0), (0, 120), (0, -120)]),
+            continent_plates: 1,
+            plates: 3,
+            turns: Vec::new(),
+        },
+        window: ((0, 0), 70),
+    }
+}
+
 /// A tile's width, pixels: its height is half of it.
 const TILE: usize = 320;
 
@@ -299,11 +325,16 @@ fn numbers(sphere: &Sphere, h: &History) -> String {
         );
     }
     let events = format!(
-        "  rifts {} (cut {}), collisions {}, welds {}, accretions {}, escapes {}, captures {}\n",
+        "  rifts {} (cut {}), trenches born {}, collisions {}, welds {}, accretions {}, escapes {}, captures {}\n",
         h.rifts.len(),
         h.rifts
             .iter()
             .filter(|r| r.cut_my != history::NEVER)
+            .count(),
+        h.journal
+            .iter()
+            .flatten()
+            .filter(|e| e.what == history::What::BornOfTrench)
             .count(),
         h.collisions.len(),
         h.welds.len(),

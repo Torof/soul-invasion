@@ -26,7 +26,7 @@ and under `soul-cap`.
 | What | Command | Measured (27 Nov 2026, 16 threads) |
 |---|---|---|
 | Does it compile | `cargo check -p planet --all-targets` | under 1 s after a one-line change |
-| **Try**: a bench scene | `cargo run --profile essai -p planet --example banc -- rift` | build 3 s, a scene about 1 s, the five together 4 s |
+| **Try**: a bench scene | `cargo run --profile essai -p planet --example banc -- rift` | build 3 s, a scene about 1 s, the six together 4 s |
 | **Try**: two seeds, numbers only | `PLANET_OUT=dir PLANET_SEEDS=14,9 cargo run --profile essai -p planet --example planet` | build 3 s, two planets 5 s |
 | Tests | `cargo test --profile essai -p planet --lib` | build 2 s, tests 11 s |
 | **Final**: the bilan on 30 seeds | `planet/tools/bilan.sh v12 OUT_DIR` | 2 min (was 7 min on one thread) |
@@ -92,7 +92,7 @@ naming the parts of the world it uses.
 
 | Order in a step | Function | Module | What it does |
 |---|---|---|---|
-| start | `begin` | `start.rs` | Supercontinent, first plates, ocean floor, relief, heat, plumes, first forces. |
+| start | `begin` | `start.rs` | Supercontinent, first plates, ocean floor, relief, heat, plumes, first forces. Since version 14 the supercontinent's plates carry no floor: the ocean's plates reach its rim, their floor oldest far from their ridges, and a slab hangs wherever that floor meets the supercontinent (`hung`); those slabs pull from step 0, and the mantle starts cold around them. |
 | 1 | `begin_step` | `crust.rs` | Clears what the last step left on each cell of crust. |
 | 2 | `weld_and_escape` | `collisions.rs` | A collision that stood still welds its two plates; a hard one sheds a block sideways. |
 | 3 | `troughs` | `rifts.rs` | Rifts: troughs begin where a plate is pulled apart and weak (`weak`: cold, warm mantle, a suture or failed rift of the history, the crust's age: so the mosaic's belts are weak and its cores strong), grow cell by cell toward the weakest way through the crust `RIFT_AHEAD` cells ahead of each tip (`ahead`), stretch and thin it (each cell from the day it was reached), cut the plate once they cross it, then unzip; or are abandoned. |
@@ -103,18 +103,19 @@ naming the parts of the world it uses.
 | 8 | `holes_and_gaps` | `floor.rs` | Holes of the floor's sampling mended; a gap beside stretched crust filled with that crust's own width while any is left; other gaps between parting plates filled with new floor; rift margins. |
 | 9 | `specks` | `plates.rs` | A lone cell of a plate joins the plate around it. |
 | 10 | `piles_and_silt` | `wear.rs` | Piles spread and wear; their silt builds the margins out. |
-| 11 | `one_piece` | `plates.rs` | A plate is one piece: parts cut off become plates or are captured, crumbs absorbed; plates parted. |
-| 12 | `hotspots_mark` | `heat.rs` | Hotspots mark and lift the crust over them. |
-| 13 | `compact` | `crust.rs` | Dead crust leaves the record; what the view hides is counted. |
-| 14 | `margins_sink` | `rifts.rs` | The crust beside a new ocean sinks (a rifted margin). |
-| 15 | `look_at` | `forces.rs` | What the plates do now: kinds of boundaries, margins (`look`). |
-| 16 | `warm_step` | `heat.rs` | The mantle's heat under the crust as it lies (`warm`). |
-| 17 | `sea_and_weather` | `wear.rs` | The sea level; relief wears down and fills (`weather`). |
-| 18 | `progress` | `collisions.rs` | Collisions begin, last, end. |
-| 19 | `write` | `record.rs` | The step's layers and its journal of events. |
-| 20 | `next` | `forces.rs` | The forces and the plates' turns for the next step (`drive`): the crust that still joins two plates a rift has cut holds them there (`Bridge`); boundaries that open, lava floods. |
+| 11 | `margins_give_way` | `trenches.rs` | **A trench is born** (version 14). The floor beside a continent of its own plate (a passive margin) bends down under its own weight: each shore cell keeps how far (`Rock::sag`), which grows by `SAG_M_MY` m a My times the floor's weight (`slab_weight` of its age: nothing under 10 My, full at 80), times how hard the floor pushes its continent along (read from the forces: the drag on the continent as it moves, less the forces on the continent itself, shared among the plate's shore cells; pressed as hard as a full slab pulls, twice as fast; pulled as hard, not at all). At `SAG_BREAK_M` the floor gives way: that ocean's floor on this plate becomes a plate (`BornOfTrench` in the journal) and a slab hangs where it gave way. An unpressed margin of a new ocean gives way about 160 My after the ocean opened; old floor that became a margin, after 100 My. |
+| 12 | `one_piece` | `plates.rs` | A plate is one piece: parts cut off become plates or are captured, crumbs absorbed; plates parted. |
+| 13 | `hotspots_mark` | `heat.rs` | Hotspots mark and lift the crust over them. |
+| 14 | `compact` | `crust.rs` | Dead crust leaves the record; what the view hides is counted. |
+| 15 | `margins_sink` | `rifts.rs` | The crust beside a new ocean sinks (a rifted margin). |
+| 16 | `look_at` | `forces.rs` | What the plates do now: kinds of boundaries, margins (`look`). **A trench is a state** (version 14, `World::hung`): floor that sinks under another plate goes on sinking where a slab hung at the step before, there or a cell away, however slowly the plates close (it began at 2 mm a year, `FORCE_LEAST_UM`), and its slab pulls by its weight; the slab is lost where the plates part at 2 mm a year. So a trench lasts through a slow spell, moves with its plates, and runs on along a boundary a cell a step. |
+| 17 | `warm_step` | `heat.rs` | The mantle's heat under the crust as it lies (`warm`). |
+| 18 | `sea_and_weather` | `wear.rs` | The sea level; relief wears down and fills (`weather`). |
+| 19 | `progress` | `collisions.rs` | Collisions begin, last, end. |
+| 20 | `write` | `record.rs` | The step's layers and its journal of events. |
+| 21 | `next` | `forces.rs` | The forces and the plates' turns for the next step (`drive`): the crust that still joins two plates a rift has cut holds them there (`Bridge`); boundaries that open, lava floods. |
 
-Steps 1 to 14 do not run at step 0. Other things a module holds:
+Steps 1 to 15 do not run at step 0. Other things a module holds:
 `pieces.rs` the rigid pieces (`Land`: lattice, `cover`, `kin`, `spread`),
 the grid's view (`paint`, `seats`) and who rides over whom
 (`precedence`); `crust.rs` the records a crust carries (`Rock`, `Bit`,
@@ -143,6 +144,7 @@ current folder). With no name, every scene.
 | `trench` | An ocean plate driven under a continent that stands still. | An active margin and its arc. |
 | `arcs` | Two ocean plates driven at each other, no continent near. | The older floor sinks, island arcs grow. |
 | `carried` | A continent carried 20 steps by its plate. | A rigid piece: its cells unchanged. |
+| `margin` | A continent of 2,800 km alone on its plate with the old floor around it, the forces free, 30 steps. | A trench is born: nothing sinks for 19 steps while the margin bends, the floor gives way at step 20 (one plate more), and the trench runs along the margin in the next steps. |
 
 To add a scene, write a function like these in `examples/banc.rs` and
 name it in `SCENES`. A scene is not "well under a second": it runs on
@@ -156,7 +158,7 @@ change of the model's code, not done in the tooling round.
 
 The history keeps a journal (`History::journal`, `history/record.rs`:
 `Event`, `What`): for each step, what happened to the plates, with its
-cause and its place. A plate born (of which rift, escaping which
+cause and its place. A plate born (of which rift, of which margin giving way, escaping which
 collision, cut off which plate), a plate ended (welded, crumb, enclosed,
 no cell left), a plate that moves as one with another (`MovesWith`: the
 map then draws them as one) or alone again, a rift begun or abandoned, a

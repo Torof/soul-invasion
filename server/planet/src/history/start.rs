@@ -107,9 +107,18 @@ pub(crate) fn begin<'a>(
     let plate: Vec<u8> = (0..CELLS)
         .map(|c| {
             let q = warp(border_seed, sphere.centre[c], &RIFT_WARP);
-            let among = if inside[c] { kc } else { seeds.len() };
+            // The ocean around the supercontinent lies on the ocean's own
+            // plates (version 14): the supercontinent's plates carry no
+            // skirt of floor, their rim is a plate boundary.
+            let among = if inside[c] {
+                0..kc
+            } else if seeds.len() > kc {
+                kc..seeds.len()
+            } else {
+                0..seeds.len()
+            };
             let mut best = (i64::MIN, 0);
-            for (k, &(at, w)) in seeds.iter().take(among).enumerate() {
+            for (k, &(at, w)) in seeds.iter().enumerate().take(among.end).skip(among.start) {
                 let score = dot(q, at) + w;
                 if score > best.0 {
                     best = (score, k);
@@ -211,6 +220,7 @@ pub(crate) fn begin<'a>(
                     high: high0[c],
                     cool: 0,
                     sunk: 0,
+                    sag: 0,
                     why: [0; CAUSES],
                 }
             } else {
@@ -229,6 +239,7 @@ pub(crate) fn begin<'a>(
                     high: 0,
                     cool: 0,
                     sunk: 0,
+                    sag: 0,
                     why: [0; CAUSES],
                 }
             }
@@ -273,8 +284,24 @@ pub(crate) fn begin<'a>(
             ((fbm3(hash(&[seed, P_HEAT]), x, &HEAT_DEEP_GRAIN) - 500) * HEAT_DEEP / 500) as i32
         })
         .collect();
+    // The trenches at the start (version 14): a supercontinent was
+    // gathered by the oceans that closed between its parts, and the ocean
+    // left around it has gone on sinking under its rim ever since. Where
+    // the floor of another plate meets the supercontinent a slab hangs.
+    let hung: Vec<bool> = (0..CELLS)
+        .map(|c| {
+            rock[c].class == OCEAN
+                && sphere.links[c].iter().any(|&(n, _)| {
+                    rock[n as usize].class == CONTINENT && plate[n as usize] != plate[c]
+                })
+        })
+        .collect();
+    let ring: Vec<Spot> = (0..CELLS)
+        .filter(|&c| hung[c])
+        .map(|c| (c, plate[c], [0; 3], 0))
+        .collect();
     let mut heat = vec![0_i32; CELLS];
-    warm(sphere, &rock, &[], &deep, &mut heat, 1000);
+    warm(sphere, &rock, &ring, &deep, &mut heat, 1000);
     let count = draw(seed, P_HOT, 0, s.hotspots.0, s.hotspots.1).max(0) as usize;
     let mut rising: Vec<(i64, usize)> = (0..CELLS)
         .map(|c| {
@@ -416,6 +443,35 @@ pub(crate) fn begin<'a>(
         None,
         &held(&parted, &[[false; MAXP]; MAXP]),
     );
+    // The slabs that hang at the start pull from the start.
+    let seen = look(
+        sphere,
+        &plate,
+        &first.group,
+        &mut rock.clone(),
+        &first.omega,
+        &vec![Margin::Inland as u8; CELLS],
+        &hung,
+        (total_my as u16, s.slab_age_my),
+    );
+    let first = drive(
+        sphere,
+        s,
+        &plate,
+        &rock,
+        &pushes,
+        &alias,
+        &heat,
+        Edges {
+            slab: &seen.slab,
+            suction: &seen.suction,
+            ridge: &seen.ridge,
+            grips: &[],
+            bridges: &[],
+        },
+        None,
+        &held(&parted, &[[false; MAXP]; MAXP]),
+    );
     let omega = first.omega;
     let group = first.group;
     let opened = opening(sphere, &plate, &rock, &parted, &group, &mut broken);
@@ -459,6 +515,7 @@ pub(crate) fn begin<'a>(
         grain,
         deep,
         heat,
+        hung,
         hotspots: hotspots.to_vec(),
         plumes,
         spent,

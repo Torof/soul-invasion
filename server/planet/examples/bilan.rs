@@ -40,7 +40,7 @@
     reason = "a measuring tool: one long count, written as rounded shares"
 )]
 
-use planet::history::{self, MAXP, OCEAN, Piece};
+use planet::history::{self, MAXP, OCEAN, Piece, What};
 use planet::{CELLS, Planet, Settings, V3, dot, km_between, normalize};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -211,6 +211,11 @@ struct Count {
     wet: [u64; 3],
     // Plates that could not be born for lack of a name.
     unnamed: u64,
+    // Trenches born at a passive margin: how many, the step of each,
+    // the floor that began to sink, km².
+    born: u64,
+    born_step: Vec<i64>,
+    born_km2: u64,
 }
 
 impl Count {
@@ -274,6 +279,9 @@ impl Count {
             crust,
             wet,
             unnamed,
+            born,
+            born_step,
+            born_km2,
         } = o;
         self.steps += steps;
         self.planets += planets;
@@ -330,6 +338,9 @@ impl Count {
         sum(&mut self.crust, crust);
         sum(&mut self.wet, wet);
         self.unnamed += unnamed;
+        self.born += born;
+        self.born_step.extend(born_step);
+        self.born_km2 += born_km2;
     }
 }
 
@@ -638,6 +649,13 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
     // A planet that never moves counts as starting after its last step.
     n.moving.push(moving.unwrap_or(last as i64 + 1));
     n.unnamed += u64::from(h.unnamed);
+    for (t, events) in h.journal.iter().enumerate() {
+        for e in events.iter().filter(|e| e.what == What::BornOfTrench) {
+            n.born += 1;
+            n.born_step.push(t as i64);
+            n.born_km2 += e.km2 as u64;
+        }
+    }
     rifts(&world, &mut n);
     (n, [volume, area], seconds)
 }
@@ -785,6 +803,9 @@ fn main() {
             "cells of trench per step, through the history": per(n.trench_cells, n.steps + n.planets),
             "today's ocean floor older than 200 My, per mille of the floor: least, median, most": spread(&mut n.old_floor),
             "today's oldest ocean floor, My: least, median, most": spread(&mut n.oldest_floor),
+            "trenches born at a passive margin (its old floor gave way), per planet": per(n.born, n.planets),
+            "the step a trench is born at: least, median, most": spread(&mut n.born_step),
+            "floor that began to sink at those births, M km2 per planet": per(n.born_km2 / 1_000_000, n.planets),
             "plates not born for lack of a name (must be 0)": n.unnamed,
         },
         "11 relief and sea": {
