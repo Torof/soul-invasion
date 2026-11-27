@@ -984,3 +984,46 @@ pub fn continent_layers(dir: &Path, seed: u64, z: &Zoom) {
     );
     std::fs::write(dir.join(format!("c{seed}-donnees.js")), js).expect("the data");
 }
+
+/// The history's journal for the page, `h{seed}-journal.js`: per step,
+/// the plates drawn (their number and share of the planet, per mille)
+/// and the events since the step before, each with its place (tenths of
+/// a degree; none if it has no place); and the plates' colours.
+pub fn journal(dir: &Path, world: &Planet) {
+    let (seed, h) = (world.seed, &world.history);
+    let whole: i64 = world.sphere.area_km2.iter().map(|&a| i64::from(a)).sum();
+    let steps: Vec<serde_json::Value> = (0..=h.last())
+        .map(|t| {
+            let mut km2 = [0_i64; history::MAXP];
+            for c in 0..planet::CELLS {
+                km2[h.plate[t][c] as usize] += i64::from(world.sphere.area_km2[c]);
+            }
+            let plates: Vec<(usize, i64)> = (0..history::MAXP)
+                .filter(|&p| km2[p] > 0)
+                .map(|p| (p, km2[p] * 1000 / whole))
+                .collect();
+            let events: Vec<serde_json::Value> = h.journal[t]
+                .iter()
+                .map(|e| {
+                    let place =
+                        (e.at != [0; 3]).then(|| [planet::latitude(e.at), planet::longitude(e.at)]);
+                    serde_json::json!({
+                        "k": format!("{:?}", e.what),
+                        "p": e.plate,
+                        "o": (e.other != NONE).then_some(e.other),
+                        "ou": place,
+                        "km2": e.km2,
+                        "r": (e.rift != u16::MAX).then_some(e.rift),
+                    })
+                })
+                .collect();
+            serde_json::json!({"p": plates, "e": events})
+        })
+        .collect();
+    let data = serde_json::json!({
+        "couleurs": PLATE_COLOURS,
+        "etapes": steps,
+    });
+    let js = format!("window.JOURNAL=window.JOURNAL||{{}};window.JOURNAL[\"{seed}\"]={data};\n");
+    std::fs::write(dir.join(format!("h{seed}-journal.js")), js).expect("the journal");
+}

@@ -191,6 +191,7 @@ pub(super) fn specks(world: &mut World) {
 /// or are captured, crumbs are absorbed; plates whose continents no
 /// longer touch have parted.
 pub(super) fn one_piece(world: &mut World) {
+    let journal = &mut world.journal;
     let sphere = world.sphere;
     let parted = &mut world.parted;
     let broken = &mut world.broken;
@@ -285,8 +286,20 @@ pub(super) fn one_piece(world: &mut World) {
             group[new] = group[old];
             omega[new] = omega[old];
             *cut_off += 1;
+            journal.push(Event::plates(
+                What::BornCutOff,
+                (new, old),
+                middle(sphere, |c| part[c] as usize == k),
+                km2,
+            ));
         } else if let Some(by) = most(&edge) {
             to[k] = by as u8;
+            journal.push(Event::plates(
+                What::PartTaken,
+                (old, by),
+                middle(sphere, |c| part[c] as usize == k),
+                km2,
+            ));
             captures.push(Capture {
                 my: now_my,
                 plate: id,
@@ -349,6 +362,16 @@ pub(super) fn one_piece(world: &mut World) {
             continue;
         }
         gone[id as usize] = true;
+        journal.push(Event::plates(
+            if enclosed {
+                What::EndedEnclosed
+            } else {
+                What::EndedCrumb
+            },
+            (id as usize, by),
+            middle(sphere, |c| plate[c] == id),
+            km2,
+        ));
         absorb(
             (by, id as usize, SWITCH_CRUMB),
             &mut *plate,

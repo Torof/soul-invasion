@@ -96,6 +96,12 @@ pub(crate) struct World<'a> {
     pub(super) continental_km2: Vec<i64>,
     pub(super) shortened_km2: Vec<i64>,
     pub(super) made_km2: Vec<i64>,
+    /// The journal: the events since the last step was written, the
+    /// journal of each step, and each plate's group when the last step
+    /// was written (`NONE`: it had no cell).
+    pub(super) journal: Vec<Event>,
+    pub(super) out_journal: Vec<Vec<Event>>,
+    pub(super) was: [u8; MAXP],
     /// Turns a written scene imposes on plates (the bench); none in a
     /// planet's history.
     pub(super) imposed: Vec<(u8, V3)>,

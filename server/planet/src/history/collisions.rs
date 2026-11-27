@@ -22,6 +22,7 @@ pub(super) const ESCAPE_MM: i64 = 25;
 /// closing; while they still close hard, a block of the riding plate may
 /// escape sideways.
 pub(super) fn weld_and_escape(world: &mut World) {
+    let journal = &mut world.journal;
     let seed = world.seed;
     let sphere = world.sphere;
     let pushes = &mut world.pushes;
@@ -78,6 +79,19 @@ pub(super) fn weld_and_escape(world: &mut World) {
                 } else {
                     (b, a)
                 };
+                let front = fronts
+                    .iter()
+                    .filter(|f| {
+                        (f.1 as usize, f.2 as usize) == (a, b)
+                            || (f.1 as usize, f.2 as usize) == (b, a)
+                    })
+                    .fold([0; 3], |acc, f| add(acc, sphere.centre[f.0]));
+                journal.push(Event::plates(
+                    What::EndedWelded,
+                    (absorbed, kept),
+                    normalize(front),
+                    cont_of[absorbed],
+                ));
                 welds.push(Weld {
                     my: now_my,
                     kept: kept as u8,
@@ -203,6 +217,12 @@ pub(super) fn weld_and_escape(world: &mut World) {
                     strength: ESCAPE_MM * 1000,
                     plates: (over as u8, new as u8),
                 });
+                journal.push(Event::plates(
+                    What::BornEscaping,
+                    (new, over),
+                    block_at,
+                    km2,
+                ));
                 escapes.push(Escape {
                     my: now_my,
                     from: over as u8,
@@ -284,6 +304,7 @@ pub(super) fn meet(world: &mut World) {
 }
 /// Step 12 (collisions). Collisions begin, last and end; their fronts.
 pub(super) fn progress(world: &mut World) {
+    let journal = &mut world.journal;
     let grips = &mut world.step.grips;
     let s = world.s;
     let sphere = world.sphere;
@@ -344,6 +365,12 @@ pub(super) fn progress(world: &mut World) {
                 if contact[a][b] == 0 {
                     contact[a][b] = t + 1;
                     record_of[a][b] = collisions.len();
+                    let at = seen
+                        .front
+                        .iter()
+                        .find(|f| (f.1.min(f.2) as usize, f.1.max(f.2) as usize) == (a, b))
+                        .map_or([0; 3], |f| sphere.centre[f.0]);
+                    journal.push(Event::plates(What::CollisionBegun, (a, b), at, 0));
                     collisions.push(Collision {
                         a: a as u8,
                         b: b as u8,

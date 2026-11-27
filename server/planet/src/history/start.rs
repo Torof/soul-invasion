@@ -437,8 +437,15 @@ pub(crate) fn begin<'a>(
     let omega = first.omega;
     let group = first.group;
     let opened = opening(sphere, &plate, &rock, &parted, &group, &mut broken);
+    let mut journal = Vec::new();
     for &pair in &opened {
         for (at, km2) in flood(sphere, &mut land, &top, pair, &plumes, &mut spent) {
+            journal.push(Event::plates(
+                What::Lava,
+                (pair.0 as usize, pair.1 as usize),
+                at,
+                km2,
+            ));
             lips.push(Lip {
                 my: total_my as u16,
                 at,
@@ -535,6 +542,9 @@ pub(crate) fn begin<'a>(
         next_bit,
         shown_now,
         hidden_now,
+        journal,
+        out_journal: Vec::with_capacity(s.steps + 1),
+        was: [NONE; MAXP],
         step: Step::new(0, 0),
     }
 }

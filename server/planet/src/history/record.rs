@@ -60,6 +60,107 @@ pub const FAILED_RIFT: u8 = 64;
 /// continent broke.
 pub const LIP: u8 = 128;
 
+/// What happened, in the journal of a step ([`History::journal`]): the
+/// plates born and ended with the rule that made or ended them, the
+/// rifts, the collisions, the terranes docked, the islands risen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum What {
+    /// A trough begins on `plate` (rift `rift`).
+    RiftBegun,
+    /// The trough of rift `rift` is abandoned: the pull has left it.
+    RiftAbandoned,
+    /// `plate` is born: rift `rift` has cut plate `other` in two.
+    BornOfRift,
+    /// `plate` is born: a block of `other` escaping a collision sideways.
+    BornEscaping,
+    /// `plate` is born: a large part of `other` cut off from the rest of
+    /// it on the grid is a plate of its own, with the same motion.
+    BornCutOff,
+    /// `plate` has ended: welded to `other` after their collision stood
+    /// still.
+    EndedWelded,
+    /// `plate` has ended: under 100,000 km², taken by `other`, the plate
+    /// it touches most.
+    EndedCrumb,
+    /// `plate` has ended: a small plate (under 5 M km²) enclosed in
+    /// `other` alone, taken by it.
+    EndedEnclosed,
+    /// `plate` has ended with no rule naming it: no cell of the grid is
+    /// left to it (its floor sank, its last cells were taken one by one).
+    EndedNoCell,
+    /// A small part of `plate`, cut off from the rest of it, is taken by
+    /// `other`.
+    PartTaken,
+    /// `plate` moves on its own again: the forces no longer press it
+    /// against the plates it moved as one with (`other`: that group).
+    MovesAlone,
+    /// `plate` moves as one with `other` again: their continents still
+    /// touch (they have not parted) and the forces press them together.
+    /// On the maps they are one plate.
+    MovesWith,
+    /// The continents of `plate` and `other` meet: a collision begins.
+    CollisionBegun,
+    /// Terranes or island arcs dock on `plate` (they rode `other`); the
+    /// events of a step are added like the islands'.
+    Docked,
+    /// Islands rise on the edge of `plate`, over the floor of `other`
+    /// sinking under it: an island arc (the events of a step are added:
+    /// `km2` is their sum, `at` the first).
+    IslandsRisen,
+    /// A boundary opens inside a continent, between `plate` and `other`.
+    Opened,
+    /// A plume floods the continent with basalt where a boundary opens.
+    Lava,
+}
+
+/// An event of the journal: what, to which plates, where, how large.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Event {
+    /// What happened.
+    pub what: What,
+    /// The plate it happened to (the one born, the one ended).
+    pub plate: u8,
+    /// The other plate ([`NONE`] if none): see [`What`].
+    pub other: u8,
+    /// Where (a zero vector: nowhere in particular).
+    pub at: V3,
+    /// Its area, km² (0: not an area).
+    pub km2: i64,
+    /// The rift, an index into [`History::rifts`] (`u16::MAX`: none).
+    pub rift: u16,
+}
+
+impl Event {
+    pub(super) fn plates(what: What, (plate, other): (usize, usize), at: V3, km2: i64) -> Self {
+        Self {
+            what,
+            plate: plate as u8,
+            other: other as u8,
+            at,
+            km2,
+            rift: u16::MAX,
+        }
+    }
+
+    pub(super) fn rift(what: What, plate: u8, at: V3, rift: usize) -> Self {
+        Self {
+            what,
+            plate,
+            other: NONE,
+            at,
+            km2: 0,
+            rift: rift as u16,
+        }
+    }
+}
+
+/// The middle of the cells that pass (a zero vector if none does).
+pub(super) fn middle(sphere: &Sphere, pass: impl Fn(usize) -> bool) -> V3 {
+    normalize((0..CELLS).filter(|&c| pass(c)).fold([0; 3], |acc, c| {
+        add(acc, sphere.centre[c].map(|v| v / 1000))
+    }))
+}
+
 /// What a cell of continental crust is at one step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -315,6 +416,9 @@ pub struct History {
     pub built_km2: Vec<i64>,
     /// The flood basalts.
     pub lips: Vec<Lip>,
+    /// The journal: per step, what happened to the plates since the step
+    /// before, each event with its rule and its place ([`What`]).
+    pub journal: Vec<Vec<Event>>,
     /// Today: the cell each cell's crust was at the start, or was born at.
     pub home: Vec<u32>,
     /// Today: each cell's piece ([`NONE`]: ocean).
@@ -344,6 +448,8 @@ impl History {
 /// Step 12 (the record). The crust as drawn, cell by cell, for the
 /// history's layers.
 pub(super) fn write(world: &mut World) {
+    let sphere = world.sphere;
+    let journal = &mut world.journal;
     let troughs = &mut world.troughs;
     let land = &mut world.land;
     let bits = &mut world.bits;
@@ -443,6 +549,64 @@ pub(super) fn write(world: &mut World) {
             .collect::<Vec<Motion>>(),
     );
     continental_km2.push(land.weight().iter().sum());
+    // The journal: the plates that began or stopped moving as one with
+    // others since the last step was written, the plates left with no
+    // cell, and the islands of the step added by trench.
+    let mut now = [NONE; MAXP];
+    for &p in plate.iter() {
+        now[p as usize] = group[p as usize];
+    }
+    let ended = |journal: &[Event], p: usize| {
+        journal.iter().any(|e| {
+            e.plate as usize == p
+                && matches!(
+                    e.what,
+                    What::EndedWelded | What::EndedCrumb | What::EndedEnclosed
+                )
+        })
+    };
+    for p in 0..MAXP {
+        let (before, after) = (world.was[p], now[p]);
+        if world.step.t == 0 || before == after {
+            continue;
+        }
+        let of = |plates: &[u8]| middle(sphere, |c| plates[c] as usize == p);
+        if after == NONE {
+            if !ended(journal, p) {
+                let last = &out_plate[out_plate.len() - 2];
+                let at = middle(sphere, |c| last[c] == before && plate[c] != before);
+                journal.push(Event::plates(What::EndedNoCell, (p, NONE as usize), at, 0));
+            }
+        } else if before != NONE && after == p as u8 {
+            journal.push(Event::plates(
+                What::MovesAlone,
+                (p, before as usize),
+                of(plate),
+                0,
+            ));
+        } else if before != NONE {
+            journal.push(Event::plates(
+                What::MovesWith,
+                (p, after as usize),
+                of(plate),
+                0,
+            ));
+        }
+    }
+    world.was = now;
+    let mut told: Vec<Event> = Vec::with_capacity(journal.len());
+    for e in journal.drain(..) {
+        if matches!(e.what, What::IslandsRisen | What::Docked)
+            && let Some(first) = told
+                .iter_mut()
+                .find(|o| (o.what, o.plate, o.other) == (e.what, e.plate, e.other))
+        {
+            first.km2 += e.km2;
+        } else {
+            told.push(e);
+        }
+    }
+    world.out_journal.push(told);
 }
 /// The history, once its last step has run.
 pub(crate) fn finish(world: World) -> History {
@@ -491,6 +655,7 @@ pub(crate) fn finish(world: World) -> History {
         cut_off,
         built_km2,
         lips,
+        out_journal,
         ..
     } = world;
     paint(&land, &top, &mut plate, &mut rock);
@@ -539,6 +704,7 @@ pub(crate) fn finish(world: World) -> History {
         cut_off,
         built_km2,
         lips,
+        journal: out_journal,
         home: rock.iter().map(|r| r.home).collect(),
         piece: rock
             .iter()

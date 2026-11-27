@@ -607,6 +607,7 @@ pub(super) fn look_at(world: &mut World) {
 }
 /// Step 12 (the forces). The plates' turns for the next step.
 pub(super) fn next(world: &mut World) {
+    let journal = &mut world.journal;
     let s = world.s;
     let sphere = world.sphere;
     let heat = &mut world.heat;
@@ -660,7 +661,25 @@ pub(super) fn next(world: &mut World) {
         }
         let opened = opening(sphere, &*plate, &*rock, &*parted, &*group, &mut *broken);
         for &pair in &opened {
+            journal.push(Event::plates(
+                What::Opened,
+                (pair.0 as usize, pair.1 as usize),
+                middle(sphere, |c| {
+                    plate[c] == pair.0
+                        && rock[c].class == CONTINENT
+                        && sphere.links[c]
+                            .iter()
+                            .any(|&(n, _)| plate[n as usize] == pair.1)
+                }),
+                0,
+            ));
             for (at, km2) in flood(sphere, &mut *land, &*top, pair, &*plumes, &mut *spent) {
+                journal.push(Event::plates(
+                    What::Lava,
+                    (pair.0 as usize, pair.1 as usize),
+                    at,
+                    km2,
+                ));
                 lips.push(Lip {
                     my: now_my,
                     at,

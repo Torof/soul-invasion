@@ -118,6 +118,7 @@ pub(super) fn opening(
 /// Step 3b. The rifts: troughs begin, stretch the crust, grow and cut
 /// their plate in two.
 pub(super) fn troughs(world: &mut World) {
+    let journal = &mut world.journal;
     let s = world.s;
     let sphere = world.sphere;
     let heat = &mut world.heat;
@@ -220,6 +221,12 @@ pub(super) fn troughs(world: &mut World) {
                 troughs[k].failed = true;
                 troughs[k].path = path;
                 give_up(&mut *land, &mut *rifts);
+                journal.push(Event::rift(
+                    What::RiftAbandoned,
+                    pl,
+                    rifts[record].centre,
+                    record,
+                ));
                 continue;
             }
             busy[pl as usize] = true;
@@ -252,6 +259,12 @@ pub(super) fn troughs(world: &mut World) {
                 if troughs[k].idle >= RIFT_IDLE {
                     troughs[k].failed = true;
                     give_up(&mut *land, &mut *rifts);
+                    journal.push(Event::rift(
+                        What::RiftAbandoned,
+                        pl,
+                        rifts[record].centre,
+                        record,
+                    ));
                 }
                 troughs[k].path = path;
                 continue;
@@ -452,6 +465,15 @@ pub(super) fn troughs(world: &mut World) {
             r.new = new;
             r.cut_my = now_my;
             cut_done[k] = true;
+            journal.push(Event {
+                other: old,
+                ..Event::rift(
+                    What::BornOfRift,
+                    new,
+                    land.cells[path[path.len() / 2] as usize].pos,
+                    troughs[k].record,
+                )
+            });
         }
         let mut k = 0;
         troughs.retain(|_| {
@@ -535,6 +557,12 @@ pub(super) fn troughs(world: &mut World) {
                     failed_my: NEVER,
                     cells: 1,
                 });
+                journal.push(Event::rift(
+                    What::RiftBegun,
+                    p as u8,
+                    land.cells[i].pos,
+                    rifts.len() - 1,
+                ));
             }
         }
     }

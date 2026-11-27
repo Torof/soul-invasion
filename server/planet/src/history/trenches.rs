@@ -24,6 +24,7 @@ pub(super) const ARC_ISLAND_M: i16 = 200;
 /// Step 5 (the floor). The ocean floor sinks under the continents (active
 /// margins); terranes and arcs dock.
 pub(super) fn sink_and_dock(world: &mut World) {
+    let journal = &mut world.journal;
     let n = world.step.n;
     let sphere = world.sphere;
     let accretions = &mut world.accretions;
@@ -95,6 +96,12 @@ pub(super) fn sink_and_dock(world: &mut World) {
             stack.extend(land.kin(sphere, i).map(|(j, _)| j));
         }
         if km2 > 0 || !accretions.iter().any(|a| a.piece == piece) {
+            journal.push(Event::plates(
+                What::Docked,
+                (pw as usize, pl as usize),
+                land.cells[i0].pos,
+                km2,
+            ));
             accretions.push(Accretion {
                 my: now_my,
                 plate: pw,
@@ -108,6 +115,7 @@ pub(super) fn sink_and_dock(world: &mut World) {
 /// ocean shows its winning bit of floor, the older sinks under the
 /// younger, and the riding edge grows an island arc.
 pub(super) fn draw_floor(world: &mut World) {
+    let journal = &mut world.journal;
     let seed = world.seed;
     let sphere = world.sphere;
     let arc_steps = world.arc_steps;
@@ -193,6 +201,17 @@ pub(super) fn draw_floor(world: &mut World) {
         if over_ocean {
             r.arc = r.arc.saturating_add(1);
             if r.arc >= arc_steps && hash(&[seed, P_ARC, u64::from(r.home)]) % 1000 < ARC_SHARE {
+                let sinking = here
+                    .iter()
+                    .map(|&j| bits[j as usize].plate)
+                    .find(|&p| p != pw)
+                    .unwrap_or(NONE);
+                journal.push(Event::plates(
+                    What::IslandsRisen,
+                    (pw as usize, sinking as usize),
+                    x,
+                    area(q),
+                ));
                 r.class = TERRANE;
                 r.piece = ARC_BASE + pw;
                 r.born_my = now_my;

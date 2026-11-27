@@ -7,8 +7,8 @@
 
 It runs the `planet` example on seeds 14 and 9 with every layer, and the
 `bilan` on seeds 1-30, with the default settings (or `--settings file.ron`),
-and hashes what they write: every layer file, the numbers of each seed and
-the bilan's table. Clock times are left out (born_ms, total_ms, the bilan's
+and hashes what they write: every layer file, the numbers of each seed, its
+journal of events and the bilan's table. Clock times are left out (born_ms, total_ms, the bilan's
 seconds). A tooling change must leave every line identical; a change of the
 model moves them, and the new reference is saved with it.
 """
@@ -56,16 +56,18 @@ def main():
         seconds = cargo("planet", settings, {"PLANET_OUT": str(tmp), "PLANET_SEEDS": SEEDS, "PLANET_LAYERS": "1"})
         print(f"planet {SEEDS} with layers: {seconds:.0f} s", file=sys.stderr)
         for seed in SEEDS.split(","):
+            journal = tmp / "couches" / f"h{seed}-journal.js"
             files = sorted(p for p in (tmp / "couches").iterdir()
-                           if re.match(rf"[a-z]+{seed}-", p.name))
+                           if re.match(rf"[a-z]+{seed}-", p.name) and p != journal)
             files += sorted(tmp.glob(f"*-graine-{seed}.png"))
             lines.append(f"layers-{seed} {sha(p.name.encode() + p.read_bytes() for p in files)} {len(files)} files")
             numbers = json.loads((tmp / f"graine-{seed}.json").read_text())
             for clock in ("born_ms", "total_ms"):
                 numbers.pop(clock)
             lines.append(f"numbers-{seed} {sha([json.dumps(numbers, sort_keys=True).encode()])}")
+            lines.append(f"journal-{seed} {sha([journal.read_bytes()])}")
         known = {p.name for p in (tmp / "couches").iterdir()}
-        counted = sum(int(line.split()[2]) for line in lines if line.startswith("layers")) - 6
+        counted = sum(int(line.split()[2]) for line in lines if line.startswith("layers")) - 6 + 2
         assert counted == len(known), f"{len(known) - counted} layer files belong to no seed"
         if "--quick" not in args:
             table = tmp / "bilan.json"
@@ -78,6 +80,10 @@ def main():
     print(text, end="")
     if "--save" in args:
         assert "--quick" not in args, "the reference holds the bilan too"
+        old = REFERENCE.read_text().splitlines() if REFERENCE.exists() else []
+        for line in lines:
+            if line not in old:
+                print(f"changed or new: {line}", file=sys.stderr)
         REFERENCE.write_text(text)
         print(f"reference saved: {REFERENCE}", file=sys.stderr)
         return 0

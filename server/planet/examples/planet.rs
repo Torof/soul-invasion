@@ -119,6 +119,7 @@ fn main() {
             par::par_map(&steps, inner, |&t| {
                 layers::step_layers(&dir, &world.at_step(t), chosen);
             });
+            layers::journal(&dir, &world);
             let continents = std::env::var("PLANET_CONTINENTS").ok();
             if let Some(z) = chosen
                 && continents

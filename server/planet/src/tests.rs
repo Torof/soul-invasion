@@ -417,3 +417,72 @@ fn every_cell_is_on_exactly_one_plate_at_every_step() {
         }
     }
 }
+
+#[test]
+fn the_journal_names_the_rule_behind_every_plate_that_appears_or_disappears() {
+    use history::What;
+    for seed in [9, 14] {
+        let world = made(seed);
+        let h = &world.history;
+        let drawn = |t: usize| {
+            let mut on = [false; history::MAXP];
+            for &p in &h.plate[t] {
+                on[p as usize] = true;
+            }
+            on
+        };
+        assert_eq!(h.journal.len(), h.last() + 1);
+        for t in 1..=h.last() {
+            let (before, after) = (drawn(t - 1), drawn(t));
+            for p in 0..history::MAXP {
+                let told = |whats: &[What]| {
+                    h.journal[t]
+                        .iter()
+                        .any(|e| e.plate as usize == p && whats.contains(&e.what))
+                };
+                // A plate also shows under a new number when the plate
+                // whose number its group bore has left the group.
+                let renamed = h.journal[t]
+                    .iter()
+                    .any(|e| e.what == What::MovesWith && e.other as usize == p);
+                if after[p] && !before[p] {
+                    assert!(
+                        renamed
+                            || told(&[
+                                What::BornOfRift,
+                                What::BornEscaping,
+                                What::BornCutOff,
+                                What::MovesAlone
+                            ]),
+                        "seed {seed}, step {t}: plate {p} appears, the journal does not say why"
+                    );
+                }
+                if before[p] && !after[p] {
+                    assert!(
+                        told(&[
+                            What::EndedWelded,
+                            What::EndedCrumb,
+                            What::EndedEnclosed,
+                            What::EndedNoCell,
+                            What::MovesWith
+                        ]),
+                        "seed {seed}, step {t}: plate {p} disappears, the journal does not say why"
+                    );
+                }
+            }
+        }
+    }
+    // The lead's case (27 November): on seed 9 a fifth of the planet is
+    // cut out of the largest plate at step 9 and is back in it at step 12.
+    let journal = &made(9).history.journal;
+    assert!(
+        journal[9]
+            .iter()
+            .any(|e| { (e.what, e.plate, e.other, e.rift) == (What::BornOfRift, 4, 0, 0) })
+    );
+    assert!(
+        journal[12]
+            .iter()
+            .any(|e| (e.what, e.plate, e.other) == (What::MovesWith, 4, 0))
+    );
+}
