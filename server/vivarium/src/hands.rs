@@ -169,6 +169,10 @@ pub struct HandsProbe {
     /// and name: (knowers, of them holding it from a kept trial of their
     /// own).
     pub known_by: BTreeMap<(u8, String), (u32, u32)>,
+    /// The living past infancy who know a put-in of food in a kind of
+    /// hollow, by tribe and hollow: each counted once a hollow, whatever
+    /// the foods its deeds name.
+    pub put_knowers: BTreeMap<(u8, String), u32>,
 }
 
 /// The least, the median (the lower of two) and the most of `values`;
@@ -498,13 +502,39 @@ impl HandsProbe {
         }
         self.known.clear();
         self.known_by.clear();
+        self.put_knowers.clear();
         for b in world.bodies() {
             if world.is_infant(b, content) || b.condition().vitality.points() == 0 {
                 continue;
             }
             let mut served = false;
             if let Some(mind) = brains.mind(b.id()) {
+                let mut hollows: Vec<u16> = Vec::new();
                 for deed in mind.ways().hands.iter() {
+                    let food = content
+                        .materials
+                        .get(kind_material(deed.on))
+                        .is_some_and(|m| m.food.is_some());
+                    if deed.gesture == Gesture::PutIn
+                        && food
+                        && !kind_hollow(deed.on)
+                        && !hollows.contains(&deed.with)
+                    {
+                        hollows.push(deed.with);
+                        let hollow = deed_name(
+                            content,
+                            Deed {
+                                gesture: Gesture::Fold,
+                                on: deed.with,
+                                with: deed.with,
+                            },
+                        );
+                        let hollow = hollow.trim_start_matches("fold ").to_owned();
+                        *self
+                            .put_knowers
+                            .entry((tribe(people, b.id()), hollow))
+                            .or_default() += 1;
+                    }
                     let name = deed_name(content, deed);
                     *self.known.entry(name.clone()).or_default() += 1;
                     let by = self
@@ -583,7 +613,14 @@ impl HandsProbe {
                 *sum = (sum.0 + n.0, sum.1 + n.1);
             }
         }
+        let mut knowers: BTreeMap<&str, u32> = BTreeMap::new();
+        for ((tribe, hollow), n) in &self.put_knowers {
+            if of(*tribe) {
+                *knowers.entry(hollow).or_default() += n;
+            }
+        }
         json!({
+            "knowers_by_hollow": knowers,
             "hollow_makers": first_hollow.len(),
             "found_put_in": found,
             "never_found": first_hollow.len() - found,

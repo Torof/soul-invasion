@@ -461,7 +461,7 @@ fn judge(
     // Kept, only the deeds of which something came that served stay
     // known (D57, amended 27 November 2026).
     if moved {
-        handwork::keep_what_served(rules, mind, &trial.before.hands);
+        handwork::keep_what_served(rules, mind, &trial.before.hands, true);
     }
     let kept = moved && mind.ways.hands != trial.before.hands;
     mind.judged = Some(Judged {
@@ -478,7 +478,7 @@ fn judge(
     if kept {
         mind.changed_day = Some(day);
     } else {
-        trial.way.copy(&mut mind.ways, &trial.before);
+        handwork::leave_not_kept(rules, mind, trial);
     }
     mind.handwork.drop_aim();
     mind.trial = None;
@@ -508,14 +508,19 @@ fn judge(
 /// `mind`'s trial from a problem, its time out and the problem never back
 /// to judge it (D50, amended 26 November 2026): ended unjudged, its ways
 /// as before, nothing told, its will as it was. The news.
-pub(super) fn lapse(mind: &mut Mind, trial: &Trial, (id, now): (BodyId, u64)) -> Vec<News> {
+pub(super) fn lapse(
+    rules: &Content,
+    mind: &mut Mind,
+    trial: &Trial,
+    (id, now): (BodyId, u64),
+) -> Vec<News> {
     let kind = trial.problem.map_or(0, |a| a.kind);
     let step = if handwork::untried(mind, trial) {
         ProblemStep::Untried
     } else {
         ProblemStep::Lapsed
     };
-    trial.way.copy(&mut mind.ways, &trial.before);
+    handwork::leave_not_kept(rules, mind, trial);
     mind.handwork.drop_aim();
     mind.trial = None;
     vec![
@@ -549,7 +554,7 @@ pub(super) fn nightfall(
         if over && aim.returns > 0 {
             news.extend(judge(rules, (id, day, now), mind, &trial, false));
         } else if over {
-            news.extend(lapse(mind, &trial, (id, now)));
+            news.extend(lapse(rules, mind, &trial, (id, now)));
         }
         return (None, over);
     }

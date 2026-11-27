@@ -1001,7 +1001,7 @@ fn judge_due(
     if kept {
         mind.changed_day = Some(day);
     } else {
-        trial.way.copy(&mut mind.ways, &trial.before);
+        handwork::leave_not_kept(rules, mind, trial);
     }
     mind.trial = None;
     mind.judged = Some(judged);

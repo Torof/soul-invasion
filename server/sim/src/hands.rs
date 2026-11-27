@@ -375,6 +375,30 @@ impl World {
         );
     }
 
+    /// Whether the hollow `hollow` shows it has no room for `thing` (D57,
+    /// amended 27 November 2026): something lies in it already and
+    /// no room is left, or `thing` is a whole thing heavier than the room
+    /// left. A body sees that and does not try; whether a thing fits an
+    /// empty hollow it finds by trying.
+    #[must_use]
+    pub fn hollow_shows_no_room(&self, hollow: ItemId, thing: ItemId, rules: &Content) -> bool {
+        let Some(h) = self.item(hollow).filter(|h| h.hollow_ml > 0) else {
+            return false;
+        };
+        let room = self.hollow_room_g(hollow, rules);
+        if room >= rules.needs.hands.holds_g(h.hollow_ml) {
+            return false;
+        }
+        // A loose thing goes in as far as the room allows; a whole thing
+        // needs room for all of itself.
+        self.item(thing).is_some_and(|t| {
+            let loose = rules
+                .material(&t.material)
+                .is_some_and(crate::content::Material::loose);
+            room == 0 || (!loose && t.mass_g > room)
+        })
+    }
+
     /// The grams of loose things the hollow `hollow` can still take: what
     /// its volume keeps together (the content's grams a litre) less what
     /// lies in it. 0 for a thing with no hollow.
@@ -1072,6 +1096,11 @@ mod tests {
         assert_eq!((b.food_g(), b.stowed_g(), b.arms_food_g()), (1000, 1000, 0));
         assert_eq!(b.food_room_g(&rules.movement), 1000);
         assert_eq!(world.hollow_room_g(bark, &rules), 1370);
+        // Part full: loose food still shows room; a whole thing heavier
+        // than the room left does not (a branch weighs 1.5 kg).
+        let branch = world.spawn_item("branch", 1500, body(&world, id).pos());
+        assert!(!world.hollow_shows_no_room(bark, first, &rules));
+        assert!(world.hollow_shows_no_room(bark, branch, &rules));
         // What lies in it is not put in again.
         assert_eq!(put(&mut world, &rules, id, (first, bark)), None);
         // A second kilogram, then a third of which only 370 g fit: the
@@ -1089,6 +1118,8 @@ mod tests {
             (3000, 2370, 630)
         );
         assert_eq!(world.hollow_room_g(bark, &rules), 0);
+        // Full: it shows no room, for anything.
+        assert!(world.hollow_shows_no_room(bark, third, &rules));
         // Full: nothing more goes in.
         assert_eq!(put(&mut world, &rules, id, (third, bark)), None);
         // Saved and read back, what lies in the hollow lies in it still.

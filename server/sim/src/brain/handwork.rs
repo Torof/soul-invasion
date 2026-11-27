@@ -1016,6 +1016,10 @@ impl Plausible {
                 if item == into || world.item(item).is_none_or(|t| t.within().is_some()) {
                     continue;
                 }
+                // A hollow that shows no room for it is not tried.
+                if world.hollow_shows_no_room(into, item, rules) {
+                    continue;
+                }
                 let deed = Deed {
                     gesture: Gesture::PutIn,
                     on,
@@ -1346,7 +1350,8 @@ pub(super) fn end_untried(
 
 /// The judge of a trial (D50), the hands' rule added (D57): a trial of
 /// the hands in which nothing came of anything is not kept, whatever the
-/// days; the deeds tried are forgotten with it.
+/// days; the deeds tried are forgotten with it, save those that served
+/// ([`leave_not_kept`]).
 pub(super) fn judge_trial(
     rules: &Content,
     per_year: u32,
@@ -1357,7 +1362,7 @@ pub(super) fn judge_trial(
     let (mut kept, mut judged) = super::judge(rules, per_year, body, mind, trial);
     if trial.way == Way::Hands {
         if kept {
-            keep_what_served(rules, mind, &trial.before.hands);
+            keep_what_served(rules, mind, &trial.before.hands, true);
         }
         kept &= mind.ways.hands != trial.before.hands;
         judged.kept = kept;
@@ -1369,6 +1374,21 @@ pub(super) fn judge_trial(
     (kept, judged)
 }
 
+/// A trial of the hands not kept (given up, lapsed, judged no better):
+/// its ways go back to what they were, save the deeds of which something
+/// came that served (D57, amended 27 November 2026, the project lead:
+/// "the gesture works" is not "my problem is solved"). A hollow that held
+/// food beyond the arms once and tore before the judge came is still a
+/// thing its hands know how to make and fill; they are not noted as its
+/// own kept trial, and nothing is told for it.
+pub(super) fn leave_not_kept(rules: &Content, mind: &mut Mind, trial: &super::Trial) {
+    if trial.way == Way::Hands {
+        keep_what_served(rules, mind, &trial.before.hands, false);
+    } else {
+        trial.way.copy(&mut mind.ways, &trial.before);
+    }
+}
+
 /// Of the deeds `mind` learnt since its hands knew `before`, only those
 /// of which something came that served stay known (D57, amended 27
 /// November 2026; the run of step 1 left "cut an oak with a flint" known
@@ -1376,10 +1396,10 @@ pub(super) fn judge_trial(
 /// put-in of food in a kind of thing that served it (food lay in it
 /// while it carried more than its arms alone hold), and, step by step
 /// back from there, a deed whose product a deed kept is done on, with or
-/// in. The rest is forgotten as after a trial given up. Called when a
+/// in. The rest is forgotten. Called when a
 /// trial of the hands is kept, before what it leaves is told; the deeds
 /// kept are noted as its own ([`Handwork::kept`]).
-pub(super) fn keep_what_served(rules: &Content, mind: &mut Mind, before: &Deeds) {
+pub(super) fn keep_what_served(rules: &Content, mind: &mut Mind, before: &Deeds, own: bool) {
     let mut kept: Vec<Deed> = before.iter().collect();
     let mut left: Vec<Deed> = mind
         .ways
@@ -1403,7 +1423,7 @@ pub(super) fn keep_what_served(rules: &Content, mind: &mut Mind, before: &Deeds)
     let mut hands = Deeds::default();
     for &deed in &kept {
         hands.add(deed);
-        if !before.contains(deed) && !mind.handwork.kept.contains(&deed) {
+        if own && !before.contains(deed) && !mind.handwork.kept.contains(&deed) {
             mind.handwork.kept.push(deed);
         }
     }
@@ -2222,7 +2242,7 @@ mod tests {
         };
         // Nothing served: nothing of it stays.
         learn(mind);
-        keep_what_served(&rules, mind, &Deeds::default());
+        keep_what_served(&rules, mind, &Deeds::default(), true);
         assert!(mind.ways.hands.is_empty() && mind.handwork.kept.is_empty());
         // The hollow held food beyond its arms: the put-in of food, the
         // fold that gave the hollow, the cut that gave the bark and the
@@ -2231,7 +2251,7 @@ mod tests {
         learn(mind);
         mind.handwork.serve(hollow_m);
         mind.handwork.serve(flint);
-        keep_what_served(&rules, mind, &Deeds::default());
+        keep_what_served(&rules, mind, &Deeds::default(), true);
         let mut served = bark_deeds(&rules, birch);
         served.add(put);
         assert_eq!(mind.ways.hands, served);
@@ -2240,12 +2260,47 @@ mod tests {
         let mut before = Deeds::default();
         before.add(cut_oak);
         mind.ways.hands.add(cut_oak);
-        keep_what_served(&rules, mind, &before);
+        keep_what_served(&rules, mind, &before, true);
         assert!(mind.ways.hands.contains(cut_oak));
         assert!(
             !mind.handwork.kept.contains(&cut_oak),
             "not from a kept trial"
         );
+    }
+
+    #[test]
+    fn a_trial_not_kept_leaves_the_deeds_that_served_and_none_as_its_own() {
+        // D57, amended 27 November 2026: "the gesture works" is not "my
+        // problem is solved". Given up, a trial leaves what served.
+        let (rules, _, mut brains, id, birch) = by_a_birch();
+        let flint = material(&rules, "flint");
+        let hollow_m = material(&rules, "birch_bark") | HOLLOW;
+        let put = Deed {
+            gesture: Gesture::PutIn,
+            on: material(&rules, "berries"),
+            with: hollow_m,
+        };
+        let mind = brains.minds.get_mut(&id).unwrap();
+        in_a_trial(mind, &[], 0);
+        let trial = mind.trial.expect("in a trial");
+        let learn = |mind: &mut Mind| {
+            mind.ways.hands = bark_deeds(&rules, birch);
+            assert!(mind.ways.hands.add(put));
+        };
+        // Nothing served: its ways as before.
+        learn(mind);
+        leave_not_kept(&rules, mind, &trial);
+        assert!(mind.ways.hands.is_empty());
+        // The hollow held food beyond its arms once: the chain stays
+        // known, though the trial is not kept and nothing is its own.
+        learn(mind);
+        mind.handwork.serve(hollow_m);
+        mind.handwork.serve(flint);
+        leave_not_kept(&rules, mind, &trial);
+        let mut served = bark_deeds(&rules, birch);
+        served.add(put);
+        assert_eq!(mind.ways.hands, served);
+        assert!(mind.handwork.kept.is_empty(), "not from a kept trial");
     }
 
     #[test]
