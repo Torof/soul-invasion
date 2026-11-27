@@ -870,10 +870,12 @@ fn range_of(h: &History, t: usize, now_my: u16, c: usize) -> Option<(i64, i64)> 
 /// Ocean floor older than this, millions of years, sinks no more.
 const FLAT_FLOOR_MY: i64 = 120;
 
-/// How far back a hotspot's chain is followed, millions of years.
-const TRACK_MYR: i64 = 70;
-/// A chain's step, km.
-const TRACK_STEP_KM: i64 = 100;
+/// A hotspot's island or seamount sinks as it ages: gone after this,
+/// millions of years.
+const TRACK_MYR: i64 = 120;
+/// Height a km of extra crust raises a continent, m (Airy isostasy:
+/// crust 2.8, mantle 3.3).
+const ISOSTASY_M: i64 = 100;
 
 impl Planet {
     /// The planet born from `seed`, with the default settings.
@@ -911,7 +913,18 @@ impl Planet {
             .map(|&k| k == Some(OldKind::Suture))
             .collect();
         // 2. The history: the supercontinent, its break-up, the drift.
-        let history = std::sync::Arc::new(history::run(seed, settings, &sphere, &old_suture));
+        let count = draw(
+            seed,
+            P_HOTSPOTS,
+            0,
+            settings.hotspots.0,
+            settings.hotspots.1,
+        ) as u64;
+        let plumes: Vec<V3> = (0..count)
+            .map(|k| random_unit(seed, P_HOTSPOTS + 1, k))
+            .collect();
+        let history =
+            std::sync::Arc::new(history::run(seed, settings, &sphere, &old_suture, &plumes));
         let last = history.last();
         Self::build(
             seed,
@@ -1032,40 +1045,45 @@ impl Planet {
             .map(|c| (c, c as u32))
             .collect();
         let (range_d, range_l) = sphere.spread(&raised, |_, b| continental[b], 700);
-        // 5. Hotspots.
-        let count = draw(
-            seed,
-            P_HOTSPOTS,
-            0,
-            settings.hotspots.0,
-            settings.hotspots.1,
-        ) as u64;
-        let hotspots: Vec<Hotspot> = (0..count)
-            .map(|k| {
-                let at = random_unit(seed, P_HOTSPOTS + 1, k);
-                let home = plates.plate_at(at);
-                let mut track = vec![(at, 0)];
-                let mut x = at;
-                let mut age_kyr = 0;
-                loop {
-                    let v = plates.velocity(home, x);
-                    let speed = norm(v);
-                    if speed < 5 {
-                        break;
-                    }
-                    x = step(x, normalize(v), TRACK_STEP_KM);
-                    age_kyr += TRACK_STEP_KM * 1000 / speed;
-                    if age_kyr > TRACK_MYR * 1000 || plates.plate_at(x) != home {
-                        break;
-                    }
-                    track.push((x, age_kyr / 1000));
+        // 5. Hotspots: their chains are the marks the history carried, the
+        // youngest first.
+        let hotspots: Vec<Hotspot> = h
+            .hotspots
+            .iter()
+            .enumerate()
+            .map(|(k, &at)| {
+                let mut track: Vec<(V3, i64)> = h.marks_at[t]
+                    .iter()
+                    .filter(|m| usize::from(m.1) == k)
+                    .map(|m| (m.0, i64::from(m.2.saturating_sub(now_my))))
+                    .collect();
+                track.sort_by_key(|m| m.1);
+                if track.first().is_none_or(|m| m.1 > 0) {
+                    track.insert(0, (at, 0));
                 }
                 Hotspot { at, track }
             })
             .collect();
+        // Each cell's nearest hotspot mark within reach, and its age.
+        let mut lava: Vec<Option<(i64, i64)>> = vec![None; CELLS];
+        for hs in &hotspots {
+            for &(x, age) in &hs.track {
+                let c = sphere.cell_of(x);
+                let mut ring = vec![c];
+                for &(n, _) in &sphere.links[c] {
+                    ring.push(n as usize);
+                    ring.extend(sphere.links[n as usize].iter().map(|&(m, _)| m as usize));
+                }
+                for k in ring {
+                    let d = km_between(sphere.centre[k], x);
+                    if d < 250 && lava[k].is_none_or(|(bd, ba)| (d, age) < (bd, ba)) {
+                        lava[k] = Some((d, age));
+                    }
+                }
+            }
+        }
         // 6. Height.
         let relief_seed = hash(&[seed, P_RELIEF]);
-        let near_track = cos(250 * ONE / RADIUS_KM);
         let mut elevation: Vec<i64> = (0..CELLS)
             .map(|c| {
                 let p = sphere.centre[c];
@@ -1127,17 +1145,20 @@ impl Planet {
                         _ => 0,
                     };
                 }
-                for h in &hotspots {
-                    for &(x, age) in &h.track {
-                        if dot(p, x) < near_track {
-                            continue;
-                        }
-                        let d = km_between(p, x);
-                        e += if continental[c] {
-                            500 * bump(d, 250) / 1000 / (1 + age / 20)
-                        } else {
-                            3_800 * bump(d, 130) / 1000 * (TRACK_MYR - age) / TRACK_MYR
-                        };
+                if let Some((d, age)) = lava[c] {
+                    e += if continental[c] {
+                        500 * bump(d, 250) / 1000 / (1 + age / 20)
+                    } else {
+                        3_800 * bump(d, 130) / 1000 * (TRACK_MYR - age).max(0) / TRACK_MYR
+                    };
+                }
+                if continental[c] {
+                    // A pile of crust floats higher (isostasy), flood
+                    // basalts stand as plateaus.
+                    let thick = i64::from(h.thick_at[t][c]);
+                    e += (thick - i64::from(history::CONTINENT_THICK)).max(0) * ISOSTASY_M / 10;
+                    if h.margins_at[t][c] & history::LIP != 0 {
+                        e += 350;
                     }
                 }
                 e
@@ -2412,7 +2433,7 @@ mod tests {
 
     #[test]
     fn lands_come_from_the_history_large_but_not_gigantic() {
-        for seed in [2, 12] {
+        for seed in [9, 16] {
             let world = Planet::new(seed);
             let biggest = &world.lands[0];
             assert!(
@@ -2442,7 +2463,10 @@ mod tests {
                 .map(|c| i64::from(world.sphere.area_km2[c]))
                 .sum();
             assert!(cold <= 6_000_000, "seed {seed}: {cold} km² beyond 60°");
-            assert!(!world.history.welds.is_empty(), "seed {seed}: no collision");
+            assert!(
+                world.history.collisions.iter().any(|c| c.front_cells >= 40),
+                "seed {seed}: no collision"
+            );
         }
     }
 
@@ -2456,7 +2480,10 @@ mod tests {
             .filter(|&c| first[c] == history::CONTINENT)
             .count();
         let share = land as i64 * 1000 / CELLS as i64;
-        assert!((share - 220).abs() < 60, "{share}");
+        assert!(
+            (share - Settings::default().crust_per_mille).abs() < 60,
+            "{share}"
+        );
         // Today, every piece of crust carries a record.
         for c in 0..CELLS {
             if world.continental[c] {

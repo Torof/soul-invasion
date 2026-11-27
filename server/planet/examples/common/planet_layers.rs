@@ -282,7 +282,7 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
     for h in &world.hotspots {
         for &(x, age) in &h.track {
             let (a, b) = map_xy(x);
-            let t = (age * 1000 / 70).min(1000);
+            let t = (age * 1000 / 200).min(1000);
             let c = mix([255, 240, 120], [150, 90, 40], t);
             l.dot(a, b, 2, rgba(c, 255));
         }
@@ -395,7 +395,9 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
             continue;
         }
         let flags = h.margins[c];
-        let mut col = if flags & history::ACCRETED != 0 {
+        let mut col = if flags & history::LIP != 0 {
+            [60, 20, 30, 200]
+        } else if flags & history::ACCRETED != 0 {
             [255, 150, 40, 170]
         } else if flags & history::SUTURE != 0 {
             [180, 70, 230, 170]
@@ -824,7 +826,11 @@ pub fn continent_layers(dir: &Path, seed: u64, z: &Zoom) {
     let mut l = Layer::new(CW, CW);
     for &(i, age) in &z.hotspot_points {
         if let Some((x, y)) = view_of(i) {
-            let c = mix([255, 240, 120], [170, 100, 40], (age * 1000 / 70).min(1000));
+            let c = mix(
+                [255, 240, 120],
+                [170, 100, 40],
+                (age * 1000 / 200).min(1000),
+            );
             l.ring(x, y, 9, 3, rgba(c, 255));
         }
     }

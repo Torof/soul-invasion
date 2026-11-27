@@ -277,6 +277,14 @@ fn history_json(world: &Planet) -> serde_json::Value {
             w.absorbed_km2, w.parted])).collect::<Vec<_>>(),
         "rifts": h.rifts.iter().map(|r| json!([r.my, r.plate, r.new, r.area_km2, r.aborted]))
             .collect::<Vec<_>>(),
+        "collisions": h.collisions.iter().map(|c| json!([c.from_my, c.a, c.b,
+            if c.welded_my == planet::history::NEVER { -1 } else { i64::from(c.welded_my) },
+            c.closed_km, c.front_cells, c.steps])).collect::<Vec<_>>(),
+        "escapes": h.escapes.iter().map(|e| json!([e.my, e.from, e.block, e.km2]))
+            .collect::<Vec<_>>(),
+        "lips": h.lips.iter().map(|l| json!([l.my, l.km2])).collect::<Vec<_>>(),
+        "hotspot_chains": world.hotspots.iter().map(|hs| json!([hs.track.len(),
+            hs.track.last().map_or(0, |m| m.1)])).collect::<Vec<_>>(),
         "accretions": h.accretions.len(),
         "accreted_km2": h.accretions.iter().map(|a| a.km2).sum::<i64>(),
         "shortened_km2": h.shortened_km2.iter().sum::<i64>(),
