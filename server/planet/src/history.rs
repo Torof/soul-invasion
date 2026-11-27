@@ -238,6 +238,24 @@ impl Default for Settings {
 
 /// No piece (oceanic crust), no plate.
 pub const NONE: u8 = u8::MAX;
+/// Why a cell of crust changed plate in a step: its plate welded to
+/// another after a collision.
+pub const SWITCH_WELD: u8 = 1;
+/// A block pushed out sideways by a collision.
+pub const SWITCH_ESCAPE: u8 = 2;
+/// A terrane or an arc docked.
+pub const SWITCH_DOCK: u8 = 3;
+/// A lone cell of a plate inside another, on the grid's view.
+pub const SWITCH_SPECK: u8 = 4;
+/// A large part cut off from its plate: a plate of its own (it moves on
+/// as before).
+pub const SWITCH_CUT_OFF: u8 = 5;
+/// A small part cut off from its plate, taken by the plate beside it.
+pub const SWITCH_CAPTURE: u8 = 6;
+/// A crumb of a plate, or a small plate enclosed in another, taken whole.
+pub const SWITCH_CRUMB: u8 = 7;
+/// A rift cut its plate in two.
+pub const SWITCH_RIFT: u8 = 8;
 /// No mountain building on record.
 pub const NEVER: u16 = u16::MAX;
 /// Plate ids are below this.
@@ -297,6 +315,9 @@ pub struct Motion {
     pub pole: V3,
     /// Its speed at 90° from the pole, mm a year.
     pub speed_mm: i64,
+    /// The turn itself, a vector along the pole, µm a year: what moves
+    /// the plate's crust in the next step.
+    pub omega: V3,
 }
 
 /// A later rift.
@@ -416,6 +437,10 @@ pub struct Tile {
     pub id: u32,
     /// Its plate (as in [`History::plate`]).
     pub plate: u8,
+    /// Its own plate's id (plates held together share the one above).
+    pub own: u8,
+    /// Why it changed plate in the step (a `SWITCH_*`), 0 if it did not.
+    pub switch: u8,
     /// [`CONTINENT`] or [`TERRANE`].
     pub class: u8,
     /// Whether it lies under another piece's crust (a collision).
@@ -493,6 +518,14 @@ impl Pieces {
             slot,
             near,
         }
+    }
+
+    /// The cell of a piece at a place of its lattice, if it holds one.
+    #[must_use]
+    pub fn tile(&self, piece: usize, at: u32) -> Option<usize> {
+        self.slot
+            .get(&slot_key(piece as u32, at))
+            .map(|&i| i as usize)
     }
 
     /// The crust at a point: its piece and its cell in the piece.
@@ -590,6 +623,9 @@ pub struct History {
     pub marks_at: Vec<Vec<(V3, u8, u16)>>,
     /// Per step, each plate id's motion (ids without cells turn by 0).
     pub motion: Vec<Vec<Motion>>,
+    /// Per step, the turn that carried each plate id's crust in that
+    /// step (as [`Motion::omega`]; none at the start).
+    pub turned_at: Vec<Vec<V3>>,
     /// Per step, the continental crust's area, km².
     pub continental_km2: Vec<i64>,
     /// Per step, continental crust lost to collisions since the step
@@ -756,6 +792,25 @@ fn rotation(axis: V3, angle: i64) -> M3 {
     m
 }
 
+/// A point of a piece's lattice placed on the planet by the piece's turn
+/// (not normalised).
+#[must_use]
+pub fn placed(turn: &[[i64; 3]; 3], p: V3) -> V3 {
+    apply(turn, p)
+}
+
+/// Where a point carried by a plate turning by `omega` (µm a year, see
+/// [`Motion::omega`]) is after a step of `step_my` million years.
+#[must_use]
+pub fn carried(omega: V3, step_my: i64, p: V3) -> V3 {
+    let speed = norm(omega);
+    if speed < 50 {
+        return p;
+    }
+    let turn = rotation(normalize(omega), speed * step_my * ONE / (1000 * RADIUS_KM));
+    normalize(apply(&turn, p))
+}
+
 /// A piece of crust and its record, carried with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Rock {
@@ -837,6 +892,8 @@ struct Crust {
     under: bool,
     /// Whether a rift had torn it before the step.
     rifted: bool,
+    /// Why it changed plate in the step (a `SWITCH_*`).
+    switch: u8,
     /// Whether the planet's grid drew it at the step before.
     shown: bool,
     dead: bool,
@@ -988,6 +1045,7 @@ impl Land {
             event: Margin::Inland as u8,
             under: false,
             rifted: false,
+            switch: 0,
             shown: false,
             dead: false,
             pos: [0; 3],
@@ -1186,6 +1244,8 @@ impl Land {
                 at: c.at,
                 id: c.id,
                 plate: group[c.plate as usize],
+                own: c.plate,
+                switch: c.switch,
                 class: c.rock.class,
                 under: c.under,
                 margins: c.rock.margins,
@@ -1945,7 +2005,7 @@ fn look(
 /// The plate `absorbed` joins the plate `kept`: its cells, its floor, its
 /// crust and its record with the other plates.
 fn absorb(
-    (kept, absorbed): (usize, usize),
+    (kept, absorbed, why): (usize, usize, u8),
     plate: &mut [u8],
     (bits, land): (&mut [Bit], &mut Land),
     alias: &mut [u8; MAXP],
@@ -1966,6 +2026,7 @@ fn absorb(
     for c in &mut land.cells {
         if c.plate as usize == absorbed {
             c.plate = kept as u8;
+            c.switch = why;
         }
     }
     alias[absorbed] = kept as u8;
@@ -2561,6 +2622,7 @@ pub fn run(
     let mut out_marks = Vec::with_capacity(s.steps + 1);
     let mut out_heat = Vec::with_capacity(s.steps + 1);
     let mut out_pieces = Vec::with_capacity(s.steps + 1);
+    let mut out_turned = vec![vec![[0_i64; 3]; MAXP]];
     let mut continental_km2 = Vec::with_capacity(s.steps + 1);
     let mut shortened_km2 = vec![0];
     let mut made_km2 = vec![0];
@@ -2613,6 +2675,7 @@ pub fn run(
             for c in &mut land.cells {
                 c.rock.why = [0; CAUSES];
                 c.event = Margin::Inland as u8;
+                c.switch = 0;
                 c.rifted = c.rock.margins & RIFT != 0;
             }
             let mut cont_of = land.weight();
@@ -2654,7 +2717,7 @@ pub fn run(
                             collisions[record_of[a][b]].welded_my = now_my;
                         }
                         absorb(
-                            (kept, absorbed),
+                            (kept, absorbed, SWITCH_WELD),
                             &mut plate,
                             (&mut bits, &mut land),
                             &mut alias,
@@ -2745,6 +2808,7 @@ pub fn run(
                         for c in &mut land.cells {
                             if c.plate as usize == over && km_between(c.pos, block_at) < ESCAPE_KM {
                                 c.plate = new as u8;
+                                c.switch = SWITCH_ESCAPE;
                             }
                         }
                         for c in 0..CELLS {
@@ -2782,6 +2846,7 @@ pub fn run(
             // continent only changes its turn; every bit of floor moves
             // exactly, from where it was, not from a cell.
             let moved = omega.clone();
+            out_turned.push(moved.clone());
             let turn: Vec<M3> = omega
                 .iter()
                 .map(|&w| {
@@ -2954,6 +3019,7 @@ pub fn run(
                         continue;
                     }
                     c.plate = pw;
+                    c.switch = SWITCH_DOCK;
                     c.rock.rise(DOCK_M, BY_DOCK);
                     c.rock.margins |= ACCRETED;
                     c.rock.orogeny = now_my;
@@ -3434,6 +3500,7 @@ pub fn run(
                     let (from, o) = to[seat[i] as usize];
                     if from != NONE && c.plate == from {
                         c.plate = o;
+                        c.switch = SWITCH_SPECK;
                         c.rock.margins |= ACCRETED;
                     }
                 }
@@ -3579,6 +3646,7 @@ pub fn run(
                     .max_by_key(|&p| (edge[p], std::cmp::Reverse(p)))
             };
             let mut to = vec![NONE; list.len()];
+            let mut fresh_plate = [false; MAXP];
             for (k, &(id, km2, edge)) in list.iter().enumerate() {
                 if main[id as usize].1 == k as u32 {
                     continue;
@@ -3589,6 +3657,7 @@ pub fn run(
                     let new = next_id;
                     next_id += 1;
                     to[k] = new as u8;
+                    fresh_plate[new] = true;
                     for p in 0..MAXP {
                         parted[new][p] = parted[old][p];
                         parted[p][new] = parted[p][old];
@@ -3629,6 +3698,11 @@ pub fn run(
                     let k = part[seat[i] as usize] as usize;
                     if to[k] != NONE && c.plate == list[k].0 {
                         c.plate = to[k];
+                        c.switch = if fresh_plate[to[k] as usize] {
+                            SWITCH_CUT_OFF
+                        } else {
+                            SWITCH_CAPTURE
+                        };
                     }
                 }
             }
@@ -3648,7 +3722,7 @@ pub fn run(
                 }
                 gone[id as usize] = true;
                 absorb(
-                    (by, id as usize),
+                    (by, id as usize, SWITCH_CRUMB),
                     &mut plate,
                     (&mut bits, &mut land),
                     &mut alias,
@@ -3921,6 +3995,7 @@ pub fn run(
                     for (i, c) in land.cells.iter_mut().enumerate() {
                         if c.plate == old && side_new[seat[i] as usize] {
                             c.plate = new;
+                            c.switch = SWITCH_RIFT;
                         }
                     }
                     let index = rifts.len() as u8 + 1;
@@ -4285,6 +4360,7 @@ pub fn run(
                 .map(|&w| Motion {
                     pole: normalize(w),
                     speed_mm: norm(w) / 1000,
+                    omega: w,
                 })
                 .collect::<Vec<Motion>>(),
         );
@@ -4375,6 +4451,7 @@ pub fn run(
         marks_at: out_marks,
         hotspots: hotspots.to_vec(),
         motion: out_motion,
+        turned_at: out_turned,
         continental_km2,
         shortened_km2,
         made_km2,
