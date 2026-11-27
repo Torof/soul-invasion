@@ -106,6 +106,10 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            amended 27 November 2026): no lever, no weight
                            on moves, no trial (the content's
                            learning.acting replaced by none)
+  --no-search              the control run of the search for an absent kin
+                           (D56, amended 27 November 2026): nobody notices
+                           an absent, nobody goes (the content's search
+                           section replaced by none)
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
@@ -223,6 +227,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-passages" => settings.passages = false,
             "--no-learning" => settings.learning = false,
             "--learning-believe-only" => settings.learning_act = false,
+            "--no-search" => settings.search = false,
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,
             "--prepare-land" => prepare = true,

@@ -500,6 +500,7 @@ mod tests {
             passages: true,
             learning: true,
             learning_act: true,
+            search: true,
             continents: None,
             helpers: 0,
         };

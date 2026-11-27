@@ -546,6 +546,9 @@ impl Report {
         // --- learning causes (27 November 2026) ---
         value["learning"] = self.learning.json();
         // --- end of learning causes ---
+        // --- the search for an absent kin (27 November 2026) ---
+        value["search"] = self.search.json();
+        // --- end of the search for an absent kin ---
         value
     }
 
@@ -619,6 +622,10 @@ impl Report {
         out.push_str(",\n  \"learning\": ");
         layout(&value["learning"], 1, &mut out);
         // --- end of learning causes ---
+        // --- the search for an absent kin (27 November 2026): last ---
+        out.push_str(",\n  \"search\": ");
+        layout(&value["search"], 1, &mut out);
+        // --- end of the search for an absent kin ---
         out.push_str("\n}\n");
         out
     }
@@ -655,6 +662,7 @@ impl Report {
                 "passages": s.passages,
                 "learning": s.learning,
                 "learning_act": s.learning_act,
+                "search": s.search,
                 "old_illness": s.old_illness,
                 "content": s.content.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
             },

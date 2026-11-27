@@ -969,6 +969,21 @@ pub enum Intention {
         /// What.
         item: ItemId,
     },
+    /// Give the infant `infant` to `carrier` to carry and nurse (D56,
+    /// amended 27 November 2026): an infant nobody carries, lying within
+    /// the body's reach, or one the body carries itself; `carrier` the
+    /// body itself or one standing within its reach, neither an infant
+    /// nor carried. Refused without a word otherwise: who asked looks at
+    /// the infant again. A gesture of the simulation's own (the brains');
+    /// no client asks it.
+    Carry {
+        /// Who gives, or takes up.
+        body: BodyId,
+        /// The infant.
+        infant: BodyId,
+        /// Who carries it from now on.
+        carrier: BodyId,
+    },
     /// Take a carried item in hand; what was in hand is carried instead.
     Hold {
         /// Who.
@@ -1085,6 +1100,7 @@ impl Intention {
             Intention::MoveTo { body, .. }
             | Intention::Eat { body, .. }
             | Intention::Feed { body, .. }
+            | Intention::Carry { body, .. }
             | Intention::PickUp { body, .. }
             | Intention::Drop { body, .. }
             | Intention::Keep { body, .. }
@@ -3421,6 +3437,11 @@ impl World {
                 young,
                 item,
             } => self.feed(id, young, item, rules, events),
+            Intention::Carry {
+                body: id,
+                infant,
+                carrier,
+            } => self.hand_infant(id, infant, carrier, rules),
             Intention::PickUp { body: id, item } => self.pick_up(id, item, rules, events),
             Intention::Drop { body: id, item } => self.drop(id, item, rules, events),
             Intention::Keep { body: id, item } => self.keep(id, item, rules, events),
@@ -3953,6 +3974,32 @@ impl World {
             Err(reason) => return Self::refuse(events, id, ItemAct::Eat, item, reason),
         };
         self.eat_from((index, index), item, place, rules, events);
+    }
+
+    /// [`Intention::Carry`]: `id` gives `infant` to `carrier`. Nothing
+    /// happens unless the infant is one, lies uncarried within reach of
+    /// `id` or is carried by it, and `carrier` is `id` or stands within
+    /// its reach, neither an infant nor carried itself.
+    fn hand_infant(&mut self, id: BodyId, infant: BodyId, carrier: BodyId, rules: &Content) {
+        let (Some(giver), Some(young), Some(taker)) =
+            (self.body(id), self.body(infant), self.body(carrier))
+        else {
+            return;
+        };
+        let near = |a: Pos, b: Pos| (a.x - b.x).abs() <= 1 && (a.y - b.y).abs() <= 1;
+        let free = match young.carried_by {
+            None => near(giver.pos(), young.pos()),
+            Some(by) => by == id,
+        };
+        if !free
+            || !self.is_infant(young, rules)
+            || self.is_infant(taker, rules)
+            || taker.carried_by.is_some()
+            || !near(giver.pos(), taker.pos())
+        {
+            return;
+        }
+        self.carry(carrier, infant);
     }
 
     /// [`Intention::Feed`]: `id` gives `young`, standing on its tile or

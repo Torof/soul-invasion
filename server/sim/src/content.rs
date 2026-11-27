@@ -530,6 +530,45 @@ pub struct Needs {
     /// Absent: nothing is learnt, bit for bit as before.
     #[serde(default, deserialize_with = "present")]
     pub learning: Option<Learning>,
+    /// The search for an absent kin (D56, amended 27 November 2026): a
+    /// close one not seen at the fire for `after_nights` nights is
+    /// noticed, and one of its kin goes to the last place it knew it to
+    /// be. Absent: nobody notices, bit for bit as before.
+    #[serde(default, deserialize_with = "present")]
+    pub search: Option<Search>,
+}
+
+/// The search for an absent kin (D56, amended 27 November 2026; the
+/// project lead: "people notice that someone is absent from the fire,
+/// and go and search the last place they knew her to be"). At the dawn's
+/// fire a spouse, a parent or a child not seen for `after_nights` nights
+/// is noticed; one kin, grown, goes to the place the absent said it was
+/// going to, or the last place it saw it. Every value is a D30
+/// placeholder, named and explained in `content/needs.ron`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Search {
+    /// The nights a kin is not seen before its absence is noticed.
+    pub after_nights: u32,
+    /// The age from which one goes searching, in years.
+    pub from_years: u32,
+}
+
+impl Search {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            after_nights: 1,
+            from_years: 16,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if self.after_nights == 0 {
+            return Err(ContentError::Needs("search: after_nights at least 1"));
+        }
+        Ok(())
+    }
 }
 
 /// A section read as present when written, without RON's `Some(…)`.
@@ -3374,6 +3413,9 @@ impl Needs {
         }
         if let Some(learning) = &self.learning {
             learning.validate()?;
+        }
+        if let Some(search) = &self.search {
+            search.validate()?;
         }
         self.hands.validate()
     }

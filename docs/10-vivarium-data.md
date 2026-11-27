@@ -64,6 +64,7 @@ clock, the only field no seed decides.
 | `meta.settings.passages` | The passages remembered and told (D53, amended 26 November 2026); `false`: the control run, `--no-passages`, nobody keeps, tells or walks through a passage | boolean |
 | `meta.settings.learning` | Learning causes, believe without acting (D59, 27 November 2026); `false`: the control run, `--no-learning`, the content's `learning` section replaced by none and the problems it marks (`ill_gut`, `ill_chest`) taken out: behaviour bit for bit the run's before the change | boolean |
 | `meta.settings.learning_act` | Learning causes, acting (D59, amended 27 November 2026); `false`: `--learning-believe-only`, the content's `learning.acting` replaced by none: beliefs come to, told and taken, no lever, no weight on moves, no trial | boolean |
+| `meta.settings.search` | The search for an absent kin (D56, amended 27 November 2026); `false`: the control run, `--no-search`, the content's `search` section replaced by none: behaviour bit for bit the run's before the change | boolean |
 | `meta.settings.old_illness` | The control run of illness as episodes (`--old-illness`, D49, amended 26 November 2026): the old rule, a background death by age alone, the content's `illness` section replaced by none; a run without the key is of the old rule when its content had no such section | bool |
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
@@ -668,6 +669,20 @@ clock, the only field no seed decides.
 | `learning.acting.seasons[].gut_ills` | Gut ills lived in the season (own marks) | count |
 | `learning.acting.seasons[].person_days` | The living counted each day of the season, summed | body-days |
 | `learning.acting.seasons[].gut_per_10k_person_days` | `gut_ills` per ten thousand `person_days`, rounded down | rate |
+| `search.on` | The search for an absent kin (D56, amended 27 November 2026), its own block, last: whether the content holds a `search` section (`content/needs.ron`); `false`, and no other key, without it (or under `--no-search`) | boolean |
+| `search.absences_noticed` | Close ones (spouse, parent, child) noticed absent at a dawn's fire, not seen for `search.after_nights` nights: once an absence | count |
+| `search.searches_begun` | Of them, those a kin set off to search (the others: the last place known was the camp itself, or no kin grown and free) | count |
+| `search.search_tiles_mean` | The straight distance from the searcher to the place it set off to (said, or last seen), its mean, rounded down | tiles |
+| `search.found_alive` | Searches ended by seeing the absent alive | count |
+| `search.found_dead` | Searches where the absent's body, or its infant lying alone, was seen | count |
+| `search.not_found` | Searches ended with nothing seen: standing at the place, or stopped short of it | count |
+| `search.not_found_stopped_short` | Of them, stopped short of the place (water, rock, no way) | count |
+| `search.infants_taken` | Infants lying alone taken up by a searcher | count |
+| `search.infants_brought_home` | Of them, carried to the searcher's camp | count |
+| `search.infants_given_to_a_woman` | Of them, given there by a man to a grown woman | count |
+| `search.infants_survived_a_season` | Infants brought home still alive a season (a quarter of `meta.days_per_year`) later | count |
+| `search.infants_died_within_a_season` | Infants brought home dead before that | count |
+| `search.infants_season_not_over` | Infants brought home alive when the run ended less than a season later | count |
 
 ## Beside the data: the lab's series file
 

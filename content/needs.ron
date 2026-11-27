@@ -1263,4 +1263,15 @@
             ],
         ),
     ),
+    // The search for an absent kin (D56, amended 27 November 2026): at the
+    // dawn's fire a spouse, a parent or a child not seen for `after_nights`
+    // nights is noticed absent, and one kin goes to the place it said it
+    // was going to, or the last place it saw it. D30 placeholders:
+    //   after_nights: 1 — one night away from the fire is noticed;
+    //   from_years:  16 — one goes searching from this age.
+    // The section absent: nobody notices, nobody goes.
+    search: (
+        after_nights: 1,
+        from_years: 16,
+    ),
 )
