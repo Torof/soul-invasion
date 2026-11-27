@@ -119,11 +119,13 @@ fn plain(steps: usize) -> Settings {
 }
 
 /// One continent of 3,000 km across on its plate, three ocean plates
-/// around it, and the forces free: the lid warms the mantle under it,
-/// troughs begin, and the plate is cut.
+/// around it, and the forces free: the lid warms the mantle under it, a
+/// trough begins and grows cell by cell, the plate is cut once it has
+/// crossed, and the ocean opens from where the trough is oldest (32
+/// steps: the pull is weak here, the whole takes 150 My).
 fn rift(sphere: &Sphere) -> Written {
     Written {
-        settings: plain(20),
+        settings: plain(32),
         scene: Scene {
             continent: cap(sphere, (0, 0), 3000),
             plate: nearest(sphere, &[(0, 0), (0, 120), (0, -120), (80, 180)]),

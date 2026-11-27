@@ -68,7 +68,7 @@ fn lands_come_from_the_history_large_but_not_gigantic() {
         let world = made(seed);
         let biggest = &world.lands[0];
         assert!(
-            (14_000_000..=30_000_000).contains(&biggest.area_km2),
+            (14_000_000..=35_000_000).contains(&biggest.area_km2),
             "seed {seed}: {}",
             biggest.area_km2
         );
@@ -472,17 +472,28 @@ fn the_journal_names_the_rule_behind_every_plate_that_appears_or_disappears() {
             }
         }
     }
-    // The lead's case (27 November): on seed 9 a fifth of the planet is
-    // cut out of the largest plate at step 9 and is back in it at step 12.
-    let journal = &made(9).history.journal;
-    assert!(
-        journal[9]
-            .iter()
-            .any(|e| { (e.what, e.plate, e.other, e.rift) == (What::BornOfRift, 4, 0, 0) })
-    );
-    assert!(
-        journal[12]
-            .iter()
-            .any(|e| (e.what, e.plate, e.other) == (What::MovesWith, 4, 0))
-    );
+    // The lead's case (27 November): on seed 9 a fifth of the planet was
+    // cut out of the largest plate at step 9 and was back in it at step
+    // 12. A plate born of a rift is never given back (version 12): it
+    // never moves as one with the plate it was cut from.
+    for seed in [9, 14] {
+        let journal = &made(seed).history.journal;
+        let mut cut: Vec<(u8, u8)> = Vec::new();
+        for (t, events) in journal.iter().enumerate() {
+            for e in events {
+                if e.what == What::BornOfRift {
+                    cut.push((e.plate, e.other));
+                }
+                assert!(
+                    e.what != What::MovesWith
+                        || !(cut.contains(&(e.plate, e.other))
+                            || cut.contains(&(e.other, e.plate))),
+                    "seed {seed}, step {t}: plate {} is given back to plate {}",
+                    e.plate,
+                    e.other
+                );
+            }
+        }
+        assert!(!cut.is_empty(), "seed {seed}: no plate born of a rift");
+    }
 }

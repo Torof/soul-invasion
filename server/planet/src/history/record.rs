@@ -219,6 +219,11 @@ pub struct Rift {
     pub failed_my: u16,
     /// Its trough's greatest length, cells of crust.
     pub cells: u32,
+    /// The trough's length along its cells when the plate was cut, and
+    /// the straight distance between its two ends, km (0 until then).
+    pub along_km: u32,
+    /// See `along_km`.
+    pub straight_km: u32,
 }
 
 /// Two plates welded by a collision.

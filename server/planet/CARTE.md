@@ -92,12 +92,12 @@ naming the parts of the world it uses.
 | start | `begin` | `start.rs` | Supercontinent, first plates, ocean floor, relief, heat, plumes, first forces. |
 | 1 | `begin_step` | `crust.rs` | Clears what the last step left on each cell of crust. |
 | 2 | `weld_and_escape` | `collisions.rs` | A collision that stood still welds its two plates; a hard one sheds a block sideways. |
-| 3 | `troughs` | `rifts.rs` | Rifts: troughs begin where a plate is pulled apart and weak, stretch and thin the crust, grow, cut the plate, or are abandoned. |
+| 3 | `troughs` | `rifts.rs` | Rifts: troughs begin where a plate is pulled apart and weak, grow cell by cell along the weakest crust, stretch and thin it (each cell from the day it was reached), cut the plate once they cross it, then unzip; or are abandoned. |
 | 4 | `turn` | `crust.rs` | The plates turn: pieces change their turn, bits of floor move, and are sorted by cell. |
 | 5 | `meet` | `collisions.rs` | Pieces that meet: crust run under another piece piles on it (suture). |
 | 6 | `sink_and_dock` | `trenches.rs` | Floor under a continent sinks (active margin); terranes and arcs dock. |
 | 7 | `draw_floor` | `trenches.rs` | The grid's view; ocean under ocean (the older sinks), island arcs. |
-| 8 | `holes_and_gaps` | `floor.rs` | Holes of the floor's sampling mended; gaps between parting plates filled with new floor; rift margins. |
+| 8 | `holes_and_gaps` | `floor.rs` | Holes of the floor's sampling mended; a gap beside stretched crust filled with that crust's own width while any is left; other gaps between parting plates filled with new floor; rift margins. |
 | 9 | `specks` | `plates.rs` | A lone cell of a plate joins the plate around it. |
 | 10 | `piles_and_silt` | `wear.rs` | Piles spread and wear; their silt builds the margins out. |
 | 11 | `one_piece` | `plates.rs` | A plate is one piece: parts cut off become plates or are captured, crumbs absorbed; plates parted. |
@@ -109,7 +109,7 @@ naming the parts of the world it uses.
 | 17 | `sea_and_weather` | `wear.rs` | The sea level; relief wears down and fills (`weather`). |
 | 18 | `progress` | `collisions.rs` | Collisions begin, last, end. |
 | 19 | `write` | `record.rs` | The step's layers and its journal of events. |
-| 20 | `next` | `forces.rs` | The forces and the plates' turns for the next step (`drive`); boundaries that open, lava floods. |
+| 20 | `next` | `forces.rs` | The forces and the plates' turns for the next step (`drive`): the crust that still joins two plates a rift has cut holds them there (`Bridge`); boundaries that open, lava floods. |
 
 Steps 1 to 14 do not run at step 0. Other things a module holds:
 `pieces.rs` the rigid pieces (`Land`: lattice, `cover`, `kin`, `spread`),
@@ -129,7 +129,7 @@ current folder). With no name, every scene.
 
 | Scene | What is written | What it shows |
 |---|---|---|
-| `rift` | One continent of 3,000 km on its plate, the forces free. | The lid warms the mantle, troughs begin, the plate is cut. |
+| `rift` | One continent of 3,000 km on its plate, the forces free, 32 steps. | The lid warms the mantle, a trough begins and grows, the plate is cut once it has crossed, the ocean unzips. |
 | `collision` | Two continents driven at each other at 60 mm a year each. | They meet, pile up, weld once stopped. |
 | `trench` | An ocean plate driven under a continent that stands still. | An active margin and its arc. |
 | `arcs` | Two ocean plates driven at each other, no continent near. | The older floor sinks, island arcs grow. |

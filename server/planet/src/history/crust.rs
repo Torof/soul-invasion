@@ -290,12 +290,13 @@ pub(super) fn compact(world: &mut World) {
     }
     let land_ix = land.compact();
     for tr in &mut *troughs {
-        tr.path = tr
-            .path
-            .iter()
-            .map(|&i| land_ix[i as usize])
-            .filter(|&i| i != NO_BIT)
-            .collect();
+        for j in 0..tr.path.len() {
+            tr.path[j] = land_ix[tr.path[j] as usize];
+            if tr.twin[j] != NO_BIT {
+                tr.twin[j] = land_ix[tr.twin[j] as usize];
+            }
+        }
+        tr.keep(|i| i != NO_BIT);
     }
     for d in &mut *top {
         if *d != NO_BIT {

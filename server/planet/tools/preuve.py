@@ -67,7 +67,11 @@ def main():
             lines.append(f"numbers-{seed} {sha([json.dumps(numbers, sort_keys=True).encode()])}")
             lines.append(f"journal-{seed} {sha([journal.read_bytes()])}")
         known = {p.name for p in (tmp / "couches").iterdir()}
-        counted = sum(int(line.split()[2]) for line in lines if line.startswith("layers")) - 6 + 2
+        # (The maps of a seed are counted with its layers but lie beside
+        # them; a seed with no site for our continent writes one map,
+        # not three. The two journals are layer files left out above.)
+        maps = len(list(tmp.glob("*-graine-*.png")))
+        counted = sum(int(line.split()[2]) for line in lines if line.startswith("layers")) - maps + 2
         assert counted == len(known), f"{len(known) - counted} layer files belong to no seed"
         if "--quick" not in args:
             table = tmp / "bilan.json"

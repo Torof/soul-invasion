@@ -516,6 +516,41 @@ impl Land {
         dist
     }
 
+    /// The same walk from every source with no cell barred: each cell's
+    /// distance, km, and the source it is nearest to (its index in
+    /// `sources`).
+    pub(super) fn spread_from(
+        &self,
+        sphere: &Sphere,
+        sources: &[usize],
+        reach: u32,
+    ) -> (Vec<u32>, Vec<u32>) {
+        let mut dist = vec![u32::MAX; self.cells.len()];
+        let mut origin = vec![u32::MAX; self.cells.len()];
+        let mut heap = std::collections::BinaryHeap::new();
+        for (k, &i) in sources.iter().enumerate() {
+            if dist[i] == u32::MAX {
+                dist[i] = 0;
+                origin[i] = k as u32;
+                heap.push(std::cmp::Reverse((0_u32, i as u32)));
+            }
+        }
+        while let Some(std::cmp::Reverse((d, i))) = heap.pop() {
+            let i = i as usize;
+            if d > dist[i] {
+                continue;
+            }
+            for (j, km) in self.kin(sphere, i) {
+                let nd = d + km;
+                if nd <= reach && nd < dist[j] {
+                    dist[j] = nd;
+                    origin[j] = origin[i];
+                    heap.push(std::cmp::Reverse((nd, j as u32)));
+                }
+            }
+        }
+        (dist, origin)
+    }
     /// The other plates whose crust a cell touches: its neighbours in its
     /// own lattice, and the other pieces the grid draws around it (a
     /// neighbourhood query: who touches whom).

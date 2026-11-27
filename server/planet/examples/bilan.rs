@@ -159,6 +159,8 @@ struct Count {
     rift_my: Vec<i64>,
     failed_my: Vec<i64>,
     rift_cells: Vec<i64>,
+    unzip_my: Vec<i64>,
+    sinuous: Vec<i64>,
 }
 
 impl Count {
@@ -199,6 +201,8 @@ impl Count {
             rift_my,
             failed_my,
             rift_cells,
+            unzip_my,
+            sinuous,
         } = o;
         self.steps += steps;
         self.planets += planets;
@@ -231,6 +235,8 @@ impl Count {
         self.rift_my.extend(rift_my);
         self.failed_my.extend(failed_my);
         self.rift_cells.extend(rift_cells);
+        self.unzip_my.extend(unzip_my);
+        self.sinuous.extend(sinuous);
     }
 }
 
@@ -627,6 +633,8 @@ fn main() {
             "from first trough to the cut, My: least, median, most": spread(&mut n.rift_my),
             "from first trough to abandon, My: least, median, most": spread(&mut n.failed_my),
             "trough's greatest length, cells of about 92 km: least, median, most": spread(&mut n.rift_cells),
+            "from the cut to shores that touch nowhere, My: least, median, most": spread(&mut n.unzip_my),
+            "sinuosity of the cut, per mille (length along the trough over the straight distance between its ends; troughs over 1000 km): least, median, most": spread(&mut n.sinuous),
         },
         "8 seconds per planet": {
             "median": round(seconds[seconds.len() / 2]),
@@ -659,5 +667,13 @@ fn rifts(world: &Planet, n: &mut Count) {
             n.failed_my.push(i64::from(r.my) - i64::from(r.failed_my));
         }
         n.rift_cells.push(i64::from(r.cells));
+        if r.parted_my != never {
+            n.unzip_my
+                .push(i64::from(r.cut_my) - i64::from(r.parted_my));
+        }
+        if r.straight_km >= 1000 {
+            n.sinuous
+                .push(i64::from(r.along_km) * 1000 / i64::from(r.straight_km));
+        }
     }
 }

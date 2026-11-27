@@ -430,9 +430,10 @@ pub(crate) fn begin<'a>(
             suction: &[],
             ridge: &[],
             grips: &[],
+            bridges: &[],
         },
         None,
-        &held(&parted),
+        &held(&parted, &[[false; MAXP]; MAXP]),
     );
     let omega = first.omega;
     let group = first.group;
@@ -497,6 +498,7 @@ pub(crate) fn begin<'a>(
         closing_of,
         quiet,
         troughs,
+        pulled: [0; MAXP],
         edges_last,
         front_of,
         record_of,

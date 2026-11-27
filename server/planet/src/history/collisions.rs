@@ -285,7 +285,11 @@ pub(super) fn meet(world: &mut World) {
                 up.event = Margin::Suture as u8;
             }
         }
-        let full = i64::from(sphere.area_km2[above.at as usize]);
+        // The crust above takes the pile over the area it stands for
+        // (version 12: a stretched cell stands for more than its place
+        // in the lattice, and thickened as if it did not: crust was
+        // made from nothing, up to 13 % of the start).
+        let full = i64::from(above.area);
         let room = (THICK_MAX - i64::from(land.cells[j].rock.thick)) * full;
         let vol = i64::from(me.rock.thick) * i64::from(me.area);
         let take = room.min(vol);

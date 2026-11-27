@@ -207,6 +207,93 @@ pub(super) fn holes_and_gaps(world: &mut World) {
             pending[q] = false;
         }
     }
+    // A gap beside crust a rift has stretched is no ocean yet (version
+    // 12). Thinned crust stands for a wider crust than its place in its
+    // lattice: that width now lies in the gap, as thin crust, while
+    // there is any left around. Once there is none the crust has given
+    // way, and the gap is ocean floor.
+    for q in 0..CELLS {
+        if !pending[q] {
+            continue;
+        }
+        let spare = |c: &Crust| {
+            (i64::from(c.area) - i64::from(sphere.area_km2[c.at as usize])).max(0)
+                * i64::from(c.rock.thick)
+        };
+        let mut donors: Vec<usize> = Vec::new();
+        for &(m, _) in &sphere.links[q] {
+            if top[m as usize] == NO_BIT {
+                continue;
+            }
+            let i = top[m as usize] as usize;
+            for j in std::iter::once(i).chain(land.kin(sphere, i).map(|(j, _)| j)) {
+                let c = &land.cells[j];
+                if !c.dead && !c.under && c.rock.rift != 0 && spare(c) > 0 && !donors.contains(&j) {
+                    donors.push(j);
+                }
+            }
+        }
+        if donors.is_empty() {
+            continue;
+        }
+        donors.sort_unstable_by_key(|&j| {
+            let c = &land.cells[j];
+            (km_between(c.pos, sphere.centre[q]), c.id)
+        });
+        let first = land.cells[donors[0]];
+        let place = sphere.cell_of(normalize(apply(
+            &land.back[first.frame as usize],
+            sphere.centre[q],
+        ))) as u32;
+        if land.get(first.frame, place).is_some() {
+            continue;
+        }
+        // Its place must be free of other crust: no crust over its
+        // centre, and no other piece's cell centred in it.
+        let y = normalize(apply(
+            &land.rot[first.frame as usize],
+            sphere.centre[place as usize],
+        ));
+        let m = sphere.cell_of(y);
+        let back = &land.back[first.frame as usize];
+        let taken = std::iter::once(m)
+            .chain(sphere.links[m].iter().map(|&(a, _)| a as usize))
+            .filter(|&a| top[a] != NO_BIT)
+            .any(|a| {
+                let o = &land.cells[top[a] as usize];
+                o.frame != first.frame
+                    && sphere.cell_of(normalize(apply(back, o.pos))) as u32 == place
+            });
+        if taken || land.cover(sphere, (y, m), &key, NO_BIT).is_some() {
+            continue;
+        }
+        let full = i64::from(sphere.area_km2[place as usize]);
+        let have: i64 = donors.iter().map(|&j| spare(&land.cells[j])).sum();
+        let take = have.min(full * i64::from(BREAK_THICK));
+        if take < full * i64::from(OCEAN_THICK) {
+            continue;
+        }
+        let mut left = take;
+        for &j in &donors {
+            let c = &mut land.cells[j];
+            let v = spare(c).min(left);
+            c.area -= (v / i64::from(c.rock.thick).max(1)) as u32;
+            left -= v;
+        }
+        let made = Rock {
+            thick: (take / full) as u16,
+            why: [0; CAUSES],
+            ..first.rock
+        };
+        let j = land.add(sphere, (first.frame, place), first.plate, made, *next_bit);
+        *next_bit += 1;
+        land.cells[j].event = Margin::Rift as u8;
+        top[q] = j as u32;
+        disp[q] = NO_BIT;
+        plate[q] = first.plate;
+        rock[q] = made;
+        pending[q] = false;
+    }
     let mut mended = Vec::new();
     for q in 0..CELLS {
         if !pending[q] {

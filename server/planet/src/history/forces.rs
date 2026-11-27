@@ -45,6 +45,18 @@ pub(super) type Front = (usize, u8, u8, V3, i64);
 /// Two plates in a collision and its front's length, cells.
 pub(super) type Grip = (u8, u8, i64);
 
+/// How a pair of plates is held by the crust that still joins them: a
+/// matrix on their relative turn.
+type Hold = [[i128; 3]; 3];
+
+/// Crust that still joins two plates a rift has cut (version 12): the
+/// two plates, where it is, and how well it holds, ‰: what it would not
+/// let through over what it would, shared among all the cells of its
+/// trough (as the crust gives way along the trough, less and less holds).
+/// It holds as well against closing: where two plates a rift has cut
+/// press on each other, their crust meets as in any collision.
+pub(super) type Bridge = (u8, u8, V3, i64);
+
 /// The most of two colliding plates' relative motion a front takes away
 /// in a step, ‰.
 pub(super) const GRIP_MOST: i64 = 900;
@@ -91,6 +103,7 @@ pub(super) struct Edges<'a> {
     pub(super) suction: &'a [Spot],
     pub(super) ridge: &'a [Spot],
     pub(super) grips: &'a [Grip],
+    pub(super) bridges: &'a [Bridge],
 }
 
 /// The plates' turns from the forces on them. Plates whose continents
@@ -229,10 +242,11 @@ pub(super) type Load = (V3, V3, i64, bool);
 /// How fast the two sides of a line across a plate would part if nothing
 /// held them together, µm a year (negative: pressed together): each
 /// side turns as the forces on it alone would turn it, against the
-/// mantle's drag, as a plate does. The line is the great circle through
+/// mantle's drag and no faster than a plate may go (`top`), as a plate
+/// does. The line is the great circle through
 /// `x` whose pole is `n`. None where a side holds no continent beyond
 /// the stretched zone: a rift tears a continent, not its shore.
-pub(super) fn parting(loads: &[Load], x: V3, n: V3, v0: i64) -> Option<i64> {
+pub(super) fn parting(loads: &[Load], x: V3, n: V3, (v0, top): (i64, i64)) -> Option<i64> {
     let band = sin(i64::from(STRETCH_KM) * ONE / RADIUS_KM);
     let mut tq = [[0_i64; 3]; 2];
     let mut rs = [0_i64; 2];
@@ -251,7 +265,7 @@ pub(super) fn parting(loads: &[Load], x: V3, n: V3, v0: i64) -> Option<i64> {
         let w = tq[k].map(|v| v * 1000 / rs[k].max(1));
         let u = norm(w);
         if u > 0 {
-            w.map(|v| v * dragged(u, v0) / u)
+            w.map(|v| v * dragged(u, v0).min(top) / u)
         } else {
             w
         }
@@ -346,6 +360,54 @@ pub(super) fn drive_from(
         let r = root(&up, p as u8) as usize;
         rs[r] += resist[p];
         cs[r] += cont[p];
+    }
+    // The crust that still joins two plates a rift has cut holds them
+    // there: it lets through its weakness' share of their parting at
+    // each of its cells, and leaves them free to turn about it (the
+    // ocean opens like scissors, away from the crust that holds).
+    let mut hold: Vec<((usize, usize), Hold)> = Vec::new();
+    for &(p, o, x, k) in edges.bridges {
+        let (ra, rb) = (root(&up, p) as usize, root(&up, o) as usize);
+        if ra == rb {
+            continue;
+        }
+        let key = (ra.min(rb), ra.max(rb));
+        let at = hold.iter().position(|h| h.0 == key).unwrap_or_else(|| {
+            hold.push((key, [[0; 3]; 3]));
+            hold.len() - 1
+        });
+        for i in 0..3 {
+            for j in 0..3 {
+                let same = if i == j { ONE } else { 0 };
+                hold[at].1[i][j] += i128::from(k) * i128::from(same - x[i] * x[j] / ONE);
+            }
+        }
+    }
+    for &((a, b), m) in &hold {
+        let m: Hold = std::array::from_fn(|i| {
+            std::array::from_fn(|j| m[i][j] / i128::from(ONE) + if i == j { 1000 } else { 0 })
+        });
+        let det3 = |c: &Hold| {
+            c[0][0] * (c[1][1] * c[2][2] - c[1][2] * c[2][1])
+                - c[0][1] * (c[1][0] * c[2][2] - c[1][2] * c[2][0])
+                + c[0][2] * (c[1][0] * c[2][1] - c[1][1] * c[2][0])
+        };
+        let det = det3(&m);
+        if det == 0 {
+            continue;
+        }
+        let rel = sub(w[a], w[b]);
+        let through: V3 = std::array::from_fn(|k| {
+            let mut c = m;
+            for i in 0..3 {
+                c[i][k] = i128::from(rel[i]) * 1000;
+            }
+            (det3(&c) / det) as i64
+        });
+        let held_back = sub(rel, through);
+        let total = (rs[a] + rs[b]).max(1);
+        w[a] = sub(w[a], held_back.map(|v| v * rs[b] / total));
+        w[b] = add(w[b], held_back.map(|v| v * rs[a] / total));
     }
     for a in 0..MAXP {
         for b in a + 1..MAXP {
@@ -537,9 +599,17 @@ pub(super) fn look(
     }
 }
 
-/// The pairs that may be held together: continents that have not parted.
-pub(super) fn held(parted: &[[bool; MAXP]; MAXP]) -> Vec<[bool; MAXP]> {
-    parted.iter().map(|row| row.map(|p| !p)).collect()
+/// The pairs that may be held together: continents that have not
+/// parted, across a boundary that has never opened. A boundary that has
+/// opened once, or that a rift has cut, is a plate boundary for good
+/// (version 12): its two plates are never one again but by a weld.
+pub(super) fn held(
+    parted: &[[bool; MAXP]; MAXP],
+    broken: &[[bool; MAXP]; MAXP],
+) -> Vec<[bool; MAXP]> {
+    (0..MAXP)
+        .map(|a| std::array::from_fn(|b| !parted[a][b] && !broken[a][b]))
+        .collect()
 }
 
 /// Step 12. What the plates do now, read on the grid's view of the
@@ -630,6 +700,25 @@ pub(super) fn next(world: &mut World) {
     let now_my = world.step.now_my;
     let seen = &mut world.step.seen;
     let grips = &mut world.step.grips;
+    // The crust that still joins the plates a rift has cut.
+    let mut bridges: Vec<Bridge> = Vec::new();
+    for tr in world.troughs.iter().filter(|tr| tr.cut) {
+        let n = tr.path.len() as i64;
+        for j in 0..tr.path.len() {
+            if tr.ext[j] >= BREAK_M || tr.twin[j] == NO_BIT {
+                continue;
+            }
+            let (c, o) = (
+                &land.cells[tr.path[j] as usize],
+                &land.cells[tr.twin[j] as usize],
+            );
+            if c.dead || o.dead || c.plate == o.plate {
+                continue;
+            }
+            let w = necked(weak(heat[c.cell as usize], &c.rock, now_my), tr.ext[j]);
+            bridges.push((c.plate, o.plate, c.pos, (1000 - w) * 1000 / (w * n)));
+        }
+    }
     if t < s.steps {
         let next = drive(
             sphere,
@@ -644,9 +733,10 @@ pub(super) fn next(world: &mut World) {
                 suction: &seen.suction,
                 ridge: &seen.ridge,
                 grips: &*grips,
+                bridges: &bridges,
             },
             Some(&*omega),
-            &held(&*parted),
+            &held(&*parted, &*broken),
         );
         *omega = next.omega;
         *group = next.group;

@@ -61,6 +61,9 @@ pub(crate) struct World<'a> {
     pub(super) fronts: Vec<Front>,
     // Rifts in progress, arcs, silt.
     pub(super) troughs: Vec<Trough>,
+    /// How fast each plate's best line would have stretched at the last
+    /// step, µm a year (a trough begins where the pull has lasted).
+    pub(super) pulled: [i64; MAXP],
     pub(super) arc_steps: u8,
     pub(super) silt: [i64; MAXP],
     // The record: events, then the layers of each step.
