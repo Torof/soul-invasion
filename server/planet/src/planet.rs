@@ -86,10 +86,9 @@ pub struct Planet {
     /// The index of this step's pieces of continent, to read them at any
     /// point.
     index: history::Pieces,
-    /// The older plates at each cell where the supercontinent's crust
-    /// stood, and their seams.
-    old_at: Vec<u8>,
-    old_at_edge: Vec<Option<OldKind>>,
+    /// The mosaic of cores and belts, at each cell where the
+    /// supercontinent's crust stood.
+    pub mosaic: std::sync::Arc<Mosaic>,
 }
 
 /// Ocean floor older than this, millions of years, sinks no more.
@@ -282,47 +281,14 @@ impl Planet {
     /// The planet born from `seed` and `settings`.
     pub fn with(seed: u64, settings: &Settings) -> Self {
         let sphere = Sphere::new();
-        // 1. Older plates: the seams inside the supercontinent, read where
-        // its crust stood before it broke, and carried with it.
-        let old = Layout::draw(seed, P_OLD, OLD_PLATES);
-        let old_at: Vec<u8> = sphere
-            .centre
-            .iter()
-            .map(|&p| old.plate_at(p) as u8)
-            .collect();
-        let all = vec![true; CELLS];
-        let old_at_edge: Vec<Option<OldKind>> = (0..CELLS)
-            .map(|c| {
-                across(&sphere, &old, &old_at, &all, c).map(|(other, normal, _)| {
-                    let (closing, slide) =
-                        old.motion(old_at[c] as usize, other, sphere.centre[c], normal);
-                    match classify(closing, slide, true, true, false) {
-                        Kind::Collision => OldKind::Suture,
-                        Kind::Rift => OldKind::FailedRift,
-                        _ => OldKind::OldFault,
-                    }
-                })
-            })
-            .collect();
-        let old_is = |kind| -> Vec<bool> { old_at_edge.iter().map(|&k| k == Some(kind)).collect() };
-        let (old_suture, old_rift) = (old_is(OldKind::Suture), old_is(OldKind::FailedRift));
+        // 1. The mosaic: the cores and the belts inside the supercontinent,
+        // read where its crust stood before it broke, and carried with it.
+        let (old, mosaic) = Mosaic::draw(seed, &sphere);
+        let mosaic = std::sync::Arc::new(mosaic);
         // 2. The history: the supercontinent, its break-up, the drift.
-        let history = std::sync::Arc::new(history::run(
-            seed,
-            settings,
-            &sphere,
-            (&old_suture, &old_rift),
-        ));
+        let history = std::sync::Arc::new(history::run(seed, settings, &sphere, &mosaic));
         let last = history.last();
-        Self::build(
-            seed,
-            settings,
-            sphere,
-            old,
-            (old_at, old_at_edge),
-            history,
-            (last, None),
-        )
+        Self::build(seed, settings, sphere, old, mosaic, history, (last, None))
     }
 
     /// The planet as it stood at step `t` of its history, drawn as today's
@@ -334,7 +300,7 @@ impl Planet {
             &self.settings,
             self.sphere.clone(),
             self.old.clone(),
-            (self.old_at.clone(), self.old_at_edge.clone()),
+            std::sync::Arc::clone(&self.mosaic),
             std::sync::Arc::clone(&self.history),
             (t.min(self.history.last()), Some(self.sea)),
         )
@@ -345,7 +311,7 @@ impl Planet {
         settings: &Settings,
         sphere: Sphere,
         old: Layout,
-        (old_at, old_at_edge): (Vec<u8>, Vec<Option<OldKind>>),
+        mosaic: std::sync::Arc<Mosaic>,
         history: std::sync::Arc<History>,
         (t, sea): (usize, Option<i64>),
     ) -> Self {
@@ -368,8 +334,8 @@ impl Planet {
         for c in 0..CELLS {
             if continental[c] {
                 let home = home[c] as usize;
-                old_plate[c] = old_at[home];
-                old_edge[c] = old_at_edge[home];
+                old_plate[c] = mosaic.core[home];
+                old_edge[c] = mosaic.edge[home];
             } else {
                 old_plate[c] = old.plate_at(sphere.centre[c]) as u8;
             }
@@ -540,8 +506,7 @@ impl Planet {
             index,
             history,
             step: t,
-            old_at,
-            old_at_edge,
+            mosaic,
         };
         planet.lands = planet.landmasses();
         planet

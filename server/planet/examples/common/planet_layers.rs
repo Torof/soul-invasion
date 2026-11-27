@@ -688,8 +688,18 @@ pub fn step_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
     }
     l.write(dir, &name("manteau"));
     // The rifts: the troughs in progress (red), the abandoned ones
-    // (brown), drawn along their cells of crust.
+    // (brown), drawn along their cells of crust, over the belts of the
+    // mosaic (violet, deeper toward a belt's axis) carried by the crust.
     let mut l = Layer::new(w, hgt);
+    for (i, &c) in cell.iter().enumerate() {
+        let home = h.home_at[t][c] as usize;
+        if h.class[t][c] == history::CONTINENT && h.class[0][home] == history::CONTINENT {
+            let grade = u32::from(world.mosaic.belt[home]);
+            if grade > 0 {
+                l.px[i] = [150, 60, 210, (40 + grade * 130 / 1000) as u8];
+            }
+        }
+    }
     let mut before: Option<((i64, i64), u16)> = None;
     for &(p, rift, failed) in &h.rifts_at[t] {
         let here = at(p);

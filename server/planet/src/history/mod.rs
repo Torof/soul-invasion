@@ -3,8 +3,8 @@
 //! the whole history; the continents ride on them.
 //!
 //! 1. **A supercontinent**: one warped cap carrying all the continental
-//!    crust, its interior already old (cratons) and seamed with older
-//!    sutures.
+//!    crust, a mosaic (version 13): old cores (cratons) welded by wide
+//!    belts of younger, weaker crust.
 //! 2. **Plates.** The supercontinent lies on several plates (a warped,
 //!    weighted Voronoi of its crust) and oceanic plates share the rest of
 //!    the sphere. At every step each cell belongs to exactly one plate;
@@ -87,9 +87,9 @@
 //! plates are the plates of the last step.
 
 use crate::{
-    CELLS, Kind, ONE, P_RELIEF, RADIUS_KM, Sphere, TAU, V3, add, bump, classify, cos, cross, dot,
-    draw, east_at, fbm3, hash, km_between, latitude, norm, normalize, north_at, quantile,
-    random_unit, scale, sin, step, sub, warp,
+    CELLS, Kind, Mosaic, ONE, OldKind, P_RELIEF, RADIUS_KM, Sphere, TAU, V3, add, bump, classify,
+    cos, cross, dot, draw, east_at, fbm3, hash, km_between, latitude, norm, normalize, north_at,
+    quantile, random_unit, scale, sin, step, sub, warp,
 };
 
 mod collisions;
@@ -124,8 +124,8 @@ pub(super) const P_SILT: u64 = 0x0c50_010c;
 pub(super) const P_ESCAPE: u64 = 0x0c50_010b;
 
 /// The history of the planet born from `seed`.
-pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old: (&[bool], &[bool])) -> History {
-    let mut world = begin(seed, s, sphere, old, None);
+pub fn run(seed: u64, s: &Settings, sphere: &Sphere, mosaic: &Mosaic) -> History {
+    let mut world = begin(seed, s, sphere, mosaic, None);
     for t in 0..=s.steps {
         advance(&mut world, t);
     }
@@ -135,8 +135,8 @@ pub fn run(seed: u64, s: &Settings, sphere: &Sphere, old: (&[bool], &[bool])) ->
 /// The history of a written scene (the bench): the model's own steps on
 /// continents and plates laid by hand.
 pub fn run_scene(seed: u64, s: &Settings, sphere: &Sphere, scene: &Scene) -> History {
-    let none = vec![false; CELLS];
-    let mut world = begin(seed, s, sphere, (&none, &none), Some(scene));
+    let (_, mosaic) = Mosaic::draw(seed, sphere);
+    let mut world = begin(seed, s, sphere, &mosaic, Some(scene));
     world.impose();
     for t in 0..=s.steps {
         advance(&mut world, t);

@@ -224,6 +224,14 @@ pub struct Rift {
     pub along_km: u32,
     /// See `along_km`.
     pub straight_km: u32,
+    /// How far the trough strays from the straight line through its two
+    /// ends when the plate is cut, at most, km.
+    pub bow_km: u32,
+    /// The cells of crust along the trough when the plate was cut, and
+    /// those of them that lie in a belt of the mosaic (0 until then).
+    pub cut_cells: u32,
+    /// See `cut_cells`.
+    pub belt_cells: u32,
 }
 
 /// Two plates welded by a collision.

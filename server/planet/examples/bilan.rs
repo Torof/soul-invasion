@@ -13,7 +13,9 @@
 //! short-lived ones; the continental crust kept (area, volume); the
 //! ground below sea level inside the continents (linked to the ocean or
 //! not) and what makes it change; whether a continent moves with its
-//! plate; the rifts; the seconds a planet takes.
+//! plate; the rifts (how sinuous the cuts, how far the first cut strays
+//! from a straight line, the share of its path in the belts of the
+//! mosaic); the collisions of continents; the seconds a planet takes.
 //!
 //! The planets are made on every core (`PLANET_THREADS` to change it),
 //! each counted alone, and their counts added in the order of the seeds:
@@ -161,6 +163,13 @@ struct Count {
     rift_cells: Vec<i64>,
     unzip_my: Vec<i64>,
     sinuous: Vec<i64>,
+    sinuous_first: Vec<i64>,
+    collisions: [u64; 2],
+    bow_first: Vec<i64>,
+    in_belts: Vec<i64>,
+    in_belts_first: Vec<i64>,
+    belt_land: Vec<i64>,
+    belt_wide: Vec<i64>,
 }
 
 impl Count {
@@ -203,6 +212,13 @@ impl Count {
             rift_cells,
             unzip_my,
             sinuous,
+            sinuous_first,
+            collisions,
+            bow_first,
+            in_belts,
+            in_belts_first,
+            belt_land,
+            belt_wide,
         } = o;
         self.steps += steps;
         self.planets += planets;
@@ -237,6 +253,13 @@ impl Count {
         self.rift_cells.extend(rift_cells);
         self.unzip_my.extend(unzip_my);
         self.sinuous.extend(sinuous);
+        self.sinuous_first.extend(sinuous_first);
+        sum(&mut self.collisions, collisions);
+        self.bow_first.extend(bow_first);
+        self.in_belts.extend(in_belts);
+        self.in_belts_first.extend(in_belts_first);
+        self.belt_land.extend(belt_land);
+        self.belt_wide.extend(belt_wide);
     }
 }
 
@@ -624,6 +647,10 @@ fn main() {
             "cells of crust that changed plate, % per step": pc(switched, n.moved),
             "share by cause, % of changes": named(&SWITCHES, n.switched.iter().map(|&v| json!(pc(v, switched))).collect()),
         },
+        "9 collisions of continents, per planet": {
+            "begun": per(n.collisions[0], n.planets),
+            "of which a front of 40 cells or more (about 3,700 km)": per(n.collisions[1], n.planets),
+        },
         "7 rifts, per planet": {
             "started (a trough)": per(n.rifts[0], n.planets),
             "cut through (the crust gave way, the plate is two)": per(n.rifts[1], n.planets),
@@ -635,6 +662,12 @@ fn main() {
             "trough's greatest length, cells of about 92 km: least, median, most": spread(&mut n.rift_cells),
             "from the cut to shores that touch nowhere, My: least, median, most": spread(&mut n.unzip_my),
             "sinuosity of the cut, per mille (length along the trough over the straight distance between its ends; troughs over 1000 km): least, median, most": spread(&mut n.sinuous),
+            "sinuosity of the planet's first cut (the supercontinent's), per mille: least, median, most": spread(&mut n.sinuous_first),
+            "how far the first cut strays from the straight line through its ends, at most, per mille of that line's length: least, median, most": spread(&mut n.bow_first),
+            "share of the first cut's path that lies in a belt of the mosaic, per mille: least, median, most": spread(&mut n.in_belts_first),
+            "share of every cut's path that lies in a belt, per mille: least, median, most": spread(&mut n.in_belts),
+            "share of the supercontinent's crust that lies in a belt at the start, per mille (what a path blind to the crust would cross): least, median, most": spread(&mut n.belt_land),
+            "belts' width at the start, km (each planet's median along the axes): least, median, most": spread(&mut n.belt_wide),
         },
         "8 seconds per planet": {
             "median": round(seconds[seconds.len() / 2]),
@@ -654,6 +687,10 @@ fn main() {
 /// how long from the first trough to the cut.
 fn rifts(world: &Planet, n: &mut Count) {
     let never = history::NEVER;
+    for c in &world.history.collisions {
+        n.collisions[0] += 1;
+        n.collisions[1] += u64::from(c.front_cells >= 40);
+    }
     for r in &world.history.rifts {
         n.rifts[0] += 1;
         n.rifts[1] += u64::from(r.cut_my != never);
@@ -674,6 +711,43 @@ fn rifts(world: &Planet, n: &mut Count) {
         if r.straight_km >= 1000 {
             n.sinuous
                 .push(i64::from(r.along_km) * 1000 / i64::from(r.straight_km));
+            n.in_belts
+                .push(i64::from(r.belt_cells) * 1000 / i64::from(r.cut_cells.max(1)));
         }
+    }
+    // The first cut of the planet (the supercontinent's): the earliest
+    // trough over 1000 km that cut its plate.
+    let first = world
+        .history
+        .rifts
+        .iter()
+        .filter(|r| r.cut_my != never && r.straight_km >= 1000)
+        .max_by_key(|r| (r.cut_my, r.my));
+    if let Some(r) = first {
+        n.sinuous_first
+            .push(i64::from(r.along_km) * 1000 / i64::from(r.straight_km));
+        n.bow_first
+            .push(i64::from(r.bow_km) * 1000 / i64::from(r.straight_km));
+        n.in_belts_first
+            .push(i64::from(r.belt_cells) * 1000 / i64::from(r.cut_cells.max(1)));
+    }
+    // The mosaic under the supercontinent at the start: the share of its
+    // crust that lies in a belt, and the belts' widths.
+    let m = &world.mosaic;
+    let crust: Vec<usize> = (0..CELLS)
+        .filter(|&c| world.history.class[0][c] == history::CONTINENT)
+        .collect();
+    let mut wide: Vec<i64> = crust
+        .iter()
+        .filter(|&&c| m.edge[c].is_some())
+        .map(|&c| 2 * i64::from(m.half_km[c]))
+        .collect();
+    wide.sort_unstable();
+    n.belt_land.push(
+        i64::try_from(crust.iter().filter(|&&c| m.belt[c] > 0).count() * 1000 / crust.len().max(1))
+            .unwrap_or(0),
+    );
+    if !wide.is_empty() {
+        n.belt_wide.push(wide[wide.len() / 2]);
     }
 }

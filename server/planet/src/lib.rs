@@ -18,8 +18,9 @@
 //!    continents of today are what is left, each piece of crust carrying
 //!    its record (piece, age, margins, last mountain building). A world's
 //!    character is an input: [`Settings`].
-//! 2. **Older seams** inside the supercontinent (old sutures, failed
-//!    rifts), carried with its crust.
+//! 2. **The mosaic** the supercontinent is made of (version 13): old
+//!    strong cores welded by wide belts of younger crust (old mountain
+//!    belts, failed rifts, shear zones), carried with its crust.
 //! 3. **Today's plates**: the plates of the history's last step, turning
 //!    as they last turned.
 //! 4. **Boundaries.** Each boundary cell is classified by the relative
@@ -63,6 +64,7 @@ use std::collections::BinaryHeap;
 mod hash;
 pub mod history;
 mod math;
+mod mosaic;
 mod noise;
 mod planet;
 mod site;
@@ -70,7 +72,7 @@ mod sphere;
 mod today;
 mod zoom;
 
-pub use self::{math::*, noise::*, planet::*, site::*, sphere::*, today::*, zoom::*};
+pub use self::{math::*, mosaic::*, noise::*, planet::*, site::*, sphere::*, today::*, zoom::*};
 use hash::hash;
 pub use history::{History, Settings};
 

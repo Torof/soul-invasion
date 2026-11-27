@@ -12,6 +12,9 @@ pub(crate) struct World<'a> {
     // The supercontinent's shape, kept for the record.
     pub(super) field: Vec<i64>,
     pub(super) crust_cut: i64,
+    /// How far into a belt of the mosaic each cell of the supercontinent
+    /// lies at the start, ‰ (read at a crust's home cell).
+    pub(super) belt: Vec<u16>,
     pub(super) upwelling: V3,
     pub(super) plates_at_start: (usize, usize),
     pub(super) placed: u64,

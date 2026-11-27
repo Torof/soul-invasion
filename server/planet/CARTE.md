@@ -54,6 +54,7 @@ seconds a planet takes.
 | `sphere.rs` | The grid: `FACE`² × 6 cells of one area, neighbours, `cell_of`, `spread`, `quantile`. The cell count is a constant (`CELLS`). |
 | `history/` | **The model**: the plates' history, one mechanism a module (below). |
 | `today.rs` | Today's plates and the kinds of their boundaries (`Layout`, `Kind`, `classify`). |
+| `mosaic.rs` | What the supercontinent's crust is made of at the start (`Mosaic`, version 13): old cores of many sizes (30 to 46 older plates over the sphere, borders warped by `CORE_WARP`) welded by belts 200 to 900 km wide; a belt's crust is youngest on its axis and grades to its cores' age at its edges. `start.rs` reads it (ages, old ranges and troughs); nothing else does. |
 | `planet.rs` | `Planet`: the history, then heights, sea, landmasses, hollows; `at_step(t)`. |
 | `site.rs`, `zoom.rs` | Our continent: its site on a subduction margin, its shape across the margin. |
 | `tests.rs` | The tests. |
@@ -92,7 +93,7 @@ naming the parts of the world it uses.
 | start | `begin` | `start.rs` | Supercontinent, first plates, ocean floor, relief, heat, plumes, first forces. |
 | 1 | `begin_step` | `crust.rs` | Clears what the last step left on each cell of crust. |
 | 2 | `weld_and_escape` | `collisions.rs` | A collision that stood still welds its two plates; a hard one sheds a block sideways. |
-| 3 | `troughs` | `rifts.rs` | Rifts: troughs begin where a plate is pulled apart and weak, grow cell by cell along the weakest crust, stretch and thin it (each cell from the day it was reached), cut the plate once they cross it, then unzip; or are abandoned. |
+| 3 | `troughs` | `rifts.rs` | Rifts: troughs begin where a plate is pulled apart and weak (`weak`: cold, warm mantle, a suture or failed rift of the history, the crust's age: so the mosaic's belts are weak and its cores strong), grow cell by cell toward the weakest way through the crust `RIFT_AHEAD` cells ahead of each tip (`ahead`), stretch and thin it (each cell from the day it was reached), cut the plate once they cross it, then unzip; or are abandoned. |
 | 4 | `turn` | `crust.rs` | The plates turn: pieces change their turn, bits of floor move, and are sorted by cell. |
 | 5 | `meet` | `collisions.rs` | Pieces that meet: crust run under another piece piles on it (suture). |
 | 6 | `sink_and_dock` | `trenches.rs` | Floor under a continent sinks (active margin); terranes and arcs dock. |

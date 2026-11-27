@@ -10,16 +10,19 @@ use super::*;
 /// (the same balance that turns the plates). The lithosphere holds: it
 /// lets through only a share of that speed, its weakness, ‰: little
 /// where it is cold, old and whole, more over a warm mantle (up to
-/// [`WEAK_WARM`] at [`WEAK_HOT`]), more along an old suture or a failed
-/// rift, more in young crust than in an old core (version 12: up to
-/// [`WEAK_YOUNG`] for crust just made, nothing at [`CORE_MY`]). As the
+/// [`WEAK_WARM`] at [`WEAK_HOT`]), more along a suture or a failed
+/// rift of the history, more in young crust than in an old core (up to
+/// [`WEAK_YOUNG`] for crust just made, nothing at [`CORE_MY`]). The
+/// supercontinent's own weakness is its mosaic's (version 13): its
+/// belts are younger crust, weakest along their axes, and its cores are
+/// old; no flag says so, the crust's age does. As the
 /// crust thins the line weakens (necking): the share goes to the whole
 /// as the square of the stretching done, cell by cell.
 pub(super) const WEAK_COLD: i64 = 10;
 pub(super) const WEAK_WARM: i64 = 50;
 pub(super) const WEAK_HOT: i64 = 2_500;
 pub(super) const WEAK_SEAM: i64 = 40;
-pub(super) const WEAK_YOUNG: i64 = 30;
+pub(super) const WEAK_YOUNG: i64 = 45;
 pub(super) const CORE_MY: i64 = 3_000;
 /// The stretched zone's width at the start, km (a narrow rift), and the
 /// crust's thickness at which it gives way, tenths of a km: the ocean
@@ -38,6 +41,10 @@ pub(super) const RIFT_IDLE: usize = 4;
 /// two cells ahead; a step off the line counts for less, as the pull
 /// across it does.
 pub(super) const RIFT_GROW: i64 = 10;
+/// A tip feels the crust this many cells ahead of it (some 700 km: the
+/// pull gathers ahead of a tear over a few thicknesses of the plate):
+/// it steps toward the weakest way through them.
+pub(super) const RIFT_AHEAD: i64 = 8;
 /// A trough's line is the line through its ends once it is this many
 /// cells long (less before, by its length).
 pub(super) const RIFT_LINE_CELLS: i64 = 20;
@@ -72,7 +79,7 @@ pub(super) fn weak(heat: i32, r: &Rock, now_my: u16) -> i64 {
     if r.class == OCEAN {
         return WEAK_COLD + warm;
     }
-    let seam = if r.margins & (SUTURE | OLD_SUTURE | FAILED_RIFT) != 0 {
+    let seam = if r.margins & (SUTURE | FAILED_RIFT) != 0 {
         WEAK_SEAM
     } else {
         0
@@ -240,6 +247,36 @@ fn forward(
     out
 }
 
+/// The most a tip standing on the cell of crust `from` may gather over
+/// its next `depth` steps: the worth of each step ([`forward`]), along
+/// the best way ahead. Where the crust ends, the rest counts as the last
+/// cell did (a shore neither draws a tip nor turns it away).
+fn ahead(
+    view: (&Sphere, &Land, &[u32]),
+    warm: (&[i32], u16),
+    on_path: &[bool],
+    seen: &mut std::collections::HashMap<(usize, i64), i64>,
+    from: usize,
+    heading: &dyn Fn(V3) -> V3,
+    depth: i64,
+) -> i64 {
+    if depth == 0 {
+        return 0;
+    }
+    if let Some(&v) = seen.get(&(from, depth)) {
+        return v;
+    }
+    let me = &view.1.cells[from];
+    let steps = forward(view, warm, on_path, from, (heading(me.pos), ONE / 2));
+    let v = steps
+        .iter()
+        .map(|&(j, worth, _)| worth + ahead(view, warm, on_path, seen, j, heading, depth - 1))
+        .max()
+        .unwrap_or_else(|| depth * weak(warm.0[me.cell as usize], &me.rock, warm.1));
+    seen.insert((from, depth), v);
+    v
+}
+
 /// The pull stretches and thins the crust about a trough: each source
 /// (a cell of crust on the line, how far it opens in the step, m) thins
 /// the crust around it, most at the line. Thinned crust sinks, and will
@@ -296,6 +333,7 @@ pub(super) fn troughs(world: &mut World) {
     let s = world.s;
     let sphere = world.sphere;
     let heat = &world.heat;
+    let belt = &world.belt;
     let plumes = &world.plumes;
     let spent = &mut world.spent;
     let pushes = &world.pushes;
@@ -526,20 +564,19 @@ pub(super) fn troughs(world: &mut World) {
                     break;
                 }
                 let view = (sphere, &*land, top.as_slice());
+                let mut seen = std::collections::HashMap::new();
                 let mut best: Option<(i64, std::cmp::Reverse<usize>, i64)> = None;
                 for cone in [ONE / 2, ONE / 10] {
                     for (j, worth, km) in forward(view, (heat, now_my), &on_path, i, (dir, cone)) {
-                        let next = forward(
+                        let next = ahead(
                             view,
                             (heat, now_my),
                             &on_path,
+                            &mut seen,
                             j,
-                            (heading(e, land.cells[j].pos), ONE / 2),
-                        )
-                        .iter()
-                        .map(|x| x.1)
-                        .max()
-                        .unwrap_or(0);
+                            &|x| heading(e, x),
+                            RIFT_AHEAD - 1,
+                        );
                         let key = (worth + next, std::cmp::Reverse(j), km);
                         if best.is_none_or(|b| key > b) {
                             best = Some(key);
@@ -695,9 +732,13 @@ pub(super) fn troughs(world: &mut World) {
             });
         }
         let (o, w) = (old as usize, new as usize);
+        // The new plate is a part of the old one: what has parted from
+        // the old one, or opened against it, has from the new one too.
         for p in 0..MAXP {
             parted[w][p] = parted[o][p];
             parted[p][w] = parted[p][o];
+            broken[w][p] = broken[o][p];
+            broken[p][w] = broken[p][o];
         }
         parted[o][w] = false;
         parted[w][o] = false;
@@ -717,6 +758,23 @@ pub(super) fn troughs(world: &mut World) {
             land.cells[path[0] as usize].pos,
             land.cells[path[path.len() - 1] as usize].pos,
         ) as u32;
+        let chord = normalize(cross(
+            land.cells[path[0] as usize].pos,
+            land.cells[path[path.len() - 1] as usize].pos,
+        ));
+        r.bow_km = path
+            .iter()
+            .map(|&i| dot(land.cells[i as usize].pos, chord).abs() * RADIUS_KM / ONE)
+            .max()
+            .unwrap_or(0) as u32;
+        r.cut_cells = path.len() as u32;
+        r.belt_cells = path
+            .iter()
+            .filter(|&&i| {
+                let r = &land.cells[i as usize].rock;
+                r.class == CONTINENT && belt[r.home as usize] > 0
+            })
+            .count() as u32;
         journal.push(Event {
             other: old,
             ..Event::rift(
@@ -829,6 +887,9 @@ pub(super) fn troughs(world: &mut World) {
                 cells: 1,
                 along_km: 0,
                 straight_km: 0,
+                bow_km: 0,
+                cut_cells: 0,
+                belt_cells: 0,
             });
             journal.push(Event::rift(
                 What::RiftBegun,

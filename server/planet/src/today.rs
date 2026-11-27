@@ -4,8 +4,6 @@
 
 use crate::*;
 
-/// Plates of the older layout: fewer, larger (a supercontinent's time).
-pub(crate) const OLD_PLATES: (i64, i64) = (6, 9);
 /// The largest weight a plate's seed point gets, in [`ONE`] units, drawn
 /// squared so a few plates are large and many small.
 pub(crate) const PLATE_WEIGHT: i64 = 280_000;
@@ -40,6 +38,8 @@ pub struct Layout {
     /// The plates.
     pub plates: Vec<Plate>,
     warp_seed: u64,
+    /// The warp of its borders (a Voronoi of seed points only).
+    warp: &'static [(i64, i64)],
     /// Plates read from a grid (today's, the history's last step) rather
     /// than from a Voronoi of seed points.
     grid: Option<Box<Grid>>,
@@ -59,7 +59,12 @@ pub(crate) const GRID_WARP: [(i64, i64); 2] = [(80_000, 10_000), (25_000, 3_000)
 pub(crate) const GRID_VOTE_KM: i64 = 150;
 
 impl Layout {
-    pub(crate) fn draw(seed: u64, purpose: u64, (lo, hi): (i64, i64)) -> Self {
+    pub(crate) fn draw(
+        seed: u64,
+        purpose: u64,
+        (lo, hi): (i64, i64),
+        warp: &'static [(i64, i64)],
+    ) -> Self {
         let count = draw(seed, purpose, 0, lo, hi) as u64;
         let plates = (0..count)
             .map(|k| {
@@ -76,6 +81,7 @@ impl Layout {
         Self {
             plates,
             warp_seed: hash(&[seed, purpose, 0xa5]),
+            warp,
             grid: None,
         }
     }
@@ -131,6 +137,7 @@ impl Layout {
         let layout = Self {
             plates,
             warp_seed: hash(&[seed, P_PLATES, 0xa5]),
+            warp: &PLATE_WARP,
             grid: Some(Box::new(Grid {
                 sphere: sphere.clone(),
                 plate: plate.clone(),
@@ -163,7 +170,7 @@ impl Layout {
                 .max_by_key(|t| (t.1, Reverse(t.0)))
                 .map_or(g.plate[c] as usize, |t| t.0 as usize);
         }
-        let q = warp(self.warp_seed, p, &PLATE_WARP);
+        let q = warp(self.warp_seed, p, self.warp);
         let mut best = 0;
         let mut best_score = i64::MIN;
         for (k, plate) in self.plates.iter().enumerate() {

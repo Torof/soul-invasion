@@ -22,26 +22,23 @@ pub(super) const TRIES: u64 = 100_000;
 /// Terranes and oceanic seeds stay this far off the supercontinent's
 /// crust, in its cosine units (‰).
 pub(super) const TERRANE_OFF: i64 = 150;
-/// Crust ages: the supercontinent's interior (cratons), and terranes, My
-/// at the start.
-pub(super) const CRATON_MY: (i64, i64) = (700, 3_000);
+/// Terranes' ages, My at the start (the supercontinent's crust has the
+/// ages of its mosaic).
 pub(super) const TERRANE_MY: (i64, i64) = (20, 250);
 /// The ocean at the start: its youngest floor, and how fast it spread
 /// from the plates' borders, km per million years on each side.
 pub(super) const OCEAN_START_MY: i64 = 5;
 pub(super) const OCEAN_START_KM_MY: i64 = 25;
-/// The older sutures' last mountain building, My ago.
-pub(super) const OLD_OROGENY_MY: (i64, i64) = (300, 700);
 
 /// The starting supercontinent's relief, m: its shore, how high its
 /// heart stands above it and how far inland it gets there (km); an old
-/// range along an old suture and an old failed rift's trough, with their
-/// half-widths (km).
+/// range along the axis of an old mountain belt and an old failed
+/// rift's trough, each as wide as its belt.
 pub(super) const SHORE_M: i64 = -300;
 pub(super) const HEART_M: i64 = 1_800;
 pub(super) const HEART_KM: i64 = 2_000;
-pub(super) const OLD_RANGE: (i64, i64) = (450, 220);
-pub(super) const OLD_TROUGH: (i64, i64) = (-650, 110);
+pub(super) const OLD_RANGE_M: i64 = 450;
+pub(super) const OLD_TROUGH_M: i64 = -650;
 
 /// The world as its history starts: the supercontinent, the plates
 /// under it and around it, the ocean floor, the relief and the records
@@ -51,7 +48,7 @@ pub(crate) fn begin<'a>(
     seed: u64,
     s: &'a Settings,
     sphere: &'a Sphere,
-    (old_suture, old_rift): (&[bool], &[bool]),
+    mosaic: &Mosaic,
     scene: Option<&Scene>,
 ) -> World<'a> {
     assert_eq!(s.radius_km, RADIUS_KM, "only the Earth's radius for now");
@@ -164,28 +161,19 @@ pub(crate) fn begin<'a>(
         let around: Vec<(usize, u32)> =
             (0..CELLS).filter(|&c| !inside[c]).map(|c| (c, 0)).collect();
         let (inland, _) = sphere.spread(&around, |_, b| inside[b], 2_000);
-        let near = |which: &[bool], reach: i64| {
-            let from: Vec<(usize, u32)> = (0..CELLS)
-                .filter(|&c| inside[c] && which[c])
-                .map(|c| (c, 0))
-                .collect();
-            sphere.spread(&from, |_, b| inside[b], reach as u32).0
-        };
-        let (range, trough) = (near(old_suture, OLD_RANGE.1), near(old_rift, OLD_TROUGH.1));
-        let old = |d: u32, (m, km): (i64, i64)| {
-            if d == u32::MAX {
-                0
-            } else {
-                m * bump(i64::from(d), km) / 1000
-            }
+        let old = |c: usize| {
+            i64::from(mosaic.belt[c])
+                * match mosaic.kind[c] {
+                    Some(OldKind::Suture) => OLD_RANGE_M,
+                    Some(OldKind::FailedRift) => OLD_TROUGH_M,
+                    _ => 0,
+                }
+                / 1000
         };
         let raw: Vec<i64> = (0..CELLS)
             .map(|c| {
                 if inside[c] {
-                    SHORE_M
-                        + i64::from(inland[c]).min(HEART_KM) * HEART_M / HEART_KM
-                        + old(range[c], OLD_RANGE)
-                        + old(trough[c], OLD_TROUGH)
+                    SHORE_M + i64::from(inland[c]).min(HEART_KM) * HEART_M / HEART_KM + old(c)
                 } else {
                     0
                 }
@@ -196,23 +184,19 @@ pub(crate) fn begin<'a>(
             .collect()
     };
     // Records at the start.
-    let old_my = draw(seed, P_AGE, 1, OLD_OROGENY_MY.0, OLD_OROGENY_MY.1) as u16;
     let mut rock: Vec<Rock> = (0..CELLS)
         .map(|c| {
             if inside[c] {
-                let n = fbm3(
-                    hash(&[seed, P_AGE]),
-                    sphere.centre[c],
-                    &[(500_000, 2), (200_000, 1)],
-                );
                 let mut margins = 0;
                 let mut orogeny = NEVER;
-                if old_suture[c] {
-                    margins |= OLD_SUTURE;
-                    orogeny = old_my;
+                if mosaic.kind[c] == Some(OldKind::Suture) {
+                    // An old mountain belt, over its whole width.
+                    orogeny = (total_my + i64::from(mosaic.worked_my[c])) as u16;
                 }
-                if old_rift[c] {
-                    margins |= FAILED_RIFT;
+                match mosaic.edge[c] {
+                    Some(OldKind::Suture) => margins |= OLD_SUTURE,
+                    Some(OldKind::FailedRift) => margins |= FAILED_RIFT,
+                    _ => {}
                 }
                 Rock {
                     class: CONTINENT,
@@ -220,10 +204,7 @@ pub(crate) fn begin<'a>(
                     margins,
                     arc: 0,
                     rift: 0,
-                    born_my: (total_my
-                        + CRATON_MY.0
-                        + (CRATON_MY.1 - CRATON_MY.0) * n.clamp(0, 1000) / 1000)
-                        as u16,
+                    born_my: (total_my + i64::from(mosaic.age_my[c])) as u16,
                     orogeny,
                     home: c as u32,
                     thick: CONTINENT_THICK,
@@ -464,6 +445,9 @@ pub(crate) fn begin<'a>(
         seed,
         s,
         sphere,
+        belt: (0..CELLS)
+            .map(|c| if inside[c] { mosaic.belt[c] } else { 0 })
+            .collect(),
         field,
         crust_cut,
         upwelling,

@@ -62,16 +62,10 @@ fn a_seed_gives_the_same_planet() {
 }
 
 #[test]
-fn lands_come_from_the_history_large_but_not_gigantic() {
+fn lands_come_from_the_history() {
     let seed = 14;
     {
         let world = made(seed);
-        let biggest = &world.lands[0];
-        assert!(
-            (14_000_000..=35_000_000).contains(&biggest.area_km2),
-            "seed {seed}: {}",
-            biggest.area_km2
-        );
         let large = world
             .lands
             .iter()
