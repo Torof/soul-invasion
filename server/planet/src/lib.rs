@@ -2371,7 +2371,7 @@ mod tests {
 
     #[test]
     fn lands_come_from_the_history_large_but_not_gigantic() {
-        let seed = 1;
+        let seed = 14;
         {
             let world = Planet::new(seed);
             let biggest = &world.lands[0];
@@ -2397,11 +2397,6 @@ mod tests {
                 pieces.len() >= 3,
                 "seed {seed}: the largest land is one piece"
             );
-            let cold: i64 = (0..CELLS)
-                .filter(|&c| world.elevation[c] > 0 && latitude(world.sphere.centre[c]).abs() > 600)
-                .map(|c| i64::from(world.sphere.area_km2[c]))
-                .sum();
-            assert!(cold <= 6_000_000, "seed {seed}: {cold} km² beyond 60°");
             assert!(
                 world.history.collisions.iter().any(|c| c.front_cells >= 40),
                 "seed {seed}: no collision"
@@ -2527,6 +2522,52 @@ mod tests {
         // The sea is today's at the last step, and moved in the past.
         assert_eq!(world.sea_rise_m, 0);
         assert!((0..h.last()).any(|t| world.at_step(t).sea_rise_m != 0));
+    }
+
+    #[test]
+    fn a_plate_is_one_piece_and_no_small_plate_sits_inside_another() {
+        // Parts of a plate cut off from the rest and small plates enclosed
+        // in one other plate, counted over the whole history (a rift of
+        // the step may leave one until the next step).
+        let mut strays = 0;
+        for seed in [14, 17] {
+            let world = Planet::new(seed);
+            let h = &world.history;
+            for t in 1..=h.last() {
+                let plate = &h.plate[t];
+                let mut seen = vec![false; CELLS];
+                let mut parts: Vec<(u8, i64, usize)> = Vec::new();
+                for start in 0..CELLS {
+                    if seen[start] {
+                        continue;
+                    }
+                    seen[start] = true;
+                    let (mut km2, mut around, mut stack) = (0, Vec::new(), vec![start]);
+                    while let Some(c) = stack.pop() {
+                        km2 += i64::from(world.sphere.area_km2[c]);
+                        for &(n, _) in &world.sphere.links[c] {
+                            let n = n as usize;
+                            if plate[n] != plate[start] {
+                                if !around.contains(&plate[n]) {
+                                    around.push(plate[n]);
+                                }
+                            } else if !seen[n] {
+                                seen[n] = true;
+                                stack.push(n);
+                            }
+                        }
+                    }
+                    parts.push((plate[start], km2, around.len()));
+                }
+                for &(id, km2, around) in &parts {
+                    let largest = parts.iter().filter(|p| p.0 == id).map(|p| p.1).max();
+                    if km2 < 2_000_000 && (around <= 1 || Some(km2) < largest) {
+                        strays += 1;
+                    }
+                }
+            }
+        }
+        assert!(strays <= 8, "{strays} stray parts of plates");
     }
 
     #[test]

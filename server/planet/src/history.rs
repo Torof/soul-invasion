@@ -157,9 +157,10 @@ pub struct Settings {
     /// How much a continental keel slows its plate, per mille of drag
     /// added for a plate all continent.
     pub continent_drag: i64,
-    /// The pole-fleeing force (Eötvös, « Polflucht ») on continents, mm a
-    /// year at 45°: the spinning Earth's bulge nudges them toward the
-    /// equator.
+    /// A push on continents toward the equator, mm a year at 45° (the
+    /// pole-fleeing force, « Polflucht »). 0 since version 8: the real
+    /// force is far too weak to move a plate, and nothing else sorts
+    /// continents by latitude.
     pub pole_flight: i64,
     /// Later rifts: the plate carrying the most continent splits.
     pub later_rifts: (i64, i64),
@@ -210,7 +211,7 @@ impl Default for Settings {
             slab_suction: 2_500,
             ridge_push: 300,
             continent_drag: 800,
-            pole_flight: 35,
+            pole_flight: 0,
             later_rifts: (2, 4),
             rift_min_km2: 12_000_000,
             arc_steps: 4,
@@ -353,6 +354,22 @@ pub struct Collision {
     pub steps: usize,
 }
 
+/// A plate, or a part of one cut off from the rest, taken by the plate
+/// beside it.
+#[derive(Debug, Clone, Copy)]
+pub struct Capture {
+    /// When, millions of years ago.
+    pub my: u16,
+    /// The plate it was, and the plate that took it.
+    pub plate: u8,
+    /// See `plate`.
+    pub by: u8,
+    /// Its area, km².
+    pub km2: i64,
+    /// The whole plate (false: a part cut off from the rest).
+    pub whole: bool,
+}
+
 /// A block of a riding plate pushed out sideways by a collision.
 #[derive(Debug, Clone, Copy)]
 pub struct Escape {
@@ -447,6 +464,12 @@ pub struct History {
     pub collisions: Vec<Collision>,
     /// The blocks escaped sideways.
     pub escapes: Vec<Escape>,
+    /// The plates and cut-off parts taken by their neighbours, in order.
+    pub captures: Vec<Capture>,
+    /// Plates born of a large part cut off from its plate.
+    pub cut_off: usize,
+    /// Per step, the margins built out of silt since the step before, km².
+    pub built_km2: Vec<i64>,
     /// The flood basalts.
     pub lips: Vec<Lip>,
     /// Today: the cell each cell's crust was at the start, or was born at.
@@ -625,8 +648,6 @@ struct Bit {
     /// The area it stands for, km² (its cell's at birth).
     area: u32,
     rock: Rock,
-    /// Steps in a row it has not been shown.
-    unseen: u8,
 }
 
 /// Where a hotspot stood under the crust, carried with the bit it marked.
@@ -684,8 +705,12 @@ const THICK_SPREAD: i64 = 120;
 /// lead's largest land is 16–28 M km², a mass's crust is a third more.
 const SPLIT_KM2: i64 = 40_000_000;
 const SPLIT_EVERY: usize = 3;
-/// Steps a hidden spare of a plate's own waits before it piles up.
-const SPARE_STEPS: u8 = 3;
+/// A bit not shown in its own plate is a spare of the sampling (the grid
+/// draws one bit a cell), kept for the sampling's holes, unless it lies
+/// this near another bit of its plate, km: then the crust is really
+/// stacked there and it piles. A plate's bits keep their spacing, about
+/// a cell (80 to 100 km), as it turns.
+const STACK_KM: i64 = 60;
 const SPILL_THICK: i64 = 200;
 /// Two colliding plates weld once they have stood still this many steps.
 const WELD_QUIET: usize = 4;
@@ -698,6 +723,21 @@ const HOLE_KM: [i64; 2] = [120, 190];
 /// A cell still empty with at least this many neighbours shown, all of
 /// one plate, is a hole of the sampling.
 const HOLE_AROUND: usize = 6;
+/// Such a cell between two plates is a gap (new ocean floor) only if they
+/// part there at least this fast, µm a year; else it is a hole of the
+/// sampling too: no floor is born in a trench or in a range.
+const GAP_LEAST_UM: i64 = 1_000;
+/// A part of a plate cut off from the rest is taken by the plate it
+/// touches most if it is smaller than this, km²; larger, it is a plate of
+/// its own. A plate is one piece.
+const PART_KM2: i64 = 2_000_000;
+/// A plate smaller than this, km², is a crumb the grid cannot carry (a
+/// dozen cells): the plate it touches most takes it.
+const CRUMB_KM2: i64 = 100_000;
+/// A plate enclosed in one other plate and smaller than this, km², is
+/// taken by it: a small plate lives wedged between plates, at a trench or
+/// a ridge, not inside one.
+const ENCLOSED_KM2: i64 = 5_000_000;
 /// An escape: after this many steps of collision still closing at least
 /// this fast (µm a year) on this many front cells, a block of the riding
 /// plate this wide (km) is pushed out sideways at this speed (mm a year).
@@ -1308,6 +1348,73 @@ fn look(
     }
 }
 
+/// The plate `absorbed` joins the plate `kept`: its cells, its bits and
+/// its record with the other plates.
+fn absorb(
+    (kept, absorbed): (usize, usize),
+    plate: &mut [u8],
+    bits: &mut [Bit],
+    alias: &mut [u8; MAXP],
+    parted: &mut [[bool; MAXP]; MAXP],
+    broken: &mut [[bool; MAXP]; MAXP],
+    contact: &mut [[usize; MAXP]],
+) {
+    for p in plate.iter_mut() {
+        if *p as usize == absorbed {
+            *p = kept as u8;
+        }
+    }
+    for bit in bits.iter_mut() {
+        if bit.plate as usize == absorbed {
+            bit.plate = kept as u8;
+        }
+    }
+    alias[absorbed] = kept as u8;
+    for o in 0..MAXP {
+        parted[kept][o] &= parted[absorbed][o];
+        parted[o][kept] = parted[kept][o];
+        broken[kept][o] |= broken[absorbed][o];
+        broken[o][kept] = broken[kept][o];
+        contact[absorbed][o] = 0;
+        contact[o][absorbed] = 0;
+    }
+}
+
+/// A connected part of a plate: its plate, its area in km², and the cells
+/// along its edge by the plate across.
+type Part = (u8, i64, [u32; MAXP]);
+
+/// The parts of the plates: each cell's part, and the parts.
+fn parts(sphere: &Sphere, plate: &[u8]) -> (Vec<u32>, Vec<Part>) {
+    let mut part = vec![u32::MAX; CELLS];
+    let mut out: Vec<Part> = Vec::new();
+    let mut stack = Vec::new();
+    for start in 0..CELLS {
+        if part[start] != u32::MAX {
+            continue;
+        }
+        let k = out.len() as u32;
+        let id = plate[start];
+        let (mut km2, mut edge) = (0, [0_u32; MAXP]);
+        part[start] = k;
+        stack.push(start);
+        while let Some(c) = stack.pop() {
+            km2 += i64::from(sphere.area_km2[c]);
+            for &(n, _) in &sphere.links[c] {
+                let n = n as usize;
+                if plate[n] != id {
+                    edge[plate[n] as usize] += 1;
+                } else if part[n] == u32::MAX {
+                    part[n] = k;
+                    stack.push(n);
+                }
+            }
+        }
+        out.push((id, km2, edge));
+    }
+    (part, out)
+}
+
 /// The pairs that may be held together: continents that have not parted,
 /// but not a young rift's halves (a rift opens for a while).
 fn held(
@@ -1784,6 +1891,9 @@ pub fn run(
     let mut accretions: Vec<Accretion> = Vec::new();
     let mut collisions: Vec<Collision> = Vec::new();
     let mut escapes: Vec<Escape> = Vec::new();
+    let mut captures: Vec<Capture> = Vec::new();
+    let mut cut_off = 0;
+    let mut built_km2 = vec![0];
     let mut lips: Vec<Lip> = Vec::new();
     let mut silt = [0_i64; MAXP];
     let mut last_split = 0;
@@ -1807,7 +1917,6 @@ pub fn run(
             plate: plate[c],
             area: sphere.area_km2[c],
             rock: rock[c],
-            unseen: 0,
         })
         .collect();
     let mut disp: Vec<u32> = (0..CELLS as u32).collect();
@@ -1906,16 +2015,15 @@ pub fn run(
                         if record_of[a][b] != usize::MAX {
                             collisions[record_of[a][b]].welded_my = now_my;
                         }
-                        for p in &mut plate {
-                            if *p as usize == absorbed {
-                                *p = kept as u8;
-                            }
-                        }
-                        for bit in &mut bits {
-                            if bit.plate as usize == absorbed {
-                                bit.plate = kept as u8;
-                            }
-                        }
+                        absorb(
+                            (kept, absorbed),
+                            &mut plate,
+                            &mut bits,
+                            &mut alias,
+                            &mut parted,
+                            &mut broken,
+                            &mut contact,
+                        );
                         let (nk, nx) = (cells_of[kept].max(1), cells_of[absorbed]);
                         omega[kept] = [0, 1, 2]
                             .map(|i| (omega[kept][i] * nk + omega[absorbed][i] * nx) / (nk + nx));
@@ -1924,16 +2032,6 @@ pub fn run(
                         cont_of[kept] += cont_of[absorbed];
                         cells_of[absorbed] = 0;
                         cont_of[absorbed] = 0;
-                        alias[absorbed] = kept as u8;
-                        for o in 0..MAXP {
-                            parted[kept][o] &= parted[absorbed][o];
-                            parted[o][kept] = parted[kept][o];
-                            broken[kept][o] |= broken[absorbed][o];
-                            broken[o][kept] = broken[kept][o];
-                            contact[absorbed][o] = 0;
-                            contact[o][absorbed] = 0;
-                        }
-                        contact[a][b] = 0;
                     } else if t - since >= ESCAPE_AFTER
                         && closing >= ESCAPE_MIN_UM
                         && front_of[a][b] >= ESCAPE_CELLS
@@ -1983,7 +2081,18 @@ pub fn run(
                             })
                             .collect();
                         let km2: i64 = (0..CELLS).filter(|&c| block[c]).map(area).sum();
-                        if km2 < 200_000 || 3 * km2 > cont_of[over] {
+                        // A block escapes toward a free face: another
+                        // plate's ocean ahead of it, not its own plate's
+                        // interior.
+                        let free = (0..CELLS).any(|c| {
+                            block[c]
+                                && dot(sub(sphere.centre[c], block_at), dir) >= 0
+                                && sphere.links[c].iter().any(|&(m, _)| {
+                                    plate[m as usize] as usize != over
+                                        && rock[m as usize].class == OCEAN
+                                })
+                        });
+                        if km2 < 200_000 || 3 * km2 > cont_of[over] || !free {
                             continue;
                         }
                         let new = next_id;
@@ -2215,6 +2324,41 @@ pub fn run(
                 bits[iw as usize].plate = pw;
                 bits[iw as usize].rock = r;
             }
+            // A lower plate's floor showing through a hole of the sampling
+            // of the plates riding over it has sunk under them: the cell is
+            // a hole of theirs.
+            let over: Vec<(i64, i64, i64)> = (0..CELLS)
+                .map(|q| {
+                    if pending[q] {
+                        (i64::MIN, 0, 0)
+                    } else {
+                        key(plate[q], rock[q].class)
+                    }
+                })
+                .collect();
+            let through: Vec<usize> = (0..CELLS)
+                .filter(|&q| {
+                    !pending[q]
+                        && rock[q].class == OCEAN
+                        && sphere.links[q]
+                            .iter()
+                            .filter(|&&(m, _)| {
+                                let m = m as usize;
+                                group[plate[m] as usize] != group[plate[q] as usize]
+                                    && over[m] > over[q]
+                            })
+                            .count()
+                            >= HOLE_AROUND
+                })
+                .collect();
+            for q in through {
+                for &i in &order[start[q] as usize..start[q + 1] as usize] {
+                    dead[i as usize] = true;
+                }
+                spare[q].clear();
+                pending[q] = true;
+                disp[q] = NO_BIT;
+            }
             // 6. A cell the grid's sampling left empty inside a plate shows
             // a bit of that plate not shown nearby (none is copied).
             let mut used = vec![false; n];
@@ -2267,8 +2411,28 @@ pub fn run(
                     .map(|&(m, km)| (km, m as usize))
                     .collect();
                 let g = |m: usize| group[plate[m] as usize];
+                // Between two plates it is a gap only if they part there.
+                let parting = || {
+                    let &(_, first) = around.iter().min().expect("neighbours");
+                    let (mut ca, mut cb, mut other) = ([0_i64; 3], [0_i64; 3], first);
+                    for &(_, m) in &around {
+                        if g(m) == g(first) {
+                            ca = add(ca, sphere.centre[m]);
+                        } else {
+                            cb = add(cb, sphere.centre[m]);
+                            other = m;
+                        }
+                    }
+                    let x = sphere.centre[q];
+                    let across = normalize(tangent(x, sub(normalize(cb), normalize(ca))));
+                    let rel = sub(
+                        cross(moved[plate[other] as usize], x),
+                        cross(moved[plate[first] as usize], x),
+                    );
+                    dot(rel, across) > GAP_LEAST_UM
+                };
                 if around.len() >= HOLE_AROUND
-                    && around.iter().all(|&(_, m)| g(m) == g(around[0].1))
+                    && (around.iter().all(|&(_, m)| g(m) == g(around[0].1)) || !parting())
                 {
                     let &(_, m) = around.iter().min().expect("neighbours");
                     plate[q] = plate[m];
@@ -2342,7 +2506,6 @@ pub fn run(
                     plate: plate[q],
                     area: sphere.area_km2[q],
                     rock: rock[q],
-                    unseen: 0,
                 });
                 for &(m, _) in &sphere.links[q] {
                     let m = m as usize;
@@ -2354,8 +2517,8 @@ pub fn run(
             }
             dead.resize(bits.len(), false);
             // Continental crust left unseen under a continent (run under
-            // it, or a sampling spare) piles on it: the area shrinks, the
-            // volume stays; what a full pile cannot take waits under it.
+            // it, or stacked on its own plate) piles on it: the area
+            // shrinks, the volume stays; what a full pile cannot take waits under it.
             // Continental crust never sinks into the mantle.
             let mut shown = vec![false; bits.len()];
             for &d in &disp {
@@ -2364,20 +2527,31 @@ pub fn run(
                 }
             }
             for i in 0..bits.len() {
-                if shown[i] {
-                    bits[i].unseen = 0;
-                    continue;
-                }
-                bits[i].unseen = bits[i].unseen.saturating_add(1);
                 let b = bits[i];
-                if dead[i] || b.rock.class == OCEAN {
+                if shown[i] || dead[i] || b.rock.class == OCEAN {
                     continue;
                 }
                 let q = sphere.cell_of(b.pos);
-                // A spare of the cell's own plate is kept a while for the
-                // sampling's holes.
-                if rock[q].class == OCEAN || (plate[q] == b.plate && b.unseen < SPARE_STEPS) {
+                if rock[q].class == OCEAN {
                     continue;
+                }
+                // A spare of the cell's own plate is kept for the
+                // sampling's holes, unless the crust is stacked there.
+                if plate[q] == b.plate {
+                    let stacked = std::iter::once(q)
+                        .chain(sphere.links[q].iter().map(|&(m, _)| m as usize))
+                        .flat_map(|m| &order[start[m] as usize..start[m + 1] as usize])
+                        .any(|&j| {
+                            let o = &bits[j as usize];
+                            j as usize != i
+                                && !dead[j as usize]
+                                && o.plate == b.plate
+                                && o.rock.class != OCEAN
+                                && km_between(o.pos, b.pos) < STACK_KM
+                        });
+                    if !stacked {
+                        continue;
+                    }
                 }
                 let room = (THICK_MAX - i64::from(rock[q].thick)) * area(q);
                 let vol = i64::from(b.rock.thick) * i64::from(b.area);
@@ -2532,7 +2706,7 @@ pub fn run(
             // on any coast: its own plate's ocean first, else (another
             // plate's ocean, a trench) it joins the continent's plate
             // there, a wedge.
-            let mut shore: Vec<(bool, bool, u64, usize, u8)> = (0..CELLS)
+            let mut shore: Vec<(bool, bool, usize, u64, usize, u8)> = (0..CELLS)
                 .filter(|&m| rock[m].class == OCEAN && disp[m] != NO_BIT)
                 .filter_map(|m| {
                     let p = sphere.links[m]
@@ -2545,9 +2719,15 @@ pub fn run(
                             .chain(sphere.links[c as usize].iter().map(|&(k, _)| k))
                             .all(|k| rock[k as usize].class == OCEAN || plate[k as usize] == p)
                     });
+                    // A bay fills before a cape grows: the coast evens out.
+                    let open = sphere.links[m]
+                        .iter()
+                        .filter(|&&(c, _)| rock[c as usize].class == OCEAN)
+                        .count();
                     Some((
                         !alone,
                         plate[m] != p,
+                        open,
                         hash(&[seed, P_SILT, t as u64, m as u64]),
                         m,
                         p,
@@ -2555,8 +2735,9 @@ pub fn run(
                 })
                 .collect();
             shore.sort_unstable();
+            let mut built = 0;
             let mut open_coast = [false; MAXP];
-            for &(narrow, _, _, m, p) in &shore {
+            for &(narrow, _, _, _, m, p) in &shore {
                 let need = SPILL_THICK * area(m);
                 let u = p as usize;
                 if !narrow {
@@ -2572,6 +2753,7 @@ pub fn run(
                     .expect("a continent beside");
                 let v = silt[u].min(i64::from(CONTINENT_THICK) * area(m));
                 silt[u] -= v;
+                built += area(m);
                 plate[m] = p;
                 rock[m] = Rock {
                     thick: (v / area(m).max(1)) as u16,
@@ -2586,6 +2768,102 @@ pub fn run(
                     ..rock[c]
                 };
             }
+            // A plate is one piece. A small part cut off from the rest of
+            // its plate is taken by the plate it touches most; a large one
+            // is a plate of its own from now on.
+            let (part, list) = parts(sphere, &plate);
+            let mut main = [(0_i64, u32::MAX); MAXP];
+            for (k, &(id, km2, _)) in list.iter().enumerate() {
+                if km2 > main[id as usize].0 {
+                    main[id as usize] = (km2, k as u32);
+                }
+            }
+            let most = |edge: &[u32; MAXP]| {
+                (0..MAXP)
+                    .filter(|&p| edge[p] > 0)
+                    .max_by_key(|&p| (edge[p], std::cmp::Reverse(p)))
+            };
+            let mut to = vec![NONE; list.len()];
+            for (k, &(id, km2, edge)) in list.iter().enumerate() {
+                if main[id as usize].1 == k as u32 {
+                    continue;
+                }
+                let old = id as usize;
+                let enclosed = edge.iter().filter(|&&n| n > 0).count() == 1 && km2 < ENCLOSED_KM2;
+                if km2 >= PART_KM2 && !enclosed && next_id < MAXP {
+                    let new = next_id;
+                    next_id += 1;
+                    to[k] = new as u8;
+                    for p in 0..MAXP {
+                        parted[new][p] = parted[old][p];
+                        parted[p][new] = parted[p][old];
+                        broken[new][p] = broken[old][p];
+                        broken[p][new] = broken[p][old];
+                    }
+                    parted[old][new] = true;
+                    parted[new][old] = true;
+                    born_t[new] = born_t[old];
+                    group[new] = group[old];
+                    omega[new] = omega[old];
+                    cut_off += 1;
+                } else if let Some(by) = most(&edge) {
+                    to[k] = by as u8;
+                    captures.push(Capture {
+                        my: now_my,
+                        plate: id,
+                        by: by as u8,
+                        km2,
+                        whole: false,
+                    });
+                }
+            }
+            if to.iter().any(|&p| p != NONE) {
+                for c in 0..CELLS {
+                    if to[part[c] as usize] != NONE {
+                        plate[c] = to[part[c] as usize];
+                    }
+                }
+                for (i, b) in bits.iter_mut().enumerate() {
+                    let k = part[drawn[i] as usize] as usize;
+                    if to[k] != NONE && b.plate == list[k].0 {
+                        b.plate = to[k];
+                    }
+                }
+            }
+            // A crumb of a plate is taken by the plate it touches most, and
+            // a small plate enclosed in one other plate by that plate.
+            let (_, list) = parts(sphere, &plate);
+            let mut gone = [false; MAXP];
+            for &(id, km2, edge) in &list {
+                let around = (0..MAXP).filter(|&p| edge[p] > 0).count();
+                let Some(by) = most(&edge) else {
+                    continue;
+                };
+                let by = alias_of(&alias, by as u8) as usize;
+                let enclosed = around == 1 && km2 < ENCLOSED_KM2;
+                if (km2 >= CRUMB_KM2 && !enclosed) || gone[by] || by == id as usize {
+                    continue;
+                }
+                gone[id as usize] = true;
+                absorb(
+                    (by, id as usize),
+                    &mut plate,
+                    &mut bits,
+                    &mut alias,
+                    &mut parted,
+                    &mut broken,
+                    &mut contact,
+                );
+                omega[id as usize] = [0; 3];
+                captures.push(Capture {
+                    my: now_my,
+                    plate: id,
+                    by: by as u8,
+                    km2,
+                    whole: true,
+                });
+            }
+            built_km2.push(built);
             sync(&mut bits, &plate, &rock, &disp);
             let mut cells_of = [0_i64; MAXP];
             let mut cont_of = [0_i64; MAXP];
@@ -3199,6 +3477,9 @@ pub fn run(
         accretions,
         collisions,
         escapes,
+        captures,
+        cut_off,
+        built_km2,
         lips,
         home: rock.iter().map(|r| r.home).collect(),
         piece: rock
