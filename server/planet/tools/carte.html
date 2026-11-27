@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monde nouveau, étape 0</title>
+<style>
+  :root {
+    --fond: #16181c; --panneau: #1f2228; --bord: #33373f; --texte: #e6e3dc;
+    --pale: #9fa3ab; --accent: #e04fc0;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--fond); color: var(--texte);
+    font: 14px/1.4 system-ui, "DejaVu Sans", sans-serif; }
+  body { display: flex; overflow: hidden; }
+  #cote { width: 330px; min-width: 330px; height: 100%; overflow-y: auto; background: var(--panneau);
+    border-right: 1px solid var(--bord); padding: 12px 14px 30px; }
+  h1 { font-size: 17px; margin: 0 0 2px; }
+  .sous { color: var(--pale); font-size: 12px; margin-bottom: 12px; }
+  .vues { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  #temps { background: #2a2430; border: 1px solid #4a2f47; border-radius: 6px; padding: 8px 9px; margin-bottom: 10px; }
+  #temps .ligne { display: flex; align-items: center; gap: 8px; }
+  #temps input[type=range] { flex: 1; }
+  #temps .quand { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  details.params { font-size: 12px; margin-top: 8px; border: 1px solid var(--bord); border-radius: 6px; padding: 5px 8px; }
+  details.params summary { cursor: pointer; color: var(--pale); }
+  details.params td { text-align: left; }
+  .vues button { flex: 1; }
+  button, select { background: #2b2f37; color: var(--texte); border: 1px solid var(--bord);
+    border-radius: 5px; padding: 6px 8px; font: inherit; cursor: pointer; }
+  button.actif { background: #4a2f47; border-color: var(--accent); }
+  button:disabled, select:disabled { opacity: .5; cursor: default; }
+  label.graine { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--pale);
+    margin: 16px 0 6px; }
+  .couche { border-top: 1px solid var(--bord); padding: 7px 0; }
+  .couche .tete { display: flex; align-items: center; gap: 6px; }
+  .couche .tete label { flex: 1; cursor: pointer; }
+  .couche input[type=range] { width: 74px; }
+  .legende { display: flex; flex-wrap: wrap; gap: 3px 10px; margin: 4px 0 0 22px;
+    font-size: 12px; color: var(--pale); }
+  .legende span { display: inline-flex; align-items: center; gap: 4px; }
+  .legende i { display: inline-block; width: 13px; height: 10px; border: 1px solid #0006; }
+  .legende i.trait { height: 4px; }
+  #texte { font-size: 13px; }
+  #texte p { margin: 0 0 6px; }
+  table { border-collapse: collapse; font-size: 12px; width: 100%; }
+  td, th { padding: 2px 4px; text-align: right; border-bottom: 1px solid var(--bord); }
+  td:first-child, th:first-child { text-align: left; }
+  th { color: var(--pale); font-weight: normal; }
+  #scene { position: relative; flex: 1; height: 100%; overflow: hidden; cursor: grab;
+    background: #0c0d10; }
+  #scene.glisse { cursor: grabbing; }
+  #toile { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  #toile img { position: absolute; left: 0; top: 0; image-rendering: pixelated;
+    user-select: none; -webkit-user-drag: none; pointer-events: none; }
+  #outils { position: absolute; right: 12px; top: 12px; display: flex; gap: 4px; }
+  #outils button { width: 36px; font-size: 17px; padding: 4px; }
+  #outils button.large { width: auto; font-size: 13px; }
+  #lecture { position: absolute; left: 12px; bottom: 12px; background: #000a; padding: 6px 10px;
+    border-radius: 5px; font-size: 13px; pointer-events: none; min-width: 200px; }
+  #etiquette { position: absolute; transform: translate(-50%, -100%); background: #ff00aa;
+    color: #fff; font-weight: 600; font-size: 13px; padding: 3px 8px; border-radius: 5px;
+    pointer-events: none; white-space: nowrap; box-shadow: 0 1px 4px #000a; }
+  details.nouveau { font-size: 12.5px; background: #2a2430; border: 1px solid #4a2f47;
+    border-radius: 6px; padding: 6px 9px; margin-bottom: 10px; }
+  details.nouveau summary { cursor: pointer; font-weight: 600; }
+  details.nouveau ul { margin: 6px 0 0; padding-left: 18px; }
+  #journal { margin-top: 8px; font-size: 12.5px; max-height: 38vh; overflow-y: auto; }
+  #journal .rien { color: var(--pale); }
+  #journal .ev { padding: 4px 6px; border-left: 3px solid #555a64; margin: 0 0 4px; background: #0003; border-radius: 0 4px 4px 0; }
+  #journal .ev.plaque { border-left-color: var(--accent); }
+  #journal .ev.ici { cursor: pointer; }
+  #journal .ev.ici:hover, #journal .ev.choisi { background: #4a2f47; }
+  #journal .ev .lieu { color: var(--pale); font-size: 11.5px; }
+  .pastille { display: inline-block; width: 10px; height: 10px; border: 1px solid #000a; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
+  #marque { position: absolute; width: 0; height: 0; pointer-events: none; }
+  #marque::before { content: ""; position: absolute; left: -22px; top: -22px; width: 44px; height: 44px;
+    border: 3px solid #ff00aa; border-radius: 50%; box-shadow: 0 0 0 2px #fff, inset 0 0 0 2px #fff;
+    animation: pouls 1.1s ease-in-out infinite; }
+  @keyframes pouls { 50% { transform: scale(1.45); opacity: .55; } }
+  #frise { position: absolute; left: 0; right: 0; bottom: 0; max-height: 46%; overflow: auto; background: #14161af2;
+    border-top: 1px solid var(--bord); padding: 8px 12px 10px; font-size: 12px; }
+  #frise h3 { margin: 0 0 2px; font-size: 13px; }
+  #frise .aide { color: var(--pale); margin-bottom: 6px; }
+  #frise .rang { display: flex; align-items: flex-start; min-height: 20px; padding: 1px 0; }
+  #frise .rang:hover { background: #ffffff10; }
+  #frise .nom { width: 86px; min-width: 86px; white-space: nowrap; }
+  #frise .piste { position: relative; width: 430px; min-width: 430px; height: 14px; background: #ffffff0c; cursor: pointer; }
+  #frise .barre { position: absolute; top: 1px; height: 12px; border: 1px solid #000a; border-radius: 2px; min-width: 5px; }
+  #frise .barre.courte { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #frise .repere { position: absolute; top: -3px; width: 2px; height: 20px; background: #fff; pointer-events: none; }
+  #frise .dit { margin-left: 12px; color: var(--texte); }
+  #frise .dit b { color: #ff9be4; }
+  #frise .dit .pale { color: var(--pale); }
+  #echelle-txt { position: absolute; right: 12px; bottom: 12px; background: #000a; padding: 4px 8px;
+    border-radius: 5px; font-size: 12px; color: var(--pale); pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="cote">
+  <h1 id="titre">Monde nouveau, étape 0</h1>
+  <div class="sous" id="sous"></div>
+  <div class="vues">
+    <button data-vue="planete">Planète</button>
+    <button data-vue="histoire">Histoire</button>
+  </div>
+  <label class="graine">Graine <select id="graine"></select></label>
+  <div id="temps" hidden>
+    <div class="quand" id="quand">—</div>
+    <div class="ligne"><button id="jouer" title="Lancer ou arrêter">▶</button>
+      <input type="range" id="etape" min="0" max="40" value="0"></div>
+    <div id="journal"></div>
+  </div>
+  <div id="texte"></div>
+  <details class="nouveau" id="nouveau" open hidden style="margin-top:10px"><summary id="nouveau-titre"></summary><ul id="nouveau-liste"></ul></details>
+  <h2>Couches</h2>
+  <div id="couches"></div>
+</div>
+<div id="scene">
+  <div id="toile"></div>
+  <div id="outils">
+    <button id="moins" title="Dézoomer">−</button>
+    <button id="plus" title="Zoomer">+</button>
+    <button id="reset" class="large" title="Toute la carte">Tout voir</button>
+    <button id="bouton-frise" class="large" title="Une barre par plaque, de sa naissance à sa fin" hidden>Frise des plaques</button>
+  </div>
+  <div id="frise" hidden></div>
+  <div id="lecture">—</div>
+  <div id="echelle-txt"></div>
+</div>
+<script>
+"use strict";
+const PAGE = /*PAGE*/null;
+
+// ------------------------------------------------------------ the data
+
+const ZONES = {
+  o: "océan", t: "fosse et plancher qui y plonge", c: "chaîne côtière",
+  f: "bassin d'avant-arc", a: "arc volcanique", b: "arrière-arc (plateaux de laves)",
+  k: "bassin d'arrière-arc (calcaire, craie)", s: "vieux socle (granite, gneiss)",
+  r: "rift avorté (grès, sel, lacs longs)", u: "vieille suture", p: "plaine côtière calme",
+  h: "laves de point chaud", n: "rift d'aujourd'hui", g: "chaîne de rencontre de plaques",
+  m: "terre basse et plate (marais à venir)", "?": "—"
+};
+
+const L_FRONTIERES_P = [["#eb2323", "fosse, arc continental"], ["#ff961e", "arc d'îles"],
+  ["#c83ce6", "collision"], ["#ffe646", "dorsale ou rift"], ["#3ce678", "faille transformante"]];
+
+const VUES = {
+  planete: {
+    graines: PAGE.graines, taille: [2048, 1024],
+    couches: [
+      { id: "relief", nom: "Relief et profondeur de la mer", on: true, op: 1,
+        leg: [["#5c8c54", "plaine"], ["#b8a068", "colline"], ["#968c88", "montagne"],
+              ["#80b2d6", "plateau continental"], ["#16306a", "océan profond"], ["#191919", "côte"], ["#b0a47c", "cuvette sous le niveau de la mer, sans lien avec l'océan : terre (un lac peut-être)"]] },
+      { id: "plaques", nom: "Plaques (une couleur chacune)", on: false, op: 0.4, leg: [] },
+      { id: "croute", nom: "Croûte continentale", on: false, op: 0.6,
+        leg: [["#f0c86e", "continent (même noyé)"], ["#784614", "bord de la croûte"]] },
+      { id: "frontieres", nom: "Frontières des plaques, par type", on: true, op: 1,
+        leg: L_FRONTIERES_P, trait: true },
+      { id: "mouvement", nom: "Mouvement des plaques", on: false, op: 1,
+        leg: [["#ffffff", "flèche : sens ; longueur ∝ vitesse (50 mm/an ≈ 1 100 km)"]], trait: true },
+      { id: "anciennes", nom: "Vieilles sutures et rifts avortés", on: false, op: 1,
+        leg: [["#963cd2", "vieille suture"], ["#f57814", "rift avorté"],
+              ["#787878", "vieille faille"]], trait: true },
+      { id: "points-chauds", nom: "Points chauds et leurs chaînes", on: true, op: 1,
+        leg: [["#ffffff", "le panache"], ["#fff078", "îles jeunes"], ["#965a28", "vieilles (200 Ma)"]] },
+      { id: "grille", nom: "Grille tous les 10°", on: true, op: 1,
+        leg: [["#3ce6ff", "40° et 50° (nord et sud)"], ["#ffffff", "équateur, méridien 0"]], trait: true },
+      { id: "fragments", nom: "Histoire : morceau d'origine", on: false, op: 0.7,
+        leg: [["#e67878", "un morceau du supercontinent (une couleur chacun)"], ["#96735a", "terrane"], ["#969650", "arc d'îles"], ["#1e1e1e", "limite entre morceaux"]] },
+      { id: "marges", nom: "Histoire : marges", on: false, op: 1,
+        leg: [["#eb2323", "bord d'attaque aujourd'hui (subduction)"], ["#5adc78", "bord de fuite (marge passive)"],
+              ["#b446e6", "soudure (collision)"], ["#ff9628", "terrane accrété"], ["#ffe13c", "ancien rift"], ["#3c141e", "grand épanchement de lave (trapps)"]] },
+      { id: "montagnes", nom: "Histoire : dernière formation de montagnes", on: false, op: 0.9,
+        leg: [["#eb1e1e", "aujourd'hui"], ["#fa9628", "il y a 100 Ma"], ["#f5e65a", "200 Ma"], ["#c88ce6", "300 Ma"], ["#6e3ca0", "700 Ma (vieilles sutures)"]] },
+      { id: "age", nom: "Histoire : âge de la croûte", on: false, op: 0.8,
+        leg: [["#fff5c8", "jeune (terranes, < 300 Ma)"], ["#b4824b", "1 500 Ma"], ["#5a2d14", "3 000 Ma (vieux cratons)"]] },
+      { id: "fond", nom: "Âge du fond océanique", on: false, op: 0.9,
+        leg: [["#c81e28", "dorsale (0 Ma)"], ["#f58c28", "20 Ma"], ["#f5e150", "50 Ma"], ["#6ec86e", "90 Ma"], ["#468cdc", "140 Ma"], ["#7846aa", "200 Ma et plus"]] },
+    ],
+  },
+  histoire: {
+    graines: PAGE.graines, taille: [1024, 512],
+    couches: [
+      { id: "relief", nom: "Relief et profondeur de la mer", on: true, op: 1,
+        leg: [["#5c8c54", "plaine"], ["#b8a068", "colline"], ["#968c88", "montagne"],
+              ["#80b2d6", "plateau continental"], ["#16306a", "océan profond"], ["#191919", "côte"], ["#b0a47c", "cuvette sous le niveau de la mer, sans lien avec l'océan : terre (un lac peut-être)"]] },
+      { id: "rifts", nom: "Rifts : fossés en cours et fossés abandonnés", on: true, op: 1,
+        leg: [["#ff2800", "fossé en cours (la croûte s'étire et s'amincit)"], ["#78461e", "fossé abandonné (rift avorté)"]], trait: true },
+      { id: "plaques", nom: "Plaques (une couleur chacune)", on: false, op: 0.4, leg: [] },
+      { id: "croute", nom: "Croûte continentale", on: false, op: 0.6,
+        leg: [["#f0c86e", "continent (même noyé)"], ["#784614", "bord de la croûte"]] },
+      { id: "frontieres", nom: "Frontières des plaques, par type", on: true, op: 1,
+        leg: L_FRONTIERES_P, trait: true },
+      { id: "mouvement", nom: "Mouvement des plaques", on: false, op: 1,
+        leg: [["#ffffff", "flèche : sens ; longueur ∝ vitesse"]], trait: true },
+      { id: "manteau", nom: "Manteau : sa chaleur, les panaches", on: true, op: 0.7,
+        leg: [["#ff5a28", "chaud (sous un grand continent)"], ["#2878ff", "froid (où les plaques plongent)"], ["#fff078", "panache (point chaud)"]] },
+      { id: "grille", nom: "Grille tous les 10°", on: true, op: 1,
+        leg: [["#3ce6ff", "40° et 50° (nord et sud)"], ["#ffffff", "équateur, méridien 0"]], trait: true },
+      { id: "fond", nom: "Âge du fond océanique à cette étape", on: false, op: 0.9,
+        leg: [["#c81e28", "dorsale (0 Ma)"], ["#f58c28", "20 Ma"], ["#f5e150", "50 Ma"], ["#6ec86e", "90 Ma"], ["#468cdc", "140 Ma"], ["#7846aa", "200 Ma et plus"]] },
+    ],
+  },
+};
+
+// What `tools/page.py` writes: the version, the seeds, the texts.
+const TEXTES = PAGE.textes;
+const ETAPES = PAGE.etapes, PAS = PAGE.pas;
+document.title = `Monde nouveau, étape 0 v${PAGE.version}`;
+document.getElementById("titre").textContent = `Monde nouveau, étape 0 · version ${PAGE.version}`;
+document.getElementById("sous").innerHTML = `La planète et ses plaques · ${PAGE.date} · prototype <code>probe/planet-plates</code>`
+  + (PAGE.avant ? ` · <a href="carte-v${PAGE.avant}.html" style="color:var(--pale)">la page d'avant (v${PAGE.avant})</a>` : "");
+if (PAGE.changements) {
+  document.getElementById("nouveau").hidden = false;
+  document.getElementById("nouveau-titre").textContent = PAGE.titre_changements;
+  document.getElementById("nouveau-liste").innerHTML = PAGE.changements;
+}
+document.getElementById("etape").max = ETAPES;
+
+// ------------------------------------------------------------ the state
+
+const etat = { vue: "planete", graine: PAGE.graines[0], etape: ETAPES, joue: null, s: 1, tx: 0, ty: 0, fit: 1, choix: {} };
+const scene = document.getElementById("scene");
+const toile = document.getElementById("toile");
+const lecture = document.getElementById("lecture");
+window.DONNEES = window.DONNEES || {};
+
+function fichier(vue, graine, id) {
+  if (vue === "histoire") return `couches/h${graine}-${String(etat.etape).padStart(2, "0")}-${id}.png`;
+  const p = { planete: "p", continent: "c", largeur: "l" }[vue];
+  return `couches/${p}${graine}-${id}.png`;
+}
+
+function choixDe(vue, c) {
+  const cle = vue + ":" + c.id;
+  if (!(cle in etat.choix)) etat.choix[cle] = { on: c.on, op: c.op };
+  return etat.choix[cle];
+}
+
+// ------------------------------------------------------------ building
+
+function construire() {
+  const v = VUES[etat.vue];
+  if (!v.graines.includes(etat.graine)) etat.graine = v.graines[0];
+  document.querySelectorAll(".vues button").forEach(b =>
+    b.classList.toggle("actif", b.dataset.vue === etat.vue));
+  const sel = document.getElementById("graine");
+  sel.innerHTML = v.graines.map(g =>
+    `<option value="${g}"${g === etat.graine ? " selected" : ""}>${g}</option>`).join("");
+  sel.disabled = v.graines.length < 2;
+  document.getElementById("texte").innerHTML = (TEXTES[etat.vue] || {})[etat.graine] || "";
+  // Images.
+  toile.innerHTML = "";
+  const [w, h] = v.taille;
+  toile.style.width = w + "px";
+  toile.style.height = h + "px";
+  for (const c of v.couches) {
+    const img = document.createElement("img");
+    img.src = fichier(etat.vue, etat.graine, c.id);
+    img.width = w;
+    img.height = h;
+    img.alt = "";
+    img.dataset.id = c.id;
+    toile.appendChild(img);
+  }
+  // Panel.
+  const panneau = document.getElementById("couches");
+  panneau.innerHTML = "";
+  for (const c of v.couches) {
+    const ch = choixDe(etat.vue, c);
+    const d = document.createElement("div");
+    d.className = "couche";
+    const idc = "c-" + c.id;
+    d.innerHTML = `<div class="tete"><input type="checkbox" id="${idc}"${ch.on ? " checked" : ""}>
+      <label for="${idc}">${c.nom}</label>
+      <input type="range" min="0" max="100" value="${Math.round(ch.op * 100)}" title="Opacité"></div>
+      <div class="legende">${c.leg.map(([col, t]) =>
+        `<span><i class="${c.trait ? "trait" : ""}" style="background:${col}"></i>${t}</span>`).join("")}</div>`;
+    const box = d.querySelector("input[type=checkbox]");
+    const range = d.querySelector("input[type=range]");
+    box.addEventListener("change", () => {
+      ch.on = box.checked;
+      if (c.groupe && box.checked) {
+        for (const o of v.couches) {
+          if (o !== c && o.groupe === c.groupe) choixDe(etat.vue, o).on = false;
+        }
+        panneau.querySelectorAll(".couche").forEach((el, k) => {
+          el.querySelector("input[type=checkbox]").checked = choixDe(etat.vue, v.couches[k]).on;
+        });
+      }
+      appliquer();
+      poser();
+    });
+    range.addEventListener("input", () => { ch.op = range.value / 100; appliquer(); });
+    panneau.appendChild(d);
+  }
+  appliquer();
+  chargerDonnees();
+  document.getElementById("temps").hidden = etat.vue !== "histoire";
+  document.getElementById("bouton-frise").hidden = etat.vue !== "histoire";
+  if (etat.vue !== "histoire") document.getElementById("frise").hidden = true;
+  chargerJournal();
+  if (etat.vue === "histoire") {
+    for (let t = 0; t <= ETAPES; t++) for (const k of ["relief", "frontieres"]) new Image().src = `couches/h${etat.graine}-${String(t).padStart(2, "0")}-${k}.png`;
+    montrerEtape();
+  }
+  document.getElementById("echelle-txt").textContent = etat.vue === "planete"
+    ? "carte équirectangulaire · 1 point ≈ 19,5 km à l'équateur"
+    : etat.vue === "histoire" ? "carte équirectangulaire, centrée comme « Planète » · 1 point ≈ 39 km"
+    : "cadre de 880 km · 1 point = 0,5 km";
+  toutVoir();
+}
+
+function appliquer() {
+  const v = VUES[etat.vue];
+  toile.querySelectorAll("img").forEach((img, k) => {
+    const ch = choixDe(etat.vue, v.couches[k]);
+    img.style.display = ch.on ? "" : "none";
+    img.style.opacity = ch.op;
+  });
+}
+
+function montrerEtape() {
+  toile.querySelectorAll("img").forEach(img => { img.src = fichier("histoire", etat.graine, img.dataset.id); });
+  document.getElementById("etape").value = etat.etape;
+  const ago = (ETAPES - etat.etape) * PAS;
+  document.getElementById("quand").textContent = etat.etape === 0
+    ? `Il y a ${ETAPES * PAS} Ma : le supercontinent`
+    : ago === 0 ? `Aujourd'hui (étape ${ETAPES})` : `Il y a ${ago} Ma (étape ${etat.etape} sur ${ETAPES})`;
+  montrerJournal();
+}
+
+document.getElementById("etape").addEventListener("input", e => {
+  etat.etape = Number(e.target.value);
+  montrerEtape();
+});
+document.getElementById("jouer").addEventListener("click", () => {
+  const b = document.getElementById("jouer");
+  if (etat.joue) { clearInterval(etat.joue); etat.joue = null; b.textContent = "▶"; return; }
+  if (etat.etape >= ETAPES) etat.etape = 0;
+  b.textContent = "❚❚";
+  etat.joue = setInterval(() => {
+    etat.etape += 1;
+    montrerEtape();
+    if (etat.etape >= ETAPES) { clearInterval(etat.joue); etat.joue = null; b.textContent = "▶"; }
+  }, 350);
+});
+
+function chargerDonnees() {
+  if (etat.vue === "largeur") return;
+  const cle = (etat.vue === "continent" ? "c" : "p") + etat.graine;
+  if (window.DONNEES[cle] || document.getElementById("d-" + cle)) return;
+  const s = document.createElement("script");
+  s.id = "d-" + cle;
+  s.src = `couches/${cle}-donnees.js`;
+  s.onload = poser;
+  document.head.appendChild(s);
+}
+
+function siteDe() {
+  return null;
+}
+
+// ------------------------------------------------------------ the journal
+
+// What happens to the plates, step by step (`couches/h{seed}-journal.js`,
+// written by the model): the events of the step shown, each with its
+// place, and a strip with a bar per plate from its birth to its end.
+
+window.JOURNAL = window.JOURNAL || {};
+const nP = k => `n° ${k + 1}`;
+const pastille = k => {
+  const j = window.JOURNAL[etat.graine];
+  const c = j ? j.couleurs[k % 16] : [128, 128, 128];
+  return `<i class="pastille" style="background:rgb(${c.join(",")})"></i>`;
+};
+const P = k => `${pastille(k)}plaque ${nP(k)}`;
+const aire = km2 => km2 >= 1e6 ? `${(km2 / 1e6).toFixed(1).replace(".", ",")} M km²`
+  : `${Math.round(km2 / 1000).toLocaleString("fr-FR")} 000 km²`;
+const quand = t => t >= ETAPES ? "aujourd'hui" : `il y a ${(ETAPES - t) * PAS} Ma`;
+
+// Each event in plain words; `plaque: true` for those that make or end a plate.
+const DIT = {
+  BornOfRift: e => [true, `<b>La ${P(e.p)} naît.</b> Le rift ${e.r + 1} a traversé son continent et la croûte a cédé : la ${P(e.o)} est coupée en deux.`],
+  BornEscaping: e => [true, `<b>La ${P(e.p)} naît.</b> Un bloc de la ${P(e.o)} (${aire(e.km2)}) s'échappe sur le côté d'une collision.`],
+  BornCutOff: e => [true, `<b>La ${P(e.p)} naît.</b> Un grand morceau de la ${P(e.o)} (${aire(e.km2)}), séparé du reste sur la carte, devient une plaque à part, avec le même mouvement.`],
+  EndedWelded: e => [true, `<b>La ${P(e.p)} disparaît.</b> Elle est soudée à la ${P(e.o)} : leur collision ne bougeait plus.`],
+  EndedCrumb: e => [true, `<b>La ${P(e.p)} disparaît.</b> C'est une miette (${aire(e.km2)}, moins de 100 000 km²) : la ${P(e.o)}, qu'elle touche le plus, la prend.`],
+  EndedEnclosed: e => [true, `<b>La ${P(e.p)} disparaît.</b> Petite plaque (${aire(e.km2)}) enfermée dans la seule ${P(e.o)} : celle-ci la prend.`],
+  EndedNoCell: e => [true, `<b>La ${P(e.p)} disparaît.</b> Il ne lui reste aucune case : son fond a plongé ou ses dernières cases ont été reprises une à une. Aucune règle ne la nomme.`],
+  MovesAlone: e => [true, `<b>La ${P(e.p)} se détache.</b> Elle bouge maintenant seule : les forces ne la pressent plus contre la ${P(e.o)}, avec qui elle bougeait d'un bloc (la carte les dessinait comme une seule).`],
+  MovesWith: e => [true, `<b>La ${P(e.p)} ne se voit plus.</b> Elle existe encore, mais ses continents touchent toujours ceux de la ${P(e.o)} (ils ne se sont jamais séparés) et les forces les pressent l'un contre l'autre : les deux bougent d'un bloc, et la carte les dessine comme une seule plaque.`],
+  PartTaken: e => [false, `Un morceau de la ${P(e.p)} (${aire(e.km2)}), séparé du reste, est pris par la ${P(e.o)}.`],
+  RiftBegun: e => [false, `Un fossé de rift commence sur la ${P(e.p)} (rift ${e.r + 1}).`],
+  RiftAbandoned: e => [false, `Le fossé du rift ${e.r + 1} est abandonné : la traction l'a quitté (rift avorté).`],
+  CollisionBegun: e => [false, `Collision : les continents de la ${P(e.p)} et de la ${P(e.o)} se rencontrent.`],
+  Docked: e => [false, `Des terranes ou des arcs d'îles accostent la ${P(e.p)} (${aire(e.km2)})${e.o === null ? "" : `, portés jusque-là par la ${P(e.o)}`}.`],
+  IslandsRisen: e => [false, `Des îles naissent au bord de la ${P(e.p)} (arc volcanique, ${aire(e.km2)})${e.o === null ? "" : `, au-dessus du fond de la ${P(e.o)} qui plonge`}.`],
+  Opened: e => [false, `Une frontière s'ouvre à l'intérieur d'un continent, entre la ${P(e.p)} et la ${P(e.o)}.`],
+  Lava: e => [false, `Grand épanchement de lave (trapps, ${aire(e.km2)}).`],
+};
+
+function chargerJournal() {
+  if (etat.vue !== "histoire") return;
+  const g = etat.graine;
+  if (window.JOURNAL[g] || document.getElementById("j-" + g)) { montrerJournal(); return; }
+  const s = document.createElement("script");
+  s.id = "j-" + g;
+  s.src = `couches/h${g}-journal.js`;
+  s.onload = () => { montrerJournal(); dessinerFrise(); };
+  document.head.appendChild(s);
+}
+
+function lieu(e) {
+  const d = window.DONNEES["p" + etat.graine];
+  if (!e.ou || !d) return null;
+  const [w, h] = VUES.histoire.taille;
+  const x = (((e.ou[1] - d.lon0 + 1800) % 3600) + 3600) % 3600 / 3600 * w;
+  return [x, (900 - e.ou[0]) / 1800 * h];
+}
+
+function marquer(e) {
+  let m = document.getElementById("marque");
+  if (m) m.remove();
+  const xy = e && lieu(e);
+  if (!xy) return;
+  m = document.createElement("div");
+  m.id = "marque";
+  m.style.left = xy[0] + "px";
+  m.style.top = xy[1] + "px";
+  toile.appendChild(m);
+}
+
+function montrerJournal() {
+  const boite = document.getElementById("journal");
+  marquer(null);
+  const j = window.JOURNAL[etat.graine];
+  if (etat.vue !== "histoire" || !j) { boite.innerHTML = ""; return; }
+  const evs = j.etapes[etat.etape].e.map(e => ({ e, dit: (DIT[e.k] || (() => [false, e.k]))(e) }));
+  evs.sort((a, b) => Number(b.dit[0]) - Number(a.dit[0]));
+  boite.innerHTML = `<div class="rien">${evs.length === 0 ? "Rien de nouveau pour les plaques à cette étape."
+    : "Ce qui arrive à cette étape (clique : l'endroit sur la carte) :"}</div>`;
+  for (const { e, dit } of evs) {
+    const d = document.createElement("div");
+    d.className = "ev" + (dit[0] ? " plaque" : "") + (e.ou ? " ici" : "");
+    d.innerHTML = dit[1] + (e.ou ? ` <span class="lieu">${deg(e.ou[0] / 10, "N", "S")}, ${deg(e.ou[1] / 10, "E", "O")}</span>` : "");
+    if (e.ou) d.addEventListener("click", () => {
+      boite.querySelectorAll(".choisi").forEach(x => x.classList.remove("choisi"));
+      d.classList.add("choisi");
+      marquer(e);
+    });
+    boite.appendChild(d);
+  }
+  const rep = document.querySelectorAll("#frise .repere");
+  rep.forEach(r => { r.style.left = `${(etat.etape + 0.5) / (ETAPES + 1) * 100}%`; });
+}
+
+// The strip: for each plate drawn, its spans of steps, how each began
+// and how it ended.
+function vies() {
+  const j = window.JOURNAL[etat.graine];
+  const out = [];
+  const la = (t, k) => t >= 0 && t <= ETAPES && j.etapes[t].p.some(x => x[0] === k);
+  for (let k = 0; k < 64; k++) {
+    for (let t = 0; t <= ETAPES; t++) {
+      if (!la(t, k) || la(t - 1, k)) continue;
+      let fin = t;
+      while (la(fin + 1, k)) fin++;
+      const de = j.etapes[t].e, a = fin < ETAPES ? j.etapes[fin + 1].e : [];
+      const ne = de.find(e => e.p === k && ["BornOfRift", "BornEscaping", "BornCutOff", "MovesAlone"].includes(e.k))
+        || de.find(e => e.k === "MovesWith" && e.o === k);
+      // A plate born while it moved as one with another shows only later.
+      let cachee = null;
+      if (ne && ne.k === "MovesAlone") {
+        for (let u = t - 1; u > 0 && !cachee && !la(u, k); u--) {
+          const b = j.etapes[u].e.find(e => e.p === k && e.k.startsWith("Born"));
+          if (b) cachee = { b, u };
+        }
+      }
+      const mort = a.find(e => e.p === k && (e.k.startsWith("Ended") || e.k === "MovesWith"));
+      const part = Math.max(...j.etapes.slice(t, fin + 1).map(s => (s.p.find(x => x[0] === k) || [0, 0])[1]));
+      out.push({ k, t, fin, ne, mort, part, cachee });
+    }
+  }
+  return out.sort((a, b) => a.t - b.t || a.k - b.k);
+}
+
+const NAIT = {
+  BornOfRift: e => `née du rift ${e.r + 1}, qui coupe la plaque ${nP(e.o)}`,
+  BornEscaping: e => `née d'un bloc de la plaque ${nP(e.o)} échappé d'une collision`,
+  BornCutOff: e => `née d'un morceau de la plaque ${nP(e.o)} séparé du reste`,
+  MovesAlone: e => `détachée de la plaque ${nP(e.o)} : elles ne bougent plus d'un bloc`,
+  MovesWith: e => `nouveau numéro d'un groupe (la plaque ${nP(e.p)} s'y joint)`,
+};
+const MEURT = {
+  EndedWelded: e => `soudée à la plaque ${nP(e.o)} après collision`,
+  EndedCrumb: e => `miette prise par la plaque ${nP(e.o)}`,
+  EndedEnclosed: e => `enfermée dans la plaque ${nP(e.o)}, prise par elle`,
+  EndedNoCell: () => "plus aucune case (aucune règle ne la nomme)",
+  MovesWith: e => `rendue à la plaque ${nP(e.o)} : continents jamais séparés, pressés de nouveau l'un contre l'autre, elles bougent d'un bloc`,
+};
+
+function dessinerFrise() {
+  const f = document.getElementById("frise");
+  const j = window.JOURNAL[etat.graine];
+  if (!j) { f.innerHTML = ""; return; }
+  const v = vies();
+  const courtes = v.filter(x => x.fin < ETAPES && x.fin - x.t + 1 <= 3).length;
+  f.innerHTML = `<h3>Frise des plaques, graine ${etat.graine}</h3>
+    <div class="aide">Une barre par plaque dessinée, de sa naissance à sa fin (à gauche : il y a ${ETAPES * PAS} Ma ; à droite : aujourd'hui).
+    Entourées de rose : les ${courtes} qui vivent trois étapes ou moins. Clique sur une piste pour aller à cette étape.
+    Les numéros sont ceux de la lecture sous le curseur.</div>`;
+  for (const x of v) {
+    const n = x.fin - x.t + 1;
+    const c = j.couleurs[x.k % 16];
+    const r = document.createElement("div");
+    r.className = "rang";
+    const courte = x.fin < ETAPES && n <= 3;
+    const debut = x.t === 0 ? "là au début"
+      : x.cachee ? `${NAIT[x.cachee.b.k](x.cachee.b)} à l'étape ${x.cachee.u}, cachée jusque-là dans la plaque ${nP(x.ne.o)}`
+      : x.ne ? NAIT[x.ne.k](x.ne) : "apparue sans événement nommé";
+    const fin = x.fin >= ETAPES ? "encore là aujourd'hui" : x.mort ? MEURT[x.mort.k](x.mort) : "disparue sans événement nommé";
+    r.innerHTML = `<span class="nom">${pastille(x.k)}plaque ${nP(x.k)}</span>
+      <span class="piste"><span class="barre${courte ? " courte" : ""}" style="left:${x.t / (ETAPES + 1) * 100}%;width:${n / (ETAPES + 1) * 100}%;background:rgb(${c.join(",")})"></span><span class="repere"></span></span>
+      <span class="dit">${courte ? `<b>${n} étape${n > 1 ? "s" : ""}</b>` : `${n} étapes`} <span class="pale">(${quand(x.t)} → ${quand(x.fin)}, jusqu'à ${Math.round(x.part / 10)} % de la planète)</span> · ${debut} · ${fin}</span>`;
+    r.querySelector(".piste").addEventListener("click", ev => {
+      const b = ev.currentTarget.getBoundingClientRect();
+      etat.etape = Math.min(ETAPES, Math.max(0, Math.floor((ev.clientX - b.left) / b.width * (ETAPES + 1))));
+      montrerEtape();
+    });
+    f.appendChild(r);
+  }
+  f.querySelectorAll(".repere").forEach(r => { r.style.left = `${(etat.etape + 0.5) / (ETAPES + 1) * 100}%`; });
+}
+
+document.getElementById("bouton-frise").addEventListener("click", () => {
+  const f = document.getElementById("frise");
+  f.hidden = !f.hidden;
+  document.getElementById("bouton-frise").classList.toggle("actif", !f.hidden);
+  if (!f.hidden) dessinerFrise();
+});
+
+// ------------------------------------------------------------ zoom and pan
+
+function poser() {
+  toile.style.transform = `translate(${etat.tx}px, ${etat.ty}px) scale(${etat.s})`;
+}
+
+function allerAuContinent() {
+  const site = siteDe();
+  if (!site) return;
+  const r = scene.getBoundingClientRect();
+  etat.s = etat.fit * 6;
+  etat.tx = r.width / 2 - site[0] * etat.s;
+  etat.ty = r.height / 2 - site[1] * etat.s;
+  poser();
+}
+
+function toutVoir() {
+  const [w, h] = VUES[etat.vue].taille;
+  const r = scene.getBoundingClientRect();
+  etat.fit = Math.min(r.width / w, r.height / h);
+  etat.s = etat.fit;
+  etat.tx = (r.width - w * etat.s) / 2;
+  etat.ty = (r.height - h * etat.s) / 2;
+  poser();
+}
+
+function zoomer(facteur, mx, my) {
+  const s = Math.min(Math.max(etat.s * facteur, etat.fit), etat.fit * 8);
+  const k = s / etat.s;
+  etat.tx = mx - (mx - etat.tx) * k;
+  etat.ty = my - (my - etat.ty) * k;
+  etat.s = s;
+  poser();
+}
+
+scene.addEventListener("wheel", e => {
+  if (e.target.closest("#frise")) return;
+  e.preventDefault();
+  const r = scene.getBoundingClientRect();
+  zoomer(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top);
+}, { passive: false });
+
+let glisse = null;
+scene.addEventListener("pointerdown", e => {
+  if (e.target.closest("#outils") || e.target.closest("#frise")) return;
+  glisse = { x: e.clientX, y: e.clientY, tx: etat.tx, ty: etat.ty };
+  scene.setPointerCapture(e.pointerId);
+  scene.classList.add("glisse");
+});
+scene.addEventListener("pointermove", e => {
+  if (glisse) {
+    etat.tx = glisse.tx + e.clientX - glisse.x;
+    etat.ty = glisse.ty + e.clientY - glisse.y;
+    poser();
+  }
+  lire(e);
+});
+const fin = () => { glisse = null; scene.classList.remove("glisse"); };
+scene.addEventListener("pointerup", fin);
+scene.addEventListener("pointercancel", fin);
+scene.addEventListener("pointerleave", () => { lecture.textContent = "—"; });
+
+function centre() {
+  const r = scene.getBoundingClientRect();
+  return [r.width / 2, r.height / 2];
+}
+document.getElementById("plus").addEventListener("click", () => zoomer(1.5, ...centre()));
+document.getElementById("moins").addEventListener("click", () => zoomer(1 / 1.5, ...centre()));
+document.getElementById("reset").addEventListener("click", toutVoir);
+window.addEventListener("resize", toutVoir);
+
+// ------------------------------------------------------------ the readout
+
+function deg(v, pos, neg) {
+  return `${Math.abs(v).toFixed(1).replace(".", ",")}° ${v >= 0 ? pos : neg}`;
+}
+
+function lire(e) {
+  const r = scene.getBoundingClientRect();
+  const ix = (e.clientX - r.left - etat.tx) / etat.s;
+  const iy = (e.clientY - r.top - etat.ty) / etat.s;
+  const [w, h] = VUES[etat.vue].taille;
+  if (ix < 0 || iy < 0 || ix >= w || iy >= h) { lecture.textContent = "—"; return; }
+  if (etat.vue === "histoire") {
+    const d = window.DONNEES["p" + etat.graine];
+    let lon = (d ? d.lon0 / 10 : 0) + ix / w * 360 - 180;
+    lon = ((lon % 360) + 540) % 360 - 180;
+    lecture.textContent = `${deg(90 - iy / h * 180, "N", "S")}, ${deg(lon, "E", "O")}`;
+    return;
+  }
+  if (etat.vue === "planete") {
+    const d = window.DONNEES["p" + etat.graine];
+    let lon = (d ? d.lon0 / 10 : 0) + ix / w * 360 - 180;
+    lon = ((lon % 360) + 540) % 360 - 180;
+    const lat = 90 - iy / h * 180;
+    let t = `${deg(lat, "N", "S")}, ${deg(lon, "E", "O")}`;
+    if (d) {
+      const k = Math.floor(iy / 4) * d.w + Math.floor(ix / 4);
+      const c = d.plaques[k];
+      const alt = (d.alt.charCodeAt(k) - 0xa1 - 110) * 100 + 50;
+      const nb = n => Math.abs(n).toLocaleString("fr-FR");
+      t += c >= "A" && c <= "Z" ? ` · terre, ≈ ${nb(Math.max(alt, 0))} m` : ` · mer, ≈ ${nb(alt)} m de fond`;
+      t += ` · plaque n° ${c.toLowerCase().charCodeAt(0) - 96}`;
+    }
+    lecture.textContent = t;
+    return;
+  }
+  // 4 view pixels per zoom pixel of 2 km.
+  const kmx = Math.round(ix / 2), kmy = Math.round(iy / 2);
+  let t = `${kmx} km vers l'est, ${kmy} km vers le sud depuis le coin nord-ouest du cadre`;
+  const d = etat.vue === "continent" ? window.DONNEES["c" + etat.graine] : null;
+  if (d) {
+    const zx = Math.floor(ix / 4), zy = Math.floor(iy / 4);
+    const k = zy * d.side + zx;
+    const alt = d.alt[k];
+    t += ` · ${alt > 0 ? alt + " m" : "mer, " + (-alt) + " m de fond"} · ${ZONES[d.zones[k]] || "—"}`;
+  }
+  lecture.textContent = t;
+}
+
+// ------------------------------------------------------------ start
+
+document.querySelectorAll(".vues button").forEach(b =>
+  b.addEventListener("click", () => { etat.vue = b.dataset.vue; construire(); }));
+// The address may name the view, the seed, the step and the strip:
+// carte.html#histoire-9-12-frise
+let friseDemandee = false;
+{
+  const [v, g, t, f] = location.hash.slice(1).split("-");
+  if (VUES[v]) etat.vue = v;
+  if (g) etat.graine = Number(g);
+  if (t) etat.etape = Math.min(ETAPES, Math.max(0, Number(t) || 0));
+  friseDemandee = f === "frise" && etat.vue === "histoire";
+}
+document.getElementById("graine").addEventListener("change", e => {
+  etat.graine = Number(e.target.value);
+  construire();
+  if (!document.getElementById("frise").hidden) dessinerFrise();
+});
+construire();
+if (friseDemandee) document.getElementById("bouton-frise").click();
+</script>
+</body>
+</html>
