@@ -95,11 +95,13 @@ use crate::memory::{self, Access, Fared, Record, RecordId, Store};
 use crate::{Blockage, Body, BodyId, Event, GATHER_REACH_MM, Intention, ItemId, World};
 
 mod handwork;
+mod learning;
 mod pooling;
 mod problems;
 #[cfg(test)]
 mod wake_tests;
 pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
+pub use learning::{BeliefHeld, Forgot, LearnStep, Learner};
 pub use problems::{Problem, ProblemAim, ProblemStep};
 
 /// Thirst from which a body goes to drink: half a game day without
@@ -2089,6 +2091,18 @@ pub enum News {
         /// The tick.
         at: u64,
     },
+    /// A step of `body`'s learning (D59): a mark, a belief come to,
+    /// told, taken, renewed or forgotten.
+    Learning {
+        /// Who.
+        body: BodyId,
+        /// Its will then.
+        will: u8,
+        /// What happened.
+        step: LearnStep,
+        /// The tick.
+        at: u64,
+    },
     /// `body` copied `way` from its camp-mate `from`.
     Copied {
         /// Who.
@@ -2369,6 +2383,8 @@ pub struct Mind {
     /// The problems it lived and still remembers (D50, amended 26
     /// November 2026): one record a kind, forgotten when not lived again.
     problems: Vec<Problem>,
+    /// Its episodes and beliefs, and what it perceived for them (D59).
+    learner: Learner,
 }
 
 /// A confidence moved by the four rules of temperance (D50 amended,
@@ -2578,6 +2594,7 @@ impl Mind {
             thoughts: 0,
             handwork: Handwork::default(),
             problems: Vec::new(),
+            learner: Learner::default(),
         }
     }
 
@@ -3700,6 +3717,7 @@ impl Mind {
         for belief in self.reputed.drain(..) {
             memory.release(belief.access.record);
         }
+        self.learner.forget_all(memory);
     }
 
     /// Forgets the place `key`, dropping its accesses.
@@ -4362,6 +4380,8 @@ pub struct Brains {
     /// nightfall: they keep the way it walks (D53, amended 25 November
     /// 2026).
     carried: BTreeMap<BodyId, Vec<BodyId>>,
+    /// The wall time the learning took (D59), in nanoseconds: a measure.
+    learning_nanos: u64,
 }
 
 /// A group's return, told at the next fire (D56, PR 1 ter): its caller,
@@ -4694,6 +4714,7 @@ impl Brains {
             measure_stops: false,
             reserves: pooling::Reserves::default(),
             carried: BTreeMap::new(),
+            learning_nanos: 0,
         }
     }
 
@@ -4906,6 +4927,7 @@ impl Brains {
         self.hearth_events(events, world, rules);
         self.count_gathers(events, world, rules);
         self.live_problems(events, world, rules);
+        self.learn_events(events, world, rules);
         let now = world.tick().0;
         self.bearers.left = cold_chunks_at(world, now);
         let chunks = world.map().chunks_wide() as usize * world.map().chunks_high() as usize;
@@ -5521,6 +5543,7 @@ impl Brains {
         self.feel_company(world, rules, &circles);
         self.note_nights(world, rules);
         self.see_hearths(world, rules, &circles);
+        self.learn_at_dawn(world, rules, &circles);
         let accounts = std::mem::take(&mut self.accounts);
         if !fire.on() {
             return;

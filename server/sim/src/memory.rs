@@ -53,6 +53,55 @@ pub struct Fared {
     pub changed: bool,
 }
 
+/// A circumstance a body perceived when an ailment marked it (D59): a
+/// thing of its own senses and memory, never a hidden number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Clue {
+    /// The place of its camp.
+    Camp(PlaceKey),
+    /// Its nights slept at its camp in a row: 0 new, 1 settled, 2 old.
+    CampAge(u8),
+    /// The season, 0 (spring) to 3 (winter).
+    Season(u8),
+    /// How many lay at its fire last night: 0 a few, 1 some, 2 many.
+    Crowd(u8),
+    /// The night before froze it.
+    ColdNight,
+    /// Someone sick lay at its fire lately.
+    SickAtFire,
+    /// What it ate most the day before: a material's index.
+    Ate(u16),
+    /// The place where it last drank.
+    Drank(PlaceKey),
+}
+
+impl Clue {
+    /// Its name in the content's `learning.clues` (`content::CLUES`).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Clue::Camp(_) => "camp",
+            Clue::CampAge(_) => "camp_age",
+            Clue::Season(_) => "season",
+            Clue::Crowd(_) => "crowd",
+            Clue::ColdNight => "cold_night",
+            Clue::SickAtFire => "sick_at_fire",
+            Clue::Ate(_) => "ate",
+            Clue::Drank(_) => "drank",
+        }
+    }
+}
+
+/// A suspect of a belief (D59): a circumstance, and the kind of cause the
+/// content gives it (an index of `content::CLUE_KINDS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Suspect {
+    /// The circumstance.
+    pub clue: Clue,
+    /// Its kind.
+    pub kind: u8,
+}
+
 /// A record of the well: written once, dated, signed by its first witness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
@@ -161,6 +210,30 @@ pub enum Record {
         /// How each present fared that day.
         fared: Vec<(BodyId, Fared)>,
     },
+    /// An episode (D59): an ailment that marked its witness, lived or
+    /// seen in a kin, and what it perceived then.
+    Episode {
+        /// Whose ailment.
+        body: BodyId,
+        /// The day it fell ill.
+        day: u32,
+        /// The problem it is lived as: its index in `problems.kinds`.
+        kind: u8,
+        /// What its body perceived, at most one of each clue.
+        clues: Vec<Clue>,
+    },
+    /// A belief (D59): what was there each time its witness laid its
+    /// episodes side by side, true or false.
+    Belief {
+        /// Who came to it.
+        body: BodyId,
+        /// The day.
+        day: u32,
+        /// The problem: its index in `problems.kinds`.
+        kind: u8,
+        /// What it accuses, one or a few.
+        suspects: Vec<Suspect>,
+    },
     /// Who is believed to know (D56, PR 1 ter): "32 knows where berries
     /// are", dated by the day the belief was last renewed. Each body
     /// holding it has its own credit in it; nobody holds it as a title.
@@ -186,6 +259,8 @@ impl Record {
             | Record::Trial { day, .. }
             | Record::Deed { day, .. }
             | Record::Night { day, .. }
+            | Record::Episode { day, .. }
+            | Record::Belief { day, .. }
             | Record::Reputed { day, .. } => *day,
         }
     }
@@ -198,7 +273,10 @@ impl Record {
             | Record::Barred { witness, .. }
             | Record::Passage { witness, .. }
             | Record::Water { witness, .. } => Some(*witness),
-            Record::Trial { body, .. } | Record::Deed { body, .. } => Some(*body),
+            Record::Trial { body, .. }
+            | Record::Deed { body, .. }
+            | Record::Episode { body, .. }
+            | Record::Belief { body, .. } => Some(*body),
             Record::Night { .. } | Record::Reputed { .. } => None,
         }
     }
@@ -230,6 +308,15 @@ impl Record {
                 body, day, deed, ..
             } => Key::Deed(*body, *day, *deed),
             Record::Night { camp, day, .. } => Key::Night(*camp, *day),
+            Record::Episode {
+                body, day, kind, ..
+            } => Key::Episode(*body, *day, *kind),
+            Record::Belief {
+                body,
+                day,
+                kind,
+                suspects,
+            } => Key::Belief(*body, *day, *kind, suspects.clone()),
             Record::Reputed { who, activity, day } => Key::Reputed(*who, *activity, *day),
         }
     }
@@ -246,6 +333,8 @@ enum Key {
     Deed(BodyId, u32, Deed),
     Night(Pos, u32),
     Reputed(BodyId, u8, u32),
+    Episode(BodyId, u32, u8),
+    Belief(BodyId, u32, u8, Vec<Suspect>),
 }
 
 /// An access a body holds to a record: the number, who it has it from

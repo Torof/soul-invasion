@@ -543,6 +543,9 @@ impl Report {
         // --- illness as episodes (26 November 2026) ---
         value["illness"] = self.illness.json();
         // --- end of illness as episodes ---
+        // --- learning causes (27 November 2026) ---
+        value["learning"] = self.learning.json();
+        // --- end of learning causes ---
         value
     }
 
@@ -571,6 +574,7 @@ impl Report {
                     "ground_kept": self.ground_kept,
                     "land_checked": self.land_checked,
                     "land_prepared_s": self.land_prepared_s,
+                    "learning_s": self.learning.seconds,
                 }),
             );
         }
@@ -611,6 +615,10 @@ impl Report {
         out.push_str(",\n  \"illness\": ");
         layout(&value["illness"], 1, &mut out);
         // --- end of illness as episodes ---
+        // --- learning causes (27 November 2026): last ---
+        out.push_str(",\n  \"learning\": ");
+        layout(&value["learning"], 1, &mut out);
+        // --- end of learning causes ---
         out.push_str("\n}\n");
         out
     }
@@ -645,6 +653,7 @@ impl Report {
                 "decisions": s.decisions,
                 "moves": s.moves,
                 "passages": s.passages,
+                "learning": s.learning,
                 "old_illness": s.old_illness,
                 "content": s.content.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
             },

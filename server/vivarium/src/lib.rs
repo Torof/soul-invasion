@@ -47,6 +47,9 @@ pub mod passages;
 pub mod continents;
 pub mod hands;
 pub mod illness;
+// --- learning causes (27 November 2026): their own module ---
+pub mod learning;
+// --- end of learning causes ---
 pub mod json;
 pub mod land_food;
 pub mod lands;
@@ -211,6 +214,11 @@ pub struct Settings {
     /// false is the control run without them (`--no-passages`), the
     /// content's `passages` section replaced by none.
     pub passages: bool,
+    /// Learning causes, believe without acting (D59): false is the
+    /// control run without it (`--no-learning`), the content's `learning`
+    /// section replaced by none and the problems it marks taken out:
+    /// behaviour bit for bit the run's before the change.
+    pub learning: bool,
     /// Where the vivarium's continent is kept between runs
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
@@ -300,6 +308,7 @@ impl Default for Settings {
             old_wakes: false,
             old_illness: false,
             passages: true,
+            learning: true,
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
             helpers: 1,
@@ -980,6 +989,8 @@ fn record_row(id: RecordId, record: &Record, refs: u32) -> RecordRow {
             row.kind = "passage";
             row.place = Some(*place);
         }
+        Record::Episode { .. } => row.kind = "episode",
+        Record::Belief { .. } => row.kind = "belief",
     }
     row
 }
@@ -2060,6 +2071,8 @@ pub struct Report {
     pub problems: problems::ProblemsProbe,
     /// Illness as episodes (D49, amended 26 November 2026).
     pub illness: illness::IllnessProbe,
+    /// Learning causes, believe without acting (D59).
+    pub learning: learning::LearningProbe,
     /// The goals held, in the order set (D56, amended 24 November 2026).
     pub goals: Vec<GoalRow>,
     /// The fire's counts by tribe and year (D55).
@@ -2281,6 +2294,7 @@ pub fn run_watched(
         || settings.old_wakes
         || settings.old_illness
         || !settings.passages
+        || !settings.learning
     {
         let mut own = content.clone();
         if settings.fed {
@@ -2323,6 +2337,14 @@ pub fn run_watched(
         }
         if !settings.passages {
             own.needs.passages = sim::content::Passages::default();
+        }
+        if !settings.learning
+            && let Some(learning) = own.needs.learning.take()
+        {
+            own.needs
+                .problems
+                .kinds
+                .retain(|k| !learning.marks(&k.refusal));
         }
         if !settings.moves {
             own.needs.moving = Moving::default();
@@ -2673,6 +2695,7 @@ pub fn run_watched(
     let mut hands = hands::HandsProbe::default();
     let mut problems_probe = problems::ProblemsProbe::new(content);
     let mut illness_probe = illness::IllnessProbe::new(content);
+    let mut learning_probe = learning::LearningProbe::new(content);
     let days_per_age_year = u64::from(calendar.days_per_age_year().max(1));
     let ticks_per_age_year = calendar.ticks_per_day() * days_per_age_year;
     let mut goals: Vec<GoalRow> = Vec::new();
@@ -3136,6 +3159,10 @@ pub fn run_watched(
         // --- end of the hearth's pooling ---
         hands.news(&brains, (&world, content), &people, &batch, (day, age_year));
         problems_probe.news(&world, &batch);
+        // --- learning causes (27 November 2026) ---
+        learning_probe.news(&brains, &batch);
+        learning_probe.tick(&world, &brains);
+        // --- end of learning causes ---
         // Who held what from whom this dawn (D55): the sentence of a
         // trial told names those who believed it.
         let mut believed: BTreeMap<(RecordId, BodyId), Vec<BodyId>> = BTreeMap::new();
@@ -3445,7 +3472,8 @@ pub fn run_watched(
                 | News::Untried { .. }
                 | News::Drew { .. }
                 | News::ToolTaken { .. }
-                | News::Problem { .. } => continue,
+                | News::Problem { .. }
+                | News::Learning { .. } => continue,
                 News::Copied {
                     body,
                     from,
@@ -3714,6 +3742,10 @@ pub fn run_watched(
     );
     // --- end of the hearth's pooling ---
     let wall_s = started.elapsed().as_secs_f64();
+    // --- learning causes (27 November 2026) ---
+    let learning_s = std::time::Duration::from_nanos(brains.learning_nanos()).as_secs_f64();
+    learning_probe.seconds = learning_s;
+    // --- end of learning causes ---
     let placed_ahead = placer.as_ref().map_or(0, sim::ahead::Placer::placed);
     drop(placer);
     let placed_in_all = world.shared_ground().bearers_placed();
@@ -3790,6 +3822,7 @@ pub fn run_watched(
         hands,
         problems: problems_probe,
         illness: illness_probe,
+        learning: learning_probe,
         goals,
         fire: tally.fire,
         seasons: tally.seasons,
@@ -6942,6 +6975,7 @@ mod tests {
             old_wakes: false,
             old_illness: false,
             passages: true,
+            learning: true,
             continents: None,
             lands: None,
             helpers: 1,

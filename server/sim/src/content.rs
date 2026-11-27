@@ -522,6 +522,14 @@ pub struct Needs {
     /// a background death drawn by age alone (`life.death_by_age`).
     #[serde(default, deserialize_with = "present")]
     pub illness: Option<Illness>,
+    /// Learning causes, its first step: believe without acting (D59): an
+    /// ailment lived, or seen in a kin at the fire, leaves an episode of
+    /// what the body perceived; one who notices that it comes back cross-
+    /// checks its episodes, and what was always there becomes a belief,
+    /// told at the fire and copied. Nothing is done from a belief yet.
+    /// Absent: nothing is learnt, bit for bit as before.
+    #[serde(default, deserialize_with = "present")]
+    pub learning: Option<Learning>,
 }
 
 /// A section read as present when written, without RON's `Some(…)`.
@@ -930,6 +938,225 @@ impl Passages {
     }
 }
 
+/// The circumstances a body may note in an episode (D59), each a thing it
+/// perceives itself: the code knows how to perceive each, the content
+/// says which are noted and of what kind each is.
+pub const CLUES: [&str; 8] = [
+    "camp",
+    "camp_age",
+    "season",
+    "crowd",
+    "cold_night",
+    "sick_at_fire",
+    "ate",
+    "drank",
+];
+
+/// The kinds of cause a circumstance may be of (D59): recorded with a
+/// belief, read by nothing yet (its lever comes in the second step).
+pub const CLUE_KINDS: [&str; 7] = [
+    "place", "season", "weather", "company", "food", "water", "gesture",
+];
+
+/// Learning causes, its first step: believe without acting (D59; the
+/// study `content/ai-reserve/review/vivarium/lot-5/etude-apprentissage-
+/// 2026-11-27.md`, approved by the project lead on 27 November 2026).
+/// Every value is a D30 placeholder, named and explained in
+/// `content/needs.ron`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Learning {
+    /// Each ailment that marks a body, and the problem (a refusal of
+    /// `problems.kinds`) it is lived as.
+    pub ailments: Vec<(crate::Ailment, String)>,
+    /// The circumstances noted in an episode, each a name of [`CLUES`]
+    /// and its kind, a name of [`CLUE_KINDS`].
+    pub clues: Vec<(String, String)>,
+    /// The episodes a problem keeps, at most: the oldest drops off.
+    pub episodes_kept: u32,
+    /// A camp slept at fewer nights in a row than this is new.
+    pub new_camp_nights: u32,
+    /// A camp slept at more than this many seasons in a row is old;
+    /// between, settled.
+    pub old_camp_seasons: u32,
+    /// A fire of fewer than this is a few; of `crowd_many` or more, many;
+    /// between, some.
+    pub crowd_some: u32,
+    /// See `crowd_some`.
+    pub crowd_many: u32,
+    /// A sick body seen at one's fire within this many nights is noted.
+    pub sick_seen_nights: u32,
+    /// Noticing is drawn only at a mark whose problem keeps this many
+    /// episodes or more.
+    pub notice_from: u32,
+    /// The chance to notice at a mark with a full list of episodes, by
+    /// will (0 to 100, percent): smaller lists in proportion.
+    pub notice_percent_by_will: Vec<(u32, u32)>,
+    /// A child of its own seen sick weighs the draw this many times.
+    pub child_times: u32,
+    /// The episodes cross-checked, the latest first, by will: the depth
+    /// of the search.
+    pub depth_by_will: Vec<(u32, u32)>,
+    /// With this many episodes or more side by side, a circumstance
+    /// missing from one is still a suspect.
+    pub all_but_one_from: u32,
+    /// The suspects a belief names, at most: the draw picks among more.
+    pub suspects_max: u32,
+    /// The episodes without its suspects that make a belief fall.
+    pub counter_examples: u32,
+    /// A belief counts whole this many seasons from its last renewal…
+    pub whole_seasons: u32,
+    /// …and at half this many more, then it is forgotten.
+    pub half_seasons: u32,
+    /// The beliefs a body tells at a fire at most.
+    pub told_per_night: u32,
+    /// The least credit a listener must have in a teller to take its
+    /// belief (1 to 100).
+    pub copy_credit: u32,
+    /// Under this age (years), a listener takes a belief without having
+    /// lived its problem: the tradition.
+    pub child_years: u32,
+}
+
+impl Learning {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        let pairs = |list: &[(&str, &str)]| {
+            list.iter()
+                .map(|&(a, b)| (a.to_owned(), b.to_owned()))
+                .collect()
+        };
+        Self {
+            ailments: vec![
+                (crate::Ailment::Gut, "ill_gut".to_owned()),
+                (crate::Ailment::Chest, "ill_chest".to_owned()),
+            ],
+            clues: pairs(&[
+                ("camp", "place"),
+                ("camp_age", "place"),
+                ("season", "season"),
+                ("crowd", "place"),
+                ("cold_night", "weather"),
+                ("sick_at_fire", "company"),
+                ("ate", "food"),
+                ("drank", "water"),
+            ]),
+            episodes_kept: 8,
+            new_camp_nights: 4,
+            old_camp_seasons: 1,
+            crowd_some: 6,
+            crowd_many: 16,
+            sick_seen_nights: 2,
+            notice_from: 3,
+            notice_percent_by_will: vec![(0, 1), (20, 3), (50, 8), (100, 20)],
+            child_times: 2,
+            depth_by_will: vec![(0, 3), (20, 3), (50, 8)],
+            all_but_one_from: 6,
+            suspects_max: 2,
+            counter_examples: 3,
+            whole_seasons: 4,
+            half_seasons: 4,
+            told_per_night: 2,
+            copy_credit: 50,
+            child_years: 16,
+        }
+    }
+
+    /// The problem refusal `ailment` is lived as, if it marks.
+    #[must_use]
+    pub fn problem_of(&self, ailment: crate::Ailment) -> Option<&str> {
+        self.ailments
+            .iter()
+            .find(|(a, _)| *a == ailment)
+            .map(|(_, p)| p.as_str())
+    }
+
+    /// Whether `refusal` names a problem an ailment is lived as.
+    #[must_use]
+    pub fn marks(&self, refusal: &str) -> bool {
+        self.ailments.iter().any(|(_, p)| p == refusal)
+    }
+
+    /// The kind of the clue named `clue` (its index in [`CLUE_KINDS`]),
+    /// if noted.
+    #[must_use]
+    pub fn kind_of(&self, clue: &str) -> Option<u8> {
+        let (_, kind) = self.clues.iter().find(|(c, _)| c == clue)?;
+        CLUE_KINDS
+            .iter()
+            .position(|k| k == kind)
+            .and_then(|i| u8::try_from(i).ok())
+    }
+
+    /// The chance to notice, in millionths, for `will` with `episodes`
+    /// kept, weighed `times`.
+    #[must_use]
+    pub fn notice_ppm(&self, will: u8, episodes: u32, times: u32) -> u64 {
+        let percent = along(&self.notice_percent_by_will, u64::from(will) * 1000, 1);
+        let kept = u64::from(self.episodes_kept.max(1));
+        let fill = u64::from(episodes).min(kept);
+        (percent * 10_000 * fill / kept * u64::from(times.max(1))).min(1_000_000)
+    }
+
+    /// The episodes `will` cross-checks.
+    #[must_use]
+    pub fn depth(&self, will: u8) -> u32 {
+        u32::try_from(along(&self.depth_by_will, u64::from(will) * 1000, 1))
+            .unwrap_or(u32::MAX)
+            .max(1)
+    }
+
+    /// The nights after which a camp is old, in a cycle of
+    /// `days_per_cycle` days.
+    #[must_use]
+    pub fn old_camp_nights(&self, days_per_cycle: u32) -> u32 {
+        season_days(self.old_camp_seasons, days_per_cycle)
+    }
+
+    /// The days a belief counts whole, and in all, in a cycle of
+    /// `days_per_cycle` days.
+    #[must_use]
+    pub fn belief_days(&self, days_per_cycle: u32) -> (u32, u32) {
+        let whole = season_days(self.whole_seasons, days_per_cycle).max(1);
+        (
+            whole,
+            whole + season_days(self.half_seasons, days_per_cycle),
+        )
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        let clues_known = self.clues.iter().enumerate().all(|(i, (c, k))| {
+            CLUES.contains(&c.as_str())
+                && CLUE_KINDS.contains(&k.as_str())
+                && self.clues[..i].iter().all(|(o, _)| o != c)
+        });
+        let curve = |points: &[(u32, u32)], top: u32| {
+            !points.is_empty()
+                && points.windows(2).all(|w| w[0].0 < w[1].0)
+                && points.iter().all(|&(x, y)| x <= 100 && y <= top)
+        };
+        if !clues_known
+            || self.episodes_kept == 0
+            || self.episodes_kept > 64
+            || self.crowd_some > self.crowd_many
+            || !curve(&self.notice_percent_by_will, 100)
+            || !curve(&self.depth_by_will, 64)
+            || self.suspects_max == 0
+            || self.counter_examples == 0
+            || !(1..=100).contains(&self.copy_credit)
+            || self.told_per_night > 64
+        {
+            return Err(ContentError::Needs(
+                "learning: clues of CLUES once each with a kind of CLUE_KINDS; episodes_kept 1 to 64; \
+                 crowd_some at most crowd_many; notice_percent_by_will (to 100) and depth_by_will \
+                 (to 64) curves over wills 0 to 100 rising; suspects_max and counter_examples at \
+                 least 1; copy_credit 1 to 100; told_per_night at most 64",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// The gestures of the hands (D57; the project lead, 24 November 2026:
 /// "C'est parfait"): picking up, cutting with what is in hand, folding.
 /// No recipe: what comes of a gesture is what the materials are
@@ -1023,6 +1250,18 @@ pub struct ProblemKind {
 }
 
 impl ProblemKind {
+    /// An ailment felt (D59): lived by the body, read by no material, and
+    /// no trial begun from it in this first step.
+    #[must_use]
+    pub fn felt(refusal: &str) -> Self {
+        Self {
+            refusal: refusal.to_owned(),
+            property: "felt".to_owned(),
+            trials_per_season: 0,
+            gives_up_seasons: 1,
+        }
+    }
+
     /// The days a trial from this problem has before it is given up, in
     /// days of a cycle of `days_per_cycle`, at least one.
     #[must_use]
@@ -1033,19 +1272,27 @@ impl ProblemKind {
 
 /// The refusals a problem may name, each with the one property its test
 /// reads (D50, amended 26 November 2026).
-const PROBLEM_LINKS: [(&str, &str); 1] = [("full", "holds_g")];
+const PROBLEM_LINKS: [(&str, &str); 3] = [
+    ("full", "holds_g"),
+    ("ill_gut", "felt"),
+    ("ill_chest", "felt"),
+];
 
 impl Problems {
     /// The placeholders of `content/needs.ron` (D30).
     #[must_use]
     pub fn placeholders() -> Self {
         Self {
-            kinds: vec![ProblemKind {
-                refusal: "full".to_owned(),
-                property: "holds_g".to_owned(),
-                trials_per_season: 1,
-                gives_up_seasons: 1,
-            }],
+            kinds: vec![
+                ProblemKind {
+                    refusal: "full".to_owned(),
+                    property: "holds_g".to_owned(),
+                    trials_per_season: 1,
+                    gives_up_seasons: 1,
+                },
+                ProblemKind::felt("ill_gut"),
+                ProblemKind::felt("ill_chest"),
+            ],
             fades_seasons: 2,
             mind_slots: 3,
         }
@@ -1104,7 +1351,7 @@ impl Problems {
         {
             return Err(ContentError::Needs(
                 "problems: each refusal once, linked to the property its test reads \
-                 (full: holds_g), gives_up_seasons and fades_seasons at least 1, mind_slots 1 to 255",
+                 (full: holds_g; ill_gut, ill_chest: felt), gives_up_seasons and fades_seasons at least 1, mind_slots 1 to 255",
             ));
         }
         Ok(())
@@ -2994,6 +3241,9 @@ impl Needs {
         self.passages.validate()?;
         if let Some(illness) = &self.illness {
             illness.validate()?;
+        }
+        if let Some(learning) = &self.learning {
+            learning.validate()?;
         }
         self.hands.validate()
     }

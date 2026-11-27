@@ -498,6 +498,7 @@ mod tests {
             old_wakes: false,
             old_illness: false,
             passages: true,
+            learning: true,
             continents: None,
             helpers: 0,
         };

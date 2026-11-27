@@ -1027,12 +1027,29 @@
     //                      the body pops the top problem it means to try and
     //                      tries if something new lies around, else puts
     //                      it back below the top.
+    // ill_gut, ill_chest (D59, 27 November 2026): an ailment felt, the gut
+    //                      or the chest, lived by the body itself (property
+    //                      `felt`: no material's test reads it), pushed by
+    //                      the `learning` section below; trials_per_season
+    //                      0 — nothing is tried from it in this first step.
     problems: (
         kinds: [
             (
                 refusal: "full",
                 property: "holds_g",
                 trials_per_season: 1,
+                gives_up_seasons: 1,
+            ),
+            (
+                refusal: "ill_gut",
+                property: "felt",
+                trials_per_season: 0,
+                gives_up_seasons: 1,
+            ),
+            (
+                refusal: "ill_chest",
+                property: "felt",
+                trials_per_season: 0,
                 gives_up_seasons: 1,
             ),
         ],
@@ -1097,5 +1114,92 @@
     passages: (
         fade_seasons: 4,
         told_per_night: 2,
+    ),
+    // Learning causes, its first step: believe without acting (D59; the
+    // study lot-5/etude-apprentissage-2026-11-27.md, its five
+    // recommendations approved by the project lead on 27 November 2026).
+    // A mark is lived, never added: falling ill (the body's own), or seeing
+    // a kin sick at one's fire (spouse, child under 16, parent). It pushes
+    // the ailment's problem on the things to think about and keeps an
+    // episode: what the body perceived then, never a hidden number (not
+    // the camp's fouling, not the odds of illness: the nights slept at
+    // the camp stand for its dirt). At a mark, a draw by will may make the
+    // body notice that it comes back; it then lays its latest episodes
+    // side by side, and what was there each time becomes a belief, true or
+    // false, told at the evening fire and taken by the listeners who carry
+    // the same problem, and by the children without having lived it (the
+    // tradition). Nothing is done from a belief yet. Absent: nothing is
+    // learnt. Every value is a D30 placeholder.
+    // ailments:      each ailment and the problem it is lived as;
+    // clues:         the circumstances noted in an episode, each with its
+    //                kind of cause (recorded, read by nothing yet):
+    //   camp         — the place of its camp;
+    //   camp_age     — its nights slept at the camp in a row: new, settled,
+    //                  old (below);
+    //   season       — the season;
+    //   crowd        — how many lay at its fire last night: a few, some,
+    //                  many (below);
+    //   cold_night   — the night before froze it;
+    //   sick_at_fire — someone sick lay at its fire lately (below);
+    //   ate          — what it ate most the day before;
+    //   drank        — the place where it last drank;
+    // episodes_kept: 8 — the episodes a problem keeps, the oldest dropping;
+    // new_camp_nights: 4 — a camp slept at fewer nights in a row is new;
+    // old_camp_seasons: 1 — more than a season in a row, old; between,
+    //                settled;
+    // crowd_some: 6, crowd_many: 16 — a fire of fewer than 6 is a few, of
+    //                16 or more many, between some;
+    // sick_seen_nights: 2 — a sick body seen at its fire these two nights;
+    // notice_from: 3 — no noticing with fewer than three episodes;
+    // notice_percent_by_will: [(0, 1), (20, 3), (50, 8), (100, 20)] — the
+    //                chance to notice at a mark with a full list (8), by
+    //                will; three eighths of it with three episodes;
+    // child_times: 2 — a child of one's own seen sick weighs it twice;
+    // depth_by_will: [(0, 3), (20, 3), (50, 8)] — the episodes laid side
+    //                by side: three for the timid, eight for the willing;
+    // all_but_one_from: 6 — with six or more, a circumstance missing once
+    //                is still a suspect;
+    // suspects_max:  2 — a belief names two suspects at most, drawn among
+    //                more;
+    // counter_examples: 3 — three episodes without its suspects and a
+    //                belief falls;
+    // whole_seasons: 4, half_seasons: 4 — a belief counts whole a cycle
+    //                from its last renewal (a mark that agrees, or the same
+    //                belief heard), at half a cycle more, then is forgotten;
+    // told_per_night: 2 — beliefs a body tells at a fire at most (one it
+    //                just came to, heard, or renewed by a mark);
+    // copy_credit:   50 — the least credit in the teller to take it;
+    // child_years:   16 — under it, a listener takes a belief without
+    //                carrying its problem.
+    learning: (
+        ailments: [(gut, "ill_gut"), (chest, "ill_chest")],
+        clues: [
+            ("camp", "place"),
+            ("camp_age", "place"),
+            ("season", "season"),
+            ("crowd", "place"),
+            ("cold_night", "weather"),
+            ("sick_at_fire", "company"),
+            ("ate", "food"),
+            ("drank", "water"),
+        ],
+        episodes_kept: 8,
+        new_camp_nights: 4,
+        old_camp_seasons: 1,
+        crowd_some: 6,
+        crowd_many: 16,
+        sick_seen_nights: 2,
+        notice_from: 3,
+        notice_percent_by_will: [(0, 1), (20, 3), (50, 8), (100, 20)],
+        child_times: 2,
+        depth_by_will: [(0, 3), (20, 3), (50, 8)],
+        all_but_one_from: 6,
+        suspects_max: 2,
+        counter_examples: 3,
+        whole_seasons: 4,
+        half_seasons: 4,
+        told_per_night: 2,
+        copy_credit: 50,
+        child_years: 16,
     ),
 )
