@@ -3502,6 +3502,7 @@ pub fn run_watched(
                 | News::Turned { .. }
                 | News::Untried { .. }
                 | News::Drew { .. }
+                | News::Skipped { .. }
                 | News::ToolTaken { .. }
                 | News::Problem { .. }
                 | News::Learning { .. }

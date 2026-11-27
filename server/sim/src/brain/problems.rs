@@ -6,7 +6,8 @@
 //!
 //! One kind today, read from the content (`content/needs.ron`, section
 //! `problems`): `full`, a gathering stopped with the arms full while the
-//! plant still bears, linked to the property its test read, `holds_g`.
+//! plant still bears. Nothing names what would answer it (the label that
+//! tied it to a property of the materials is gone, 27 November 2026).
 //!
 //! **The things to think about** (the project lead's design, for
 //! lightness): each body keeps a short list of the problems it lived, at
@@ -160,8 +161,8 @@ fn stopped_full(
     let arms = body.arms_g(movement);
     // The limit moved: it carries more than its arms alone hold.
     let beyond = body.food_g() > arms;
-    // Lived: no container holds anything for it, and its arms are full.
-    let lived = body.food_capacity_g(movement) == arms && body.food_g() >= arms;
+    // Lived: nothing it carries lies in a hollow, and its arms are full.
+    let lived = body.stowed_g() == 0 && body.food_g() >= arms;
     let (day, now) = (today(world), world.tick().0);
     let mut news = Vec::new();
     if let Some(trial) = mind
@@ -169,6 +170,8 @@ fn stopped_full(
         .filter(|t| t.problem.is_some_and(|a| a.kind == kind))
     {
         if beyond {
+            // It lives it now: what holds its food served it.
+            handwork::note_served(world, rules, id, mind);
             news.extend(judge(rules, (id, day, now), mind, &trial, true));
         } else if lived && let Some(aim) = mind.trial.as_mut().and_then(|t| t.problem.as_mut()) {
             aim.returns += 1;
@@ -455,6 +458,11 @@ fn judge(
             },
         ];
     }
+    // Kept, only the deeds of which something came that served stay
+    // known (D57, amended 27 November 2026).
+    if moved {
+        handwork::keep_what_served(rules, mind, &trial.before.hands);
+    }
     let kept = moved && mind.ways.hands != trial.before.hands;
     mind.judged = Some(Judged {
         way: Way::Hands,
@@ -608,12 +616,37 @@ mod tests {
         world.advance(1, rules, &mut Vec::new());
     }
 
-    /// Has it take a birch bark folded into a hollow.
-    fn take_hollow(world: &mut World, rules: &Content, id: BodyId) {
+    /// Has it take a birch bark folded into a hollow: the hollow.
+    fn take_hollow(world: &mut World, rules: &Content, id: BodyId) -> crate::ItemId {
         let pos = world.body(id).unwrap().pos();
         let item = world.spawn_hollow("birch_bark", 200, pos, rules);
         world.queue(Intention::PickUp { body: id, item });
         world.advance(1, rules, &mut Vec::new());
+        item
+    }
+
+    /// Puts the food of its arms in `hollow`.
+    fn stow(world: &mut World, rules: &Content, id: BodyId, hollow: crate::ItemId) {
+        let food: Vec<crate::ItemId> = world
+            .body(id)
+            .unwrap()
+            .inventory()
+            .filter(|i| *i != hollow && world.item(*i).unwrap().within().is_none())
+            .collect();
+        for item in food {
+            assert!(world.put_now(id, (item, hollow), rules).is_some());
+        }
+    }
+
+    fn put_berries(rules: &Content) -> Deed {
+        let index = |id: &str| {
+            u16::try_from(rules.materials.iter().position(|m| m.id == id).unwrap()).unwrap()
+        };
+        Deed {
+            gesture: Gesture::PutIn,
+            on: index("berries"),
+            with: index("birch_bark") | handwork::HOLLOW,
+        }
     }
 
     /// Lays a flint at its feet: something new to take.
@@ -718,12 +751,22 @@ mod tests {
     fn carrying_beyond_the_arms_or_without_the_section_is_no_problem() {
         let (mut rules, mut world, mut brains, id) = valley();
         willing(&mut brains, id, 100);
-        take_hollow(&mut world, &rules, id);
-        take(&mut world, &rules, id, "berries", 3000);
+        let hollow = take_hollow(&mut world, &rules, id);
+        take(&mut world, &rules, id, "berries", 1000);
+        stow(&mut world, &rules, id, hollow);
+        take(&mut world, &rules, id, "berries", 1000);
         let body = world.body(id).unwrap();
         assert!(body.food_g() > body.arms_g(&rules.movement));
         stopped(&mut world, &rules, &mut brains, id);
         assert_eq!(brains.minds[&id].problems.len(), 0);
+        // A hollow merely carried moves no limit (amended 27 November
+        // 2026): its arms full beside it, the problem is lived.
+        let (_, mut world, mut brains, id) = valley();
+        willing(&mut brains, id, 0);
+        take_hollow(&mut world, &rules, id);
+        arms_full(&mut world, &rules, id);
+        stopped(&mut world, &rules, &mut brains, id);
+        assert_eq!(brains.minds[&id].problems.len(), 1);
         let (_, mut world, mut brains, id) = valley();
         rules.needs.problems = crate::content::Problems::default();
         willing(&mut brains, id, 100);
@@ -771,16 +814,55 @@ mod tests {
         let deed = fold_bark(&rules);
         let mind = brains.minds.get_mut(&id).unwrap();
         assert!(mind.trial.is_some());
-        // In its trial it folded the bark, a gesture new to its hands.
+        // In its trial it folded the bark and put its berries in it,
+        // gestures new to its hands; it also took a pebble, of which
+        // nothing came that served.
+        let put = put_berries(&rules);
+        let pebble = Deed {
+            gesture: Gesture::PickUp,
+            on: u16::try_from(
+                rules
+                    .materials
+                    .iter()
+                    .position(|m| m.id == "pebble")
+                    .unwrap(),
+            )
+            .unwrap(),
+            with: NOTHING,
+        };
         mind.handwork.gestured = true;
-        mind.ways.hands.add(deed);
+        for learnt in [deed, put, pebble] {
+            mind.ways.hands.add(learnt);
+        }
         let _ = brains.news();
-        take_hollow(&mut world, &rules, id);
-        take(&mut world, &rules, id, "berries", 2000);
+        // The hollow merely carried, its arms full again: the limit has
+        // not moved (amended 27 November 2026).
+        let hollow = take_hollow(&mut world, &rules, id);
+        stopped(&mut world, &rules, &mut brains, id);
+        assert_eq!(
+            brains.minds[&id]
+                .trial
+                .and_then(|t| t.problem)
+                .map(|a| a.returns),
+            Some(1)
+        );
+        let _ = brains.news();
+        stow(&mut world, &rules, id, hollow);
+        take(&mut world, &rules, id, "berries", 1000);
         stopped(&mut world, &rules, &mut brains, id);
         let mind = &brains.minds[&id];
         assert!(mind.trial.is_none());
         assert!(mind.ways.hands.contains(deed), "what served is kept");
+        assert!(mind.ways.hands.contains(put));
+        assert!(
+            !mind.ways.hands.contains(pebble),
+            "a deed of which nothing came that served does not stay known"
+        );
+        assert_eq!(
+            mind.handwork.kept,
+            [put, deed],
+            "its own, from a kept trial"
+        );
         let judged = mind.judged.expect("told tonight");
         assert!(judged.kept);
         assert_eq!(judged.problem, Some(0), "told with its problem");

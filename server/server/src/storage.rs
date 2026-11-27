@@ -39,7 +39,7 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 20;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 21;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
@@ -876,6 +876,7 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             17 => migrate_v17_to_v18(&data)?,
             18 => migrate_v18_to_v19(data),
             19 => migrate_v19_to_v20(&data, content)?,
+            20 => migrate_v20_to_v21(data),
             _ => return Err(unsupported()),
         };
         version += 1;
@@ -1166,6 +1167,17 @@ fn migrate_v17_to_v18(data: &str) -> Result<String, StorageError> {
 /// before has every body healthy, never ill, and every place clean, which
 /// is what the fields read as when absent: the data is the same.
 fn migrate_v18_to_v19(data: String) -> String {
+    data
+}
+
+/// v21: "put in" is a gesture and nothing holds by itself (D57, amended
+/// 27 November 2026): an item may lie `within` a hollow thing carried by
+/// the same body, and a put-in under way names what it puts `into`. A
+/// world saved before has nothing put in anything, which is what the
+/// fields read as when absent: the data is the same. A body that carried
+/// food beyond its arms beside a hollow holds it all in its arms again,
+/// and takes no more till they have room.
+fn migrate_v20_to_v21(data: String) -> String {
     data
 }
 
@@ -2032,6 +2044,26 @@ mod tests {
         assert_eq!(folded.material(), "birch_bark");
         assert!(folded.hollow_ml() > 0, "folded: it holds");
         assert_eq!(folded.mass_g(), 200);
+    }
+
+    #[test]
+    fn a_v20_world_has_nothing_put_in_anything() {
+        let content = content();
+        let mut world = World::with_valley(Calendar::new(2, 3).unwrap(), &content, 256);
+        let material = content.materials[0].id.clone();
+        let item = world.spawn_item(&material, 200, sim::Pos::new(3, 3));
+        let old = serde_json::to_string(&world).unwrap();
+        assert!(!old.contains("within"), "absent when nothing is put in");
+        let mut storage = Sqlite::in_memory(content).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (0, 20, ?1)",
+                [old],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        assert_eq!(back.item(item).expect("the item kept").within(), None);
     }
 
     #[test]

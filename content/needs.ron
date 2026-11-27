@@ -973,7 +973,8 @@
         giver_starving_fat_percent: 15,
     ),
     // The gestures of the hands (D57; the project lead, 24 November 2026:
-    // "C'est parfait"): pick up, cut with what is in hand, fold. No
+    // "C'est parfait"): pick up, cut with what is in hand, fold, put a
+    // thing in another. No
     // recipe: what a gesture gives is computed from what the materials
     // are on the scales they all share (materials.ron: hardness, edge,
     // suppleness, toughness, form, area_dm2, wears_days or wears_seasons;
@@ -990,20 +991,32 @@
     // fold_suppleness:  5 — a sheet at least this supple takes a hollow
     //                       when folded; a stiffer one breaks;
     // loose_g_per_litre: 500 — a litre of hollow keeps half a kilogram of
-    //                       loose food together (berries, nuts, leaves
-    //                       heaped, not packed).
+    //                       loose things together (berries, nuts, leaves
+    //                       heaped, not packed), once they are put in it:
+    //                       nothing holds by being carried (27 November
+    //                       2026). A thing with no hollow holds nothing.
+    // What a body remembers of what failed (27 November 2026):
+    // failures_kept:   16 — the gestures that gave nothing or broke the
+    //                       thing (the gesture, on what kind, with or in
+    //                       what kind) a body remembers, the oldest going
+    //                       when one more comes; it does not draw such a
+    //                       gesture again while it remembers it (0: none
+    //                       remembered).
     // What a body sees before it tries (the project lead, 25 November
     // 2026: "on ne coupe pas avec une baie"); it may still be wrong:
     // edge_seen:        3 — a thing with at least this edge looks like it
     //                       could cut; it is tried on any tree;
     // supple_seen:      5 — a thing at least this supple feels like it
     //                       could bend; so does any sheet, stiff or not.
+    // A put-in is tried in any thing carried that is a hollow or a sheet,
+    // of any other thing carried.
     hands: (
         gesture_minutes: 10,
         near_tiles: 4,
         tries_per_day: 4,
         fold_suppleness: 5,
         loose_g_per_litre: 500,
+        failures_kept: 16,
         edge_seen: 3,
         supple_seen: 5,
     ),
@@ -1011,8 +1024,7 @@
     // lead: "not a feeling added to push them, rather a limitation that
     // leads to thought: my arms are full, I can't take more"). A refusal of
     // the world lived by a body is remembered as a problem (the refusal, the
-    // place, the day, how many times), linked to the property of the
-    // materials the refusal's test read, and carried among its things to
+    // place, the day, how many times) and carried among its things to
     // think about (mind_slots below). Living it, the chance of its will may
     // make a body mean to try it; it begins a trial of its hands at a free
     // moment (hunger and thirst under the day's distress lines: a calm
@@ -1025,9 +1037,10 @@
     // with its problem, and only a listener who lives the same problem
     // tries it first. Absent: nothing is remembered as a problem.
     // kinds:               one, `full` (a gathering stopped with the arms
-    //                      full, the plant still bearing), whose test read
-    //                      `holds_g` (what a body's containers hold beyond
-    //                      its arms); its limit moved when a later
+    //                      full, the plant still bearing); nothing names
+    //                      what would answer it (the label that tied it to
+    //                      a property of the materials is gone, 27 November
+    //                      2026); its limit moved when a later
     //                      gathering stopped full finds the body carrying
     //                      more than its arms alone;
     //   trials_per_season: 1 — at most one trial a season begun from it;
@@ -1046,27 +1059,23 @@
     //                      tries if something new lies around, else puts
     //                      it back below the top.
     // ill_gut, ill_chest (D59, 27 November 2026): an ailment felt, the gut
-    //                      or the chest, lived by the body itself (property
-    //                      `felt`: no material's test reads it), pushed by
+    //                      or the chest, lived by the body itself, pushed by
     //                      the `learning` section below; trials_per_season
     //                      0 — nothing is tried from it in this first step.
     problems: (
         kinds: [
             (
                 refusal: "full",
-                property: "holds_g",
                 trials_per_season: 1,
                 gives_up_seasons: 1,
             ),
             (
                 refusal: "ill_gut",
-                property: "felt",
                 trials_per_season: 0,
                 gives_up_seasons: 1,
             ),
             (
                 refusal: "ill_chest",
-                property: "felt",
                 trials_per_season: 0,
                 gives_up_seasons: 1,
             ),

@@ -1871,6 +1871,18 @@ pub enum News {
         /// The tick.
         at: u64,
     },
+    /// `body`, drawing a gesture in a trial of its hands, set aside
+    /// `deeds` different gestures the things at hand made plausible,
+    /// because it remembers they gave nothing in its hands (D57, amended
+    /// 27 November 2026).
+    Skipped {
+        /// Who.
+        body: BodyId,
+        /// The gestures set aside at this draw.
+        deeds: u32,
+        /// The tick.
+        at: u64,
+    },
     /// `body` took up a thing of `tool` (a material's index in the
     /// content) as the tool a cut it knows or heard names (D57, amended
     /// 25 November 2026: "cut a birch with a flint" holds the flint).

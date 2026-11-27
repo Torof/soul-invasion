@@ -153,6 +153,36 @@ pub struct HandsProbe {
     /// take it (D57, amended 25 November 2026: no longer chosen; only a
     /// load filled during the gesture lets one fall).
     pub barks_dropped: u32,
+    /// Who put a thing in a hollow and it held (D57, amended 27 November
+    /// 2026: nothing holds by itself): the first day, and its tribe.
+    pub put_first: BTreeMap<BodyId, (u64, u8)>,
+    /// The put-ins ended, by tribe: (held, gave nothing).
+    pub puts: BTreeMap<u8, (u32, u32)>,
+    /// The gestures set aside at a draw because their failure was
+    /// remembered, by tribe.
+    pub skipped: BTreeMap<u8, u32>,
+    /// The cuts, folds and put-ins that gave nothing or broke the thing,
+    /// by tribe, body and gesture (the gesture, on what, with or in
+    /// what): how many times that body failed that same gesture.
+    pub failures: BTreeMap<(u8, BodyId, Gesture, String, String), u32>,
+    /// The deeds the living past infancy know at the run's end, by tribe
+    /// and name: (knowers, of them holding it from a kept trial of their
+    /// own).
+    pub known_by: BTreeMap<(u8, String), (u32, u32)>,
+}
+
+/// The least, the median (the lower of two) and the most of `values`;
+/// null when empty.
+fn spread(values: &mut [u64]) -> Value {
+    values.sort_unstable();
+    let (Some(min), Some(max)) = (values.first(), values.last()) else {
+        return Value::Null;
+    };
+    json!({
+        "min": min,
+        "median": values[(values.len() - 1) / 2],
+        "max": max,
+    })
 }
 
 fn tribe(people: &BTreeMap<BodyId, Person>, id: BodyId) -> u8 {
@@ -193,6 +223,7 @@ impl HandsProbe {
                 gesture,
                 item,
                 on,
+                into,
                 gave,
                 broke,
             } => {
@@ -201,18 +232,47 @@ impl HandsProbe {
                 entry.1 += u32::from(gave.is_some());
                 // Every cut and fold ended, by what it was done on and
                 // with, and what came of it (27 November 2026).
-                let with = if *gesture == Gesture::Cut {
-                    world
+                let with = match gesture {
+                    Gesture::Cut => world
                         .item(*item)
-                        .map_or_else(|| "?".to_owned(), |i| i.material().to_owned())
-                } else {
-                    String::new()
+                        .map_or_else(|| "?".to_owned(), |i| i.material().to_owned()),
+                    // What it was put in: a hollow thing, or not.
+                    Gesture::PutIn => into.and_then(|i| world.item(i)).map_or_else(
+                        || "?".to_owned(),
+                        |i| {
+                            if i.hollow_ml() > 0 {
+                                format!("hollow {}", i.material())
+                            } else {
+                                i.material().to_owned()
+                            }
+                        },
+                    ),
+                    _ => String::new(),
                 };
-                let tried = self.tried.entry((*gesture, on.clone(), with)).or_default();
+                let tried = self
+                    .tried
+                    .entry((*gesture, on.clone(), with.clone()))
+                    .or_default();
                 match (gave.is_some(), *broke) {
                     (true, _) => tried.0 += 1,
                     (false, false) => tried.1 += 1,
                     (false, true) => tried.2 += 1,
+                }
+                let t = tribe(people, *body);
+                if gave.is_none() {
+                    *self
+                        .failures
+                        .entry((t, *body, *gesture, on.clone(), with))
+                        .or_default() += 1;
+                }
+                if *gesture == Gesture::PutIn {
+                    let puts = self.puts.entry(t).or_default();
+                    if gave.is_some() {
+                        puts.0 += 1;
+                        self.put_first.entry(*body).or_insert((day, t));
+                    } else {
+                        puts.1 += 1;
+                    }
                 }
                 if *gesture == Gesture::Cut {
                     let tool = world
@@ -310,6 +370,9 @@ impl HandsProbe {
                     kept: true,
                     ..
                 } => self.year(tribe(people, *body), age_year).kept += 1,
+                News::Skipped { body, deeds, .. } => {
+                    *self.skipped.entry(tribe(people, *body)).or_default() += deeds;
+                }
                 News::Untried { body, .. }
                 | News::Drew { body, .. }
                 | News::ToolTaken { body, .. } => {
@@ -434,6 +497,7 @@ impl HandsProbe {
             self.year(t, age_year);
         }
         self.known.clear();
+        self.known_by.clear();
         for b in world.bodies() {
             if world.is_infant(b, content) || b.condition().vitality.points() == 0 {
                 continue;
@@ -441,7 +505,14 @@ impl HandsProbe {
             let mut served = false;
             if let Some(mind) = brains.mind(b.id()) {
                 for deed in mind.ways().hands.iter() {
-                    *self.known.entry(deed_name(content, deed)).or_default() += 1;
+                    let name = deed_name(content, deed);
+                    *self.known.entry(name.clone()).or_default() += 1;
+                    let by = self
+                        .known_by
+                        .entry((tribe(people, b.id()), name))
+                        .or_default();
+                    by.0 += 1;
+                    by.1 += u32::from(mind.handwork().kept.contains(&deed));
                 }
                 served = b.inventory().any(|i| {
                     world
@@ -463,6 +534,71 @@ impl HandsProbe {
             y.living += 1;
             y.carriers += u32::from(with);
         }
+    }
+
+    /// "Put in" as a gesture (D57, amended 27 November 2026), for a tribe
+    /// or for all (`docs/10`, `hands.put_in`): who made a hollow, who of
+    /// them then found that things go in it, how long after; the put-ins
+    /// by what came of them; the failures remembered and repeated; the
+    /// deeds known and how many hold them from a kept trial of their own.
+    fn put_in_json(&self, t: Option<u8>) -> Value {
+        let of = |tribe: u8| t.is_none_or(|t| t == tribe);
+        let mut first_hollow: BTreeMap<BodyId, u64> = BTreeMap::new();
+        for m in self.made.iter().filter(|m| of(m.tribe)) {
+            first_hollow.entry(m.body).or_insert(m.day);
+        }
+        let mut days: Vec<u64> = first_hollow
+            .iter()
+            .filter_map(|(body, made)| {
+                self.put_first
+                    .get(body)
+                    .map(|(put, _)| put.saturating_sub(*made))
+            })
+            .collect();
+        let found = days.len();
+        let (held, nothing) = self
+            .puts
+            .iter()
+            .filter(|(tribe, _)| of(**tribe))
+            .fold((0, 0), |sum, (_, n)| (sum.0 + n.0, sum.1 + n.1));
+        let skipped: u32 = self
+            .skipped
+            .iter()
+            .filter(|(tribe, _)| of(**tribe))
+            .map(|(_, n)| n)
+            .sum();
+        // Each person's most repeated failure of one same gesture.
+        let mut worst: BTreeMap<BodyId, u64> = BTreeMap::new();
+        for ((tribe, body, ..), n) in &self.failures {
+            if of(*tribe) {
+                let most = worst.entry(*body).or_default();
+                *most = (*most).max(u64::from(*n));
+            }
+        }
+        let mut worst: Vec<u64> = worst.into_values().collect();
+        let mut known: BTreeMap<&str, (u32, u32)> = BTreeMap::new();
+        for ((tribe, name), n) in &self.known_by {
+            if of(*tribe) {
+                let sum = known.entry(name).or_default();
+                *sum = (sum.0 + n.0, sum.1 + n.1);
+            }
+        }
+        json!({
+            "hollow_makers": first_hollow.len(),
+            "found_put_in": found,
+            "never_found": first_hollow.len() - found,
+            "days_from_hollow_to_put_in": spread(&mut days),
+            "people_who_put_in": self.put_first.values().filter(|(_, tribe)| of(*tribe)).count(),
+            "tried": {"held": held, "nothing": nothing},
+            "skipped_for_a_failure_remembered": skipped,
+            "people_who_failed": worst.len(),
+            "same_failure_repeated": spread(&mut worst),
+            "known": known.iter().map(|(deed, (knowers, kept))| json!({
+                "deed": deed,
+                "knowers": knowers,
+                "from_a_kept_trial": kept,
+            })).collect::<Vec<_>>(),
+        })
     }
 
     /// The probe as JSON (`docs/10`, section `hands`), with the homes
@@ -522,6 +658,7 @@ impl HandsProbe {
                     "makers": self.made.iter().filter(|m| m.tribe == t).map(|m| m.body).collect::<BTreeSet<_>>().len(),
                     "told": self.told.iter().filter(|x| x.tribe == t).count(),
                     "heard_from_tribe": heard,
+                    "put_in": self.put_in_json(Some(t)),
                     "years": years,
                 })
             })
@@ -563,14 +700,16 @@ impl HandsProbe {
             "known": self.known,
             "cuts_with": self.cuts_with.iter().map(|(m, (done, gave))| (m.clone(), json!({"done": done, "gave": gave}))).collect::<serde_json::Map<String, Value>>(),
             "barks_dropped": self.barks_dropped,
+            "put_in": self.put_in_json(None),
             "tribes": tribes_json,
         })
     }
 }
 
 /// A deed's name: its gesture, what it is done on, and what it cuts with
-/// (`cut birch with flint`, `pick up flint`, `fold birch_bark`); a thing
-/// folded into a hollow is named `hollow` and its material.
+/// (`cut birch with flint`, `pick up flint`, `fold birch_bark`), or what
+/// it is put in (`put berries in hollow birch_bark`); a thing folded into
+/// a hollow is named `hollow` and its material.
 fn deed_name(content: &Content, deed: Deed) -> String {
     let material = |m: u16| {
         let id = content
@@ -591,6 +730,7 @@ fn deed_name(content: &Content, deed: Deed) -> String {
                 .map_or("?", |s| s.id.as_str());
             format!("cut {tree} with {}", material(deed.with))
         }
+        Gesture::PutIn => format!("put {} in {}", material(deed.on), material(deed.with)),
         g => format!("{} {}", g.key(), material(deed.on)),
     }
 }
@@ -774,6 +914,7 @@ mod tests {
         let mut probe = HandsProbe::default();
         let body = BodyId(1);
         let ended = |gesture, on: &str, gave: Option<ItemId>, broke| Event::Gestured {
+            into: None,
             body,
             gesture,
             item: tool,
@@ -809,5 +950,83 @@ mod tests {
         assert_eq!(find("fold", "fibres")["nothing"], 1);
         assert_eq!(json["made_of"], json!({}));
         assert_eq!(json["first"], Value::Null);
+    }
+
+    #[test]
+    fn the_put_ins_are_counted_from_the_first_hollow_with_the_failures_repeated() {
+        let content = Content::sample();
+        let mut world = World::new(sim::Calendar::default(), &content);
+        let stone = content.materials[0].id.clone();
+        let thing = world.spawn_item(&stone, 400, sim::Pos::new(1, 1));
+        let people = BTreeMap::new();
+        let mut probe = HandsProbe::default();
+        let (first, second) = (BodyId(1), BodyId(2));
+        for (body, day) in [(first, 3), (second, 5), (first, 9)] {
+            probe.made.push(Made {
+                day,
+                body,
+                tribe: 0,
+                remake: false,
+                heard: false,
+                material: "birch_bark".to_owned(),
+            });
+        }
+        let ended = |body, gesture, gave| Event::Gestured {
+            body,
+            gesture,
+            item: thing,
+            on: "berries".to_owned(),
+            into: Some(thing),
+            gave,
+            broke: false,
+        };
+        // The first puts berries in a stone three times for nothing, then
+        // in something that holds, on day 10; the second only cuts for
+        // nothing, once.
+        for day in 4..7 {
+            let event = ended(first, Gesture::PutIn, None);
+            probe.event((&world, &content), &people, &event, (day, 1));
+        }
+        for day in [10, 12] {
+            let event = ended(first, Gesture::PutIn, Some(thing));
+            probe.event((&world, &content), &people, &event, (day, 2));
+        }
+        let event = ended(second, Gesture::Cut, None);
+        probe.event((&world, &content), &people, &event, (6, 1));
+        probe.skipped.insert(0, 4);
+        probe
+            .known_by
+            .insert((0, "fold birch_bark".to_owned()), (2, 1));
+        let json = probe.json(&[], 8, 1);
+        for put in [&json["put_in"], &json["tribes"][0]["put_in"]] {
+            assert_eq!(put["hollow_makers"], 2);
+            assert_eq!(
+                (&put["found_put_in"], &put["never_found"]),
+                (&json!(1), &json!(1))
+            );
+            assert_eq!(
+                put["days_from_hollow_to_put_in"],
+                json!({"min": 7, "median": 7, "max": 7})
+            );
+            assert_eq!(put["people_who_put_in"], 1);
+            assert_eq!(put["tried"], json!({"held": 2, "nothing": 3}));
+            assert_eq!(put["skipped_for_a_failure_remembered"], 4);
+            assert_eq!(put["people_who_failed"], 2);
+            assert_eq!(
+                put["same_failure_repeated"],
+                json!({"min": 1, "median": 1, "max": 3})
+            );
+            assert_eq!(
+                put["known"],
+                json!([{"deed": "fold birch_bark", "knowers": 2, "from_a_kept_trial": 1}])
+            );
+        }
+        let tried = json["tried"].as_array().unwrap();
+        let put = tried.iter().find(|t| t["gesture"] == "put in").unwrap();
+        assert_eq!((&put["with"], &put["gave"]), (&json!(stone), &json!(2)));
+        // Nobody made a hollow: nothing to spread.
+        let empty = HandsProbe::default().json(&[], 8, 1);
+        assert_eq!(empty["put_in"]["days_from_hollow_to_put_in"], Value::Null);
+        assert_eq!(empty["put_in"]["same_failure_repeated"], Value::Null);
     }
 }

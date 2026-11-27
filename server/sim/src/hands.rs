@@ -1,6 +1,9 @@
 //! The gestures of the hands (D57; the project lead, 24 November 2026:
 //! "C'est parfait"): picking up (the act of D35), cutting a tree with what
-//! is in hand, folding what is carried. No recipe: what comes of a
+//! is in hand, folding what is carried, putting a thing carried in
+//! another (amended 27 November 2026: nothing holds by itself; a hollow
+//! holds what was put in it, a thing with no hollow holds nothing). No
+//! recipe: what comes of a
 //! gesture is computed from what the materials are on the scales they all
 //! share (hardness, edge, suppleness, toughness, form, `content/`; amended
 //! 27 November 2026), never from a result written for them. A gesture
@@ -32,11 +35,13 @@ pub enum Gesture {
     Cut,
     /// Fold a thing carried.
     Fold,
+    /// Put a thing carried in another thing carried.
+    PutIn,
 }
 
 impl Gesture {
     /// Every gesture, in a fixed order.
-    pub const ALL: [Gesture; 3] = [Gesture::PickUp, Gesture::Cut, Gesture::Fold];
+    pub const ALL: [Gesture; 4] = [Gesture::PickUp, Gesture::Cut, Gesture::Fold, Gesture::PutIn];
 
     /// Its name, as the vivarium writes it.
     #[must_use]
@@ -45,6 +50,7 @@ impl Gesture {
             Gesture::PickUp => "pick up",
             Gesture::Cut => "cut",
             Gesture::Fold => "fold",
+            Gesture::PutIn => "put in",
         }
     }
 }
@@ -55,8 +61,11 @@ impl Gesture {
 pub struct Making {
     /// The gesture.
     pub gesture: Gesture,
-    /// The tool it cuts with, or the thing it folds.
+    /// The tool it cuts with, the thing it folds, or the thing it puts.
     pub item: ItemId,
+    /// The thing it puts `item` in, when it puts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub into: Option<ItemId>,
     /// The tree it cuts, when it cuts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree: Option<(ChunkPos, TreeKey)>,
@@ -197,6 +206,19 @@ impl World {
         id
     }
 
+    /// Puts `item` in `into`, both carried by `id`, at once, as a put-in
+    /// ended would: for the tests.
+    #[cfg(test)]
+    pub(crate) fn put_now(
+        &mut self,
+        id: BodyId,
+        (item, into): (ItemId, ItemId),
+        rules: &Content,
+    ) -> Option<ItemId> {
+        let index = self.index_of(id)?;
+        self.put_gives(index, (item, into), rules, &mut Vec::new())
+    }
+
     /// The ticks of a gesture: the content's minutes.
     fn gesture_ticks(&self, rules: &Content) -> u64 {
         (self.calendar.ticks_per_day() * u64::from(rules.needs.hands.gesture_minutes) / (24 * 60))
@@ -273,6 +295,7 @@ impl World {
             Making {
                 gesture: Gesture::Cut,
                 item: with,
+                into: None,
                 tree: Some((chunk, tree)),
                 until,
             },
@@ -308,11 +331,158 @@ impl World {
             Making {
                 gesture: Gesture::Fold,
                 item,
+                into: None,
                 tree: None,
                 until,
             },
             events,
         );
+    }
+
+    /// `id` puts `item` in `into`, both carried (D57, amended 27 November
+    /// 2026): busy the content's minutes, whatever comes of it.
+    pub(crate) fn put_in(
+        &mut self,
+        id: BodyId,
+        (item, into): (ItemId, ItemId),
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) {
+        let refuse = |events: &mut Vec<Event>, reason| {
+            events.push(Event::GestureRefused {
+                body: id,
+                gesture: Gesture::PutIn,
+                reason,
+            });
+        };
+        let Some(index) = self.index_of(id) else {
+            return refuse(events, Refusal::Unknown);
+        };
+        if !self.carries(index, item) || !self.carries(index, into) {
+            return refuse(events, Refusal::NotCarried);
+        }
+        let until = Tick(self.tick.0 + self.gesture_ticks(rules));
+        self.begin(
+            index,
+            Making {
+                gesture: Gesture::PutIn,
+                item,
+                into: Some(into),
+                tree: None,
+                until,
+            },
+            events,
+        );
+    }
+
+    /// The grams of loose things the hollow `hollow` can still take: what
+    /// its volume keeps together (the content's grams a litre) less what
+    /// lies in it. 0 for a thing with no hollow.
+    #[must_use]
+    pub fn hollow_room_g(&self, hollow: ItemId, rules: &Content) -> u32 {
+        let Some(thing) = self.item(hollow).filter(|h| h.hollow_ml > 0) else {
+            return 0;
+        };
+        let Place::Carried { body } = thing.place else {
+            return 0;
+        };
+        let inside: u32 = self.body(body).map_or(0, |b| {
+            b.inventory()
+                .filter_map(|i| self.item(i))
+                .filter(|i| i.within == Some(hollow))
+                .fold(0, |sum, i| sum.saturating_add(i.mass_g))
+        });
+        rules
+            .needs
+            .hands
+            .holds_g(thing.hollow_ml)
+            .saturating_sub(inside)
+    }
+
+    /// What a put-in gives ([`Gesture::PutIn`]), by what the two things
+    /// are: nothing when the second has no hollow, when the first is
+    /// itself folded into a hollow or lies in one already, or when no
+    /// room is left; a loose thing (food, bits) goes in as far as the
+    /// room allows, the rest staying where it was; a whole thing goes in
+    /// whole or not at all. What is in the hollow now.
+    fn put_gives(
+        &mut self,
+        index: usize,
+        (item, into): (ItemId, ItemId),
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) -> Option<ItemId> {
+        if item == into || !self.carries(index, item) || !self.carries(index, into) {
+            return None;
+        }
+        let room = self.hollow_room_g(into, rules);
+        let thing = self.item(item)?;
+        if thing.hollow_ml > 0 || thing.within.is_some() {
+            return None;
+        }
+        let loose = rules
+            .material(&thing.material)
+            .is_some_and(crate::content::Material::loose);
+        let mass = thing.mass_g;
+        let goes = if loose { mass.min(room) } else { mass };
+        if goes == 0 || goes > room {
+            return None;
+        }
+        let id = self.bodies[index].id;
+        let put = if goes < mass {
+            // The part that fits goes in, a pile of its own.
+            let part = ItemId(self.next_item);
+            let mut taken = self.items.get_mut(&item)?.split(part, goes)?;
+            self.next_item += 1;
+            taken.within = Some(into);
+            self.items.insert(part, taken);
+            self.bodies[index].carried.push(part);
+            part
+        } else {
+            self.items.get_mut(&item)?.within = Some(into);
+            // What lies in a hollow is no longer in hand.
+            let body = &mut self.bodies[index];
+            if body.held == Some(item) {
+                body.held = None;
+                body.carried.push(item);
+                events.push(Event::BodyHolds {
+                    body: id,
+                    item: None,
+                });
+            }
+            item
+        };
+        self.inventory_changed(index, rules, events);
+        Some(put)
+    }
+
+    /// What the hollow `hollow` carried by the body at `index` held falls
+    /// at its feet (D57, amended 27 November 2026): the hollow is let go
+    /// or torn, and nothing holds by itself. The caller weighs the load
+    /// again.
+    pub(crate) fn spill(&mut self, index: usize, hollow: ItemId, events: &mut Vec<Event>) {
+        let at = self.bodies[index].pos();
+        let inside: Vec<ItemId> = self.bodies[index]
+            .inventory()
+            .filter(|i| self.item(*i).is_some_and(|i| i.within == Some(hollow)))
+            .collect();
+        for item in inside {
+            self.bodies[index].let_go(item);
+            let Some(fallen) = self.items.get_mut(&item) else {
+                continue;
+            };
+            fallen.within = None;
+            fallen.place = Place::Ground { pos: at };
+            let (material, mass_g) = (fallen.material.clone(), fallen.mass_g);
+            self.lay(item, at.chunk());
+            events.push(Event::ItemAdded {
+                item,
+                material,
+                mass_g,
+                at,
+                version: self.chunk_version(at.chunk()),
+            });
+        }
     }
 
     /// Moves every gesture on (D57): one whose body walks or sleeps ends
@@ -340,7 +510,7 @@ impl World {
                     let species = self.trees_in(chunk).iter().find(|t| t.key == key)?.species;
                     Some(self.species.get(species)?.id.clone())
                 }),
-                Gesture::Fold | Gesture::PickUp => {
+                Gesture::Fold | Gesture::PickUp | Gesture::PutIn => {
                     self.item(making.item).map(|i| i.material.clone())
                 }
             }
@@ -348,6 +518,12 @@ impl World {
             let (gave, broke) = match making.gesture {
                 Gesture::Cut => (self.cut_gives(index, &making, rules, events), false),
                 Gesture::Fold => self.fold_gives(index, making.item, rules, events),
+                Gesture::PutIn => (
+                    making
+                        .into
+                        .and_then(|into| self.put_gives(index, (making.item, into), rules, events)),
+                    false,
+                ),
                 Gesture::PickUp => (None, false),
             };
             events.push(Event::Gestured {
@@ -355,6 +531,7 @@ impl World {
                 gesture: making.gesture,
                 item: making.item,
                 on,
+                into: making.into,
                 gave,
                 broke,
             });
@@ -399,6 +576,7 @@ impl World {
                 made: self.tick,
                 place: Place::Carried { body: id },
                 hollow_ml: 0,
+                within: None,
             },
         );
         self.bodies[index].carried.push(item);
@@ -626,7 +804,7 @@ mod tests {
             assert!(!body(&world, id).has(bark));
             assert_eq!(body(&world, id).held(), None);
             assert_eq!(body(&world, id).load_g(), load - 400);
-            assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 1000);
+            assert_eq!(body(&world, id).food_room_g(&rules.movement), 1000);
         }
     }
 
@@ -645,12 +823,13 @@ mod tests {
         assert_eq!(gesture_outcome(&mut world, &rules, id), (Some(leaf), false));
         // A square of 9 dm2: 2 litres, a kilogram of loose food.
         assert_eq!(world.item(leaf).unwrap().hollow_ml(), 2000);
-        assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 2000);
+        assert_eq!(world.hollow_room_g(leaf, &rules), 1000);
+        // Carried, it holds nothing by itself (amended 27 November 2026).
+        assert_eq!(body(&world, id).food_room_g(&rules.movement), 1000);
         let mut events = Vec::new();
         // The world looks at what tore once a day.
         world.advance(1440 * 2, &rules, &mut events);
         assert!(world.item(leaf).is_none(), "torn a day after the fold");
-        assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 1000);
         // Unfolded, a leaf does not wear: only the folds tear.
         let flat = picked(&mut world, &rules, id, "butterbur_leaf", 50);
         world.advance(1440 * 3, &rules, &mut events);
@@ -733,7 +912,7 @@ mod tests {
         assert_eq!(world.item(bark).unwrap().material(), "birch_bark");
         assert!(body(&world, id).has(bark));
         // Ten game minutes: ten ticks of this day.
-        let arms = body(&world, id).food_capacity_g(&rules.movement);
+        let arms = body(&world, id).arms_g(&rules.movement);
         assert_eq!(arms, 1000);
         world.queue(Intention::Fold {
             body: id,
@@ -744,10 +923,11 @@ mod tests {
         assert_eq!(world.item(bark).unwrap().material(), "birch_bark");
         assert_eq!(world.item(bark).unwrap().hollow_ml(), 4740);
         assert_eq!(
-            body(&world, id).food_capacity_g(&rules.movement),
-            1000 + 2370,
-            "4.74 litres: 2.37 kg of loose food more"
+            world.hollow_room_g(bark, &rules),
+            2370,
+            "4.74 litres: room for 2.37 kg of loose food"
         );
+        assert_eq!(body(&world, id).stowed_g(), 0, "nothing in it yet");
     }
 
     #[test]
@@ -822,7 +1002,16 @@ mod tests {
             item: bark,
         });
         gesture_ends(&mut world, &rules, id).expect("folded");
-        assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 3370);
+        assert_eq!(world.hollow_room_g(bark, &rules), 2370);
+        // What it holds falls at the body's feet when it tears.
+        let berries = picked(&mut world, &rules, id, "berries", 600);
+        world.queue(Intention::PutIn {
+            body: id,
+            item: berries,
+            into: bark,
+        });
+        assert_eq!(gesture_ends(&mut world, &rules, id), Some(berries));
+        assert_eq!(body(&world, id).stowed_g(), 600);
         let mut events = Vec::new();
         world.advance(1440 * 2, &rules, &mut events);
         assert!(events.iter().any(|e| matches!(
@@ -831,7 +1020,149 @@ mod tests {
                 if *item == bark && material == "birch_bark" && *b == id
         )));
         assert!(world.item(bark).is_none());
-        assert_eq!(body(&world, id).food_capacity_g(&rules.movement), 1000);
+        assert!(!body(&world, id).has(berries), "spilt with the tear");
+        assert_eq!(body(&world, id).food_g(), 0);
+    }
+
+    /// Folds a birch bark of 200 g on the body: the hollow.
+    fn hollow(world: &mut World, rules: &Content, id: BodyId) -> ItemId {
+        let bark = picked(world, rules, id, "birch_bark", 200);
+        world.queue(Intention::Fold {
+            body: id,
+            item: bark,
+        });
+        gesture_ends(world, rules, id).expect("folded")
+    }
+
+    /// `id` puts `item` in `into`: what is in it now.
+    fn put(
+        world: &mut World,
+        rules: &Content,
+        id: BodyId,
+        (item, into): (ItemId, ItemId),
+    ) -> Option<ItemId> {
+        world.queue(Intention::PutIn {
+            body: id,
+            item,
+            into,
+        });
+        gesture_ends(world, rules, id)
+    }
+
+    #[test]
+    fn food_put_in_a_hollow_is_off_the_arms_as_far_as_its_room() {
+        let rules = rules();
+        let (mut world, id, ..) = by_a_birch(&rules);
+        let bark = hollow(&mut world, &rules, id);
+        // Its arms full: the hollow it carries takes nothing by itself.
+        let first = picked(&mut world, &rules, id, "berries", 1000);
+        assert_eq!(body(&world, id).food_room_g(&rules.movement), 0);
+        let refused = world.spawn_item("hazelnuts", 100, body(&world, id).pos());
+        let mut events = Vec::new();
+        world.queue(Intention::PickUp {
+            body: id,
+            item: refused,
+        });
+        world.advance(1, &rules, &mut events);
+        assert!(!body(&world, id).has(refused), "its arms are full");
+        // Put in: its arms are free again, the food still carried.
+        assert_eq!(put(&mut world, &rules, id, (first, bark)), Some(first));
+        assert_eq!(world.item(first).unwrap().within(), Some(bark));
+        let b = body(&world, id);
+        assert_eq!((b.food_g(), b.stowed_g(), b.arms_food_g()), (1000, 1000, 0));
+        assert_eq!(b.food_room_g(&rules.movement), 1000);
+        assert_eq!(world.hollow_room_g(bark, &rules), 1370);
+        // What lies in it is not put in again.
+        assert_eq!(put(&mut world, &rules, id, (first, bark)), None);
+        // A second kilogram, then a third of which only 370 g fit: the
+        // part that fits goes in, the rest stays in its arms.
+        let second = picked(&mut world, &rules, id, "hazelnuts", 1000);
+        assert_eq!(put(&mut world, &rules, id, (second, bark)), Some(second));
+        let third = picked(&mut world, &rules, id, "berries", 1000);
+        let part = put(&mut world, &rules, id, (third, bark)).expect("a part");
+        assert_ne!(part, third);
+        assert_eq!(world.item(part).unwrap().mass_g(), 370);
+        assert_eq!(world.item(third).unwrap().mass_g(), 630);
+        let b = body(&world, id);
+        assert_eq!(
+            (b.food_g(), b.stowed_g(), b.arms_food_g()),
+            (3000, 2370, 630)
+        );
+        assert_eq!(world.hollow_room_g(bark, &rules), 0);
+        // Full: nothing more goes in.
+        assert_eq!(put(&mut world, &rules, id, (third, bark)), None);
+        // Saved and read back, what lies in the hollow lies in it still.
+        let saved = serde_json::to_string(&world).unwrap();
+        assert!(saved.contains("\"within\""));
+        let read: World = serde_json::from_str(&saved).unwrap();
+        assert_eq!(read.item(first).unwrap().within(), Some(bark));
+        assert_eq!(read.item(third).unwrap().within(), None);
+    }
+
+    #[test]
+    fn a_thing_with_no_hollow_holds_nothing_and_a_whole_thing_goes_in_whole_or_not() {
+        let rules = rules();
+        let (mut world, id, ..) = by_a_birch(&rules);
+        let flat = picked(&mut world, &rules, id, "birch_bark", 200);
+        let berries = picked(&mut world, &rules, id, "berries", 500);
+        // A flat sheet, a stone: nothing stays in them.
+        assert_eq!(put(&mut world, &rules, id, (berries, flat)), None);
+        let flint = picked(&mut world, &rules, id, "flint", 300);
+        assert_eq!(put(&mut world, &rules, id, (berries, flint)), None);
+        assert_eq!(world.item(berries).unwrap().within(), None);
+        assert_eq!(body(&world, id).stowed_g(), 0);
+        // A whole thing goes in a hollow whole: it takes its room and
+        // frees no arm, the arms holding loose food alone.
+        let bark = hollow(&mut world, &rules, id);
+        assert_eq!(put(&mut world, &rules, id, (flint, bark)), Some(flint));
+        assert_eq!(world.hollow_room_g(bark, &rules), 2070);
+        assert_eq!(body(&world, id).stowed_g(), 0);
+        assert_eq!(body(&world, id).food_room_g(&rules.movement), 500);
+        // Too big for the room left, it does not go in; nor does a
+        // thing in itself, nor a hollow in a hollow.
+        let log = picked(&mut world, &rules, id, "branch", 2500);
+        assert_eq!(put(&mut world, &rules, id, (log, bark)), None);
+        assert_eq!(put(&mut world, &rules, id, (bark, bark)), None);
+        let leaf = picked(&mut world, &rules, id, "butterbur_leaf", 50);
+        world.queue(Intention::Fold {
+            body: id,
+            item: leaf,
+        });
+        gesture_ends(&mut world, &rules, id).expect("folded");
+        assert_eq!(put(&mut world, &rules, id, (leaf, bark)), None);
+    }
+
+    #[test]
+    fn a_hollow_let_go_spills_what_it_held_and_a_thing_taken_in_hand_is_out_of_it() {
+        let rules = rules();
+        let (mut world, id, ..) = by_a_birch(&rules);
+        let bark = hollow(&mut world, &rules, id);
+        let berries = picked(&mut world, &rules, id, "berries", 800);
+        let nuts = picked(&mut world, &rules, id, "hazelnuts", 100);
+        assert_eq!(put(&mut world, &rules, id, (berries, bark)), Some(berries));
+        assert_eq!(put(&mut world, &rules, id, (nuts, bark)), Some(nuts));
+        // Taken in hand, the nuts are in its arms again.
+        let mut events = Vec::new();
+        world.queue(Intention::Hold {
+            body: id,
+            item: nuts,
+        });
+        world.advance(1, &rules, &mut events);
+        assert_eq!(world.item(nuts).unwrap().within(), None);
+        assert_eq!(body(&world, id).stowed_g(), 800);
+        // The hollow dropped, what it held lies on the ground with it.
+        world.queue(Intention::Drop {
+            body: id,
+            item: bark,
+        });
+        world.advance(1, &rules, &mut events);
+        let here = body(&world, id).pos();
+        assert_eq!(world.item(bark).unwrap().pos(), Some(here));
+        assert_eq!(world.item(berries).unwrap().pos(), Some(here));
+        assert_eq!(world.item(berries).unwrap().within(), None);
+        let b = body(&world, id);
+        assert_eq!((b.food_g(), b.stowed_g()), (100, 0));
+        assert!(b.has(nuts) && !b.has(berries));
     }
 
     #[test]

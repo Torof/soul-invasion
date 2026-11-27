@@ -64,8 +64,8 @@ pub struct ProblemsProbe {
     last_day: u64,
     /// By cycle.
     pub cycles: BTreeMap<u64, CycleRow>,
-    /// The content's kinds, each its refusal and property: none when off.
-    pub names: Vec<(String, String)>,
+    /// The content's kinds, each its refusal: none when off.
+    pub names: Vec<String>,
 }
 
 impl ProblemsProbe {
@@ -78,7 +78,7 @@ impl ProblemsProbe {
                 .problems
                 .kinds
                 .iter()
-                .map(|k| (k.refusal.clone(), k.property.clone()))
+                .map(|k| k.refusal.clone())
                 .collect(),
             ..Self::default()
         }
@@ -159,7 +159,7 @@ impl ProblemsProbe {
             .names
             .iter()
             .enumerate()
-            .map(|(i, (refusal, property))| {
+            .map(|(i, refusal)| {
                 let k = u8::try_from(i)
                     .ok()
                     .and_then(|i| self.kinds.get(&i))
@@ -167,7 +167,6 @@ impl ProblemsProbe {
                     .unwrap_or_default();
                 json!({
                     "refusal": refusal,
-                    "property": property,
                     "lived": k.lived,
                     "lived_per_1000_person_days": per_thousand(k.lived),
                     "lived_hungry": k.lived_hungry,

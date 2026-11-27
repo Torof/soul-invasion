@@ -10,6 +10,13 @@
 //! with the trial (D50), and told at the fire (D55). A body redoes the
 //! deeds it knows when it lacks what they gave: the plain minimum, never
 //! a goal.
+//!
+//! Amended 27 November 2026 (step 2 of "acts and discovery"): putting a
+//! thing in another is a gesture drawn as the others; a body that knows
+//! one puts the loose food of its full arms in the hollow it names
+//! without a thought. What gave nothing or broke is remembered, a
+//! bounded list, and not drawn again while remembered. A trial kept
+//! leaves known only the deeds whose product served.
 
 use crate::content::{Content, Folded, Form};
 use crate::r#gen::scatter::{self, purpose};
@@ -52,8 +59,9 @@ fn stuff(rules: &Content, kind: u16) -> Option<&crate::content::Material> {
         .flatten()
 }
 
-/// A deed of the hands (D57): a gesture on a kind of thing, with a kind
-/// of thing in hand when it cuts.
+/// A deed of the hands (D57): a gesture on a kind of thing, with a
+/// second kind of thing when it cuts (the tool in hand) or puts in (the
+/// thing put in).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Deed {
     /// The gesture.
@@ -61,7 +69,8 @@ pub struct Deed {
     /// What it is done on: a material's index in the content (take,
     /// fold), or a tree species' index (cut).
     pub on: u16,
-    /// The material in hand it cuts with; [`NOTHING`] otherwise.
+    /// The kind in hand it cuts with, or the kind of thing it puts `on`
+    /// in; [`NOTHING`] otherwise.
     pub with: u16,
 }
 
@@ -128,6 +137,13 @@ pub(super) enum HandTarget {
         at: FinePos,
         with: ItemId,
     },
+    /// A thing it carries, to put in another it carries.
+    Put {
+        /// The thing put.
+        item: ItemId,
+        /// The thing it is put in.
+        into: ItemId,
+    },
 }
 
 /// A thing it could not reach or work today: left alone till tomorrow.
@@ -142,7 +158,7 @@ pub(super) enum Barred {
 impl HandTarget {
     fn barred(self) -> Barred {
         match self {
-            HandTarget::Item(item, _) => Barred::Item(item),
+            HandTarget::Item(item, _) | HandTarget::Put { item, .. } => Barred::Item(item),
             HandTarget::Tree { chunk, key, .. } => Barred::Tree(chunk, key),
         }
     }
@@ -193,6 +209,13 @@ pub struct Handwork {
     /// The thing it set out to take up as the tool a cut it knows or
     /// heard names (D57, amended 25 November 2026).
     pub(super) fetch: Option<ItemId>,
+    /// The gestures that gave nothing or broke the thing in its hands
+    /// (D57, amended 27 November 2026), the oldest first, at most the
+    /// content's `failures_kept`: not drawn again while remembered.
+    pub failed: Vec<Deed>,
+    /// The deeds a kept trial of its own left it: something came of them
+    /// that served.
+    pub kept: Vec<Deed>,
 }
 
 impl Handwork {
@@ -209,6 +232,26 @@ impl Handwork {
     #[must_use]
     pub fn served(&self, material: u16) -> bool {
         self.served.contains(&material)
+    }
+
+    /// Whether it remembers that `deed` gave nothing in its hands.
+    #[must_use]
+    pub fn failed(&self, deed: Deed) -> bool {
+        self.failed.contains(&deed)
+    }
+
+    /// `deed` gave nothing or broke the thing: remembered, the oldest
+    /// forgotten beyond `most`.
+    fn fail(&mut self, deed: Deed, most: u32) {
+        if self.failed.contains(&deed) {
+            return;
+        }
+        self.failed.push(deed);
+        let most = usize::try_from(most).unwrap_or(usize::MAX);
+        if self.failed.len() > most {
+            let over = self.failed.len() - most;
+            self.failed.drain(..over);
+        }
     }
 
     /// A thing of `material` served it.
@@ -354,8 +397,9 @@ pub(super) fn will_chance(rules: &Content, mind: &Mind) -> u64 {
 
 /// The deeds that make a hollow, read from the content alone: take a
 /// material, cut with it a tree whose bark it works loose and which takes
-/// a hollow when folded, fold that bark; the first such chain in the
-/// content's order. Not the experiment's: its diagnostic (the vivarium's
+/// a hollow when folded, fold that bark, put the content's first food
+/// in that hollow (amended 27 November 2026: a hollow nothing is put in
+/// holds nothing); the first such chain in the content's order. Not the experiment's: its diagnostic (the vivarium's
 /// `--hands-known`), founders who know them from birth. Empty when the
 /// content holds no such chain.
 #[must_use]
@@ -397,6 +441,18 @@ pub fn container_deeds(rules: &Content) -> Deeds {
             ] {
                 deeds.add(deed);
             }
+            let food = rules
+                .materials
+                .iter()
+                .position(|m| m.food.is_some())
+                .and_then(|f| u16::try_from(f).ok());
+            if let Some(on) = food {
+                deeds.add(Deed {
+                    gesture: Gesture::PutIn,
+                    on,
+                    with: bark | HOLLOW,
+                });
+            }
             return deeds;
         }
     }
@@ -434,6 +490,9 @@ fn product(rules: &Content, deed: Deed) -> Option<u16> {
             material_index(rules, &bark.id)
         }
         Gesture::Fold => folds_into(rules, deed.on),
+        // A put-in makes no kind of thing: the same things, one in the
+        // other.
+        Gesture::PutIn => None,
     }
 }
 
@@ -461,7 +520,8 @@ fn descendants(rules: &Content, deeds: &Deeds, material: u16) -> Vec<u16> {
 fn used(rules: &Content, deeds: &Deeds) -> Vec<u16> {
     let mut out = Vec::new();
     for deed in deeds.iter() {
-        if deed.gesture != Gesture::Cut {
+        // A put-in holds the thing it puts in, not what it puts there.
+        if !matches!(deed.gesture, Gesture::Cut | Gesture::PutIn) {
             out.push(deed.on);
         }
         if deed.with != NOTHING {
@@ -610,6 +670,82 @@ fn chunks_near(here: Pos, near: i32) -> Vec<ChunkPos> {
     out
 }
 
+/// The kinds of the things `body` carries in which food lies.
+fn holding(world: &World, rules: &Content, body: &crate::Body, have: &[(ItemId, u16)]) -> Vec<u16> {
+    body.inventory()
+        .filter_map(|i| world.item(i))
+        .filter(|i| {
+            rules
+                .material(i.material())
+                .is_some_and(|m| m.food.is_some())
+        })
+        .filter_map(crate::Item::within)
+        .filter_map(|hollow| have.iter().find(|(i, _)| *i == hollow).map(|(_, k)| *k))
+        .collect()
+}
+
+/// A thing serves when food lies in it and the body carries more than
+/// its arms alone would (the project lead, 25 November 2026; amended 27
+/// November 2026: food put in it, not the thing merely carried): the
+/// body lives it, nothing tells it. Noted at each thought of its hands
+/// and when a gathering stops full.
+pub(super) fn note_served(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) {
+    let Some(body) = world.body(id) else {
+        return;
+    };
+    if body.food_g() > body.arms_g(&rules.movement) {
+        let have = carried(world, rules, id);
+        for kind in holding(world, rules, body, &have) {
+            mind.handwork.serve(kind);
+        }
+    }
+}
+
+/// Whether a thing of the kind `kind` is loose food, as the arms hold
+/// it.
+fn loose_food(rules: &Content, kind: u16) -> bool {
+    !kind_hollow(kind) && stuff(rules, kind).is_some_and(|m| m.food.is_some())
+}
+
+/// The put-in of `deeds` to do here (D57, amended 27 November 2026): a
+/// body that knows one, its arms full, puts their loose food in a thing
+/// it carries of the kind the deed names that has room left, without a
+/// thought: it lacks what the put-in gave, room in its arms. The deed
+/// names the thing put in; what goes there is whatever loose food its
+/// arms hold, which they do not tell apart either. A put-in it only
+/// heard is tried so as soon as its arms hold any.
+fn put_again(
+    world: &World,
+    rules: &Content,
+    id: BodyId,
+    (deeds, have): (&Deeds, &[(ItemId, u16)]),
+    mind: &Mind,
+) -> Option<(HandTarget, Deed)> {
+    let body = world.body(id)?;
+    let full = body.arms_food_g() >= body.arms_g(&rules.movement);
+    for deed in deeds.iter().filter(|d| d.gesture == Gesture::PutIn) {
+        if !loose_food(rules, deed.on) || (!full && mind.ways.hands.contains(deed)) {
+            continue;
+        }
+        let Some(&(into, _)) = have
+            .iter()
+            .find(|&&(i, k)| k == deed.with && world.hollow_room_g(i, rules) > 0)
+        else {
+            continue;
+        };
+        let item = have.iter().find(|&&(i, k)| {
+            i != into
+                && loose_food(rules, k)
+                && !mind.handwork.barred(Barred::Item(i))
+                && world.item(i).is_some_and(|t| t.within().is_none())
+        });
+        if let Some(&(item, _)) = item {
+            return Some((HandTarget::Put { item, into }, deed));
+        }
+    }
+    None
+}
+
 /// What a body's hands do at a thought (D57).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum HandsTurn {
@@ -653,15 +789,7 @@ pub(super) fn hands_turn(
     }
     let trying = mind.trial.is_some_and(|t| t.way == Way::Hands);
     let have = carried(world, rules, id);
-    // A container serves when it holds food beyond what the arms alone
-    // would: the body lives it, nothing tells it.
-    if body.food_g() > body.arms_g(&rules.movement) {
-        for &(_, m) in &have {
-            if kind_hollow(m) {
-                mind.handwork.serve(m);
-            }
-        }
-    }
+    note_served(world, rules, id, mind);
     // What its hands no longer know is let go, one thing a thought: a
     // trial given up leaves what it brought.
     if !trying {
@@ -714,7 +842,7 @@ pub(super) fn hands_turn(
     let found = match found {
         Some((todo, _)) => Some(todo),
         None if trying => {
-            let drawn = draw(world, rules, (id, here), mind, (seed, &have, near));
+            let drawn = draw(world, rules, (id, here), mind, (seed, &have, near), news);
             if drawn.is_some() && !mind.handwork.drew {
                 mind.handwork.drew = true;
                 news.push(News::Drew {
@@ -733,18 +861,20 @@ pub(super) fn hands_turn(
     }
 }
 
-/// A gesture drawn in a trial of the hands on nothing heard (D57): one of
-/// the three, on a thing drawn among those it carries or that lie around
-/// it, at most the content's tries a day. Only what a body sees makes a
-/// gesture plausible ([`cuts_to_the_eye`], [`bends_to_the_eye`]; amended
-/// 27 November 2026): the world may still answer nothing, or break the
-/// thing. No suggestion of which gesture.
+/// A gesture drawn in a trial of the hands (D57): one of the four, on a
+/// thing drawn among those it carries or that lie around it, at most the
+/// content's tries a day. Only what a body sees makes a gesture plausible
+/// ([`cuts_to_the_eye`], [`bends_to_the_eye`], [`holds_to_the_eye`];
+/// amended 27 November 2026): the world may still answer nothing, or
+/// break the thing. A gesture it remembers gave nothing in its hands is
+/// set aside (the news counts them). No suggestion of which gesture.
 fn draw(
     world: &World,
     rules: &Content,
     (id, here): (BodyId, Pos),
     mind: &mut Mind,
     (seed, have, near): (u64, &[(ItemId, u16)], i32),
+    news: &mut Vec<News>,
 ) -> Option<(HandTarget, Deed)> {
     let day = today(world);
     if mind.handwork.tries.0 != day {
@@ -756,72 +886,148 @@ fn draw(
     let keys = [u64::from(id.0), day, u64::from(mind.handwork.tries.1)];
     mind.handwork.tries.1 += 1;
     let r = scatter::roll(seed, purpose::HANDS_GESTURE, &keys);
-    let pick = |n: usize, salt: u64| {
-        let r = scatter::roll(
-            seed,
-            purpose::HANDS_THING,
-            &[keys[0], keys[1], keys[2], salt],
-        );
+    let pick = |n: usize| {
+        let r = scatter::roll(seed, purpose::HANDS_THING, &[keys[0], keys[1], keys[2], 0]);
         usize::try_from(r % u64::try_from(n.max(1)).unwrap_or(1)).unwrap_or(0)
     };
     // Only what a body sees (the project lead, 25 November 2026: "on ne
     // coupe pas avec une baie"): that a thing has an edge, that a thing
-    // is a sheet or gives in hand, on the scales every thing has. Whether
-    // the edge is keen enough for this tree, whether this tree's bark
-    // comes away, whether the sheet bends or snaps, it does not see: it
-    // tries, and the world answers (amended 27 November 2026). The
-    // gesture stays drawn at random among the plausible: nothing says
-    // which.
-    let tools: Vec<(ItemId, u16)> = have
-        .iter()
-        .copied()
-        .filter(|&(_, m)| cuts_to_the_eye(rules, m))
-        .collect();
-    let folding: Vec<(ItemId, u16)> = have
-        .iter()
-        .copied()
-        .filter(|&(_, m)| bends_to_the_eye(rules, m))
-        .collect();
+    // is a sheet or gives in hand, that a thing is a hollow or a sheet
+    // one may lay things on, on the scales every thing has. Whether the
+    // edge is keen enough for this tree, whether this tree's bark comes
+    // away, whether the sheet bends or snaps, whether the thing holds
+    // what is put on it, it does not see: it tries, and the world answers
+    // (amended 27 November 2026). The gesture stays drawn at random among
+    // the plausible: nothing says which.
+    let plausible = Plausible::seen(world, rules, here, mind, (have, near));
     let things = things_near(world, here, near, mind);
-    let trees: Vec<_> = if tools.is_empty() {
-        Vec::new()
-    } else {
-        trees_near(world, here, near, mind)
-    };
     let open: Vec<Gesture> = Gesture::ALL
         .into_iter()
         .filter(|g| match g {
             Gesture::PickUp => !things.is_empty(),
-            Gesture::Cut => !trees.is_empty(),
-            Gesture::Fold => !folding.is_empty(),
+            Gesture::Cut => !plausible.cuts.is_empty(),
+            Gesture::Fold => !plausible.folds.is_empty(),
+            Gesture::PutIn => !plausible.puts.is_empty(),
         })
         .collect();
+    if plausible.skipped > 0 {
+        news.push(News::Skipped {
+            body: id,
+            deeds: plausible.skipped,
+            at: world.tick().0,
+        });
+    }
     let n = u64::try_from(open.len()).ok().filter(|&n| n > 0)?;
     let gesture = open[usize::try_from(r % n).unwrap_or(0)];
-    let deed = |on, with| Deed { gesture, on, with };
     match gesture {
         Gesture::PickUp => {
-            let &(thing, pos, material) = things.get(pick(things.len(), 0))?;
+            let &(thing, pos, material) = things.get(pick(things.len()))?;
             let on = material_index(rules, material)?;
-            Some((HandTarget::Item(thing, pos), deed(on, NOTHING)))
-        }
-        Gesture::Cut => {
-            let &(chunk, key, at, species) = trees.get(pick(trees.len(), 0))?;
-            let &(with, with_m) = tools.get(pick(tools.len(), 1))?;
             Some((
-                HandTarget::Tree {
-                    chunk,
-                    key,
-                    at,
-                    with,
+                HandTarget::Item(thing, pos),
+                Deed {
+                    gesture,
+                    on,
+                    with: NOTHING,
                 },
-                deed(u16::try_from(species).ok()?, with_m),
             ))
         }
-        Gesture::Fold => {
-            let &(item, on) = folding.get(pick(folding.len(), 0))?;
-            Some((HandTarget::Item(item, here), deed(on, NOTHING)))
+        Gesture::Cut => plausible.cuts.get(pick(plausible.cuts.len())).copied(),
+        Gesture::Fold => plausible.folds.get(pick(plausible.folds.len())).copied(),
+        Gesture::PutIn => plausible.puts.get(pick(plausible.puts.len())).copied(),
+    }
+}
+
+/// The cuts, folds and put-ins a body sees as plausible where it stands,
+/// those it remembers gave nothing in its hands set aside (D57, amended
+/// 27 November 2026).
+#[derive(Default)]
+struct Plausible {
+    /// A cut of each tree near with each thing carried that shows an
+    /// edge.
+    cuts: Vec<(HandTarget, Deed)>,
+    /// A fold of each thing carried that looks like it bends.
+    folds: Vec<(HandTarget, Deed)>,
+    /// A put-in of each thing carried in each other thing carried that
+    /// looks like it holds.
+    puts: Vec<(HandTarget, Deed)>,
+    /// The different gestures set aside for a failure remembered.
+    skipped: u32,
+}
+
+impl Plausible {
+    fn seen(
+        world: &World,
+        rules: &Content,
+        here: Pos,
+        mind: &Mind,
+        (have, near): (&[(ItemId, u16)], i32),
+    ) -> Self {
+        let mut out = Self::default();
+        let mut aside: Vec<Deed> = Vec::new();
+        let mut remembered = |deed: Deed| {
+            let failed = mind.handwork.failed(deed);
+            if failed && !aside.contains(&deed) {
+                aside.push(deed);
+            }
+            failed
+        };
+        let tools: Vec<(ItemId, u16)> = have
+            .iter()
+            .copied()
+            .filter(|&(_, m)| cuts_to_the_eye(rules, m))
+            .collect();
+        if !tools.is_empty() {
+            for (chunk, key, at, species) in trees_near(world, here, near, mind) {
+                let Ok(on) = u16::try_from(species) else {
+                    continue;
+                };
+                for &(with, with_m) in &tools {
+                    let deed = Deed {
+                        gesture: Gesture::Cut,
+                        on,
+                        with: with_m,
+                    };
+                    if !remembered(deed) {
+                        let target = HandTarget::Tree {
+                            chunk,
+                            key,
+                            at,
+                            with,
+                        };
+                        out.cuts.push((target, deed));
+                    }
+                }
+            }
         }
+        for &(item, on) in have.iter().filter(|&&(_, m)| bends_to_the_eye(rules, m)) {
+            let deed = Deed {
+                gesture: Gesture::Fold,
+                on,
+                with: NOTHING,
+            };
+            if !remembered(deed) {
+                out.folds.push((HandTarget::Item(item, here), deed));
+            }
+        }
+        for &(into, with) in have.iter().filter(|&&(_, m)| holds_to_the_eye(rules, m)) {
+            for &(item, on) in have {
+                // What lies in a thing already is not put in another.
+                if item == into || world.item(item).is_none_or(|t| t.within().is_some()) {
+                    continue;
+                }
+                let deed = Deed {
+                    gesture: Gesture::PutIn,
+                    on,
+                    with,
+                };
+                if !remembered(deed) {
+                    out.puts.push((HandTarget::Put { item, into }, deed));
+                }
+            }
+        }
+        out.skipped = u32::try_from(aside.len()).unwrap_or(u32::MAX);
+        out
     }
 }
 
@@ -842,6 +1048,13 @@ fn bends_to_the_eye(rules: &Content, kind: u16) -> bool {
         })
 }
 
+/// Whether a thing of the kind `kind` looks like it could hold what is
+/// put in or on it: it is folded into a hollow, or is a sheet. Whether
+/// anything stays there, a body finds by trying.
+fn holds_to_the_eye(rules: &Content, kind: u16) -> bool {
+    kind_hollow(kind) || stuff(rules, kind).is_some_and(|m| m.form == Form::Sheet)
+}
+
 /// Whether `id` at `here` could begin a gesture its hands do not know
 /// (D50 and D57, amended 26 November 2026): among the gestures the things
 /// around allow, as [`draw`] sees them, one whose deed is not among its
@@ -856,17 +1069,6 @@ pub(super) fn something_new(
     let near = i32::try_from(rules.needs.hands.near_tiles).unwrap_or(4);
     let have = carried(world, rules, id);
     let new = |deed: Deed| !mind.ways.hands.contains(deed);
-    let fold = have.iter().any(|&(_, m)| {
-        bends_to_the_eye(rules, m)
-            && new(Deed {
-                gesture: Gesture::Fold,
-                on: m,
-                with: NOTHING,
-            })
-    });
-    if fold {
-        return true;
-    }
     let take = things_near(world, here, near, mind)
         .iter()
         .any(|&(_, _, m)| {
@@ -881,32 +1083,21 @@ pub(super) fn something_new(
     if take {
         return true;
     }
-    let tools: Vec<u16> = have
-        .iter()
-        .map(|&(_, m)| m)
-        .filter(|&m| cuts_to_the_eye(rules, m))
-        .collect();
-    if tools.is_empty() {
-        return false;
-    }
-    trees_near(world, here, near, mind).iter().any(|t| {
-        u16::try_from(t.3).is_ok_and(|on| {
-            tools.iter().any(|&with| {
-                new(Deed {
-                    gesture: Gesture::Cut,
-                    on,
-                    with,
-                })
-            })
-        })
-    })
+    // The cuts, folds and put-ins it sees as plausible here, those it
+    // remembers failed set aside (amended 27 November 2026).
+    let plausible = Plausible::seen(world, rules, here, mind, (&have, near));
+    [&plausible.folds, &plausible.puts, &plausible.cuts]
+        .into_iter()
+        .flatten()
+        .any(|&(_, deed)| new(deed))
 }
 
 /// The first deed of `deeds` it lacks what it gives and can do here: a
 /// fold of a thing it carries, a cut of a tree near with a thing it
 /// carries, a thing near to pick up. For a cut with no thing of its tool
 /// carried, the taking up of one lying near (D57, amended 25 November
-/// 2026: "cut a birch with a flint" holds the flint), marked `true`.
+/// 2026: "cut a birch with a flint" holds the flint), marked `true`. A
+/// put-in comes first ([`put_again`]).
 fn needed(
     world: &World,
     rules: &Content,
@@ -921,6 +1112,9 @@ fn needed(
                 .all(|m| !have.iter().any(|(_, h)| h == m))
         })
     };
+    if let Some(put) = put_again(world, rules, id, (deeds, have), mind) {
+        return Some((put, false));
+    }
     let held = world.body(id)?.held();
     // The things lying near are looked at once, at the first deed that
     // needs one, for the materials any deed might take up.
@@ -933,7 +1127,7 @@ fn needed(
                     .filter_map(|d| match d.gesture {
                         Gesture::Cut => Some(d.with),
                         Gesture::PickUp => Some(d.on),
-                        Gesture::Fold => None,
+                        Gesture::Fold | Gesture::PutIn => None,
                     })
                     .collect();
                 materials.sort_unstable();
@@ -950,6 +1144,7 @@ fn needed(
                 continue;
             }
             match gesture {
+                Gesture::PutIn => {}
                 Gesture::Fold => {
                     if let Some(&(item, _)) = have.iter().find(|(_, m)| *m == deed.on) {
                         return Some(((HandTarget::Item(item, here), deed), false));
@@ -1024,10 +1219,22 @@ fn go_do(
             why: Why::Hands,
         };
     }
+    if let HandTarget::Put { item, into } = target {
+        begin(mind, deed, item);
+        return Decision {
+            intention: Intention::PutIn {
+                body: id,
+                item,
+                into,
+            },
+            why: Why::Hands,
+        };
+    }
     if let Some(decision) = act_on(world, id, here, target, deed, mind) {
         return decision;
     }
     let to = match target {
+        HandTarget::Put { .. } => here,
         HandTarget::Item(_, pos) => pos,
         HandTarget::Tree { at, .. } => {
             // A trunk takes its tile: it stands beside it.
@@ -1063,6 +1270,8 @@ fn act_on(
 ) -> Option<Decision> {
     let body = world.body(id)?;
     let intention = match target {
+        // Done where it stands, never stepped to ([`go_do`]).
+        HandTarget::Put { .. } => return None,
         HandTarget::Item(item, pos) => {
             if (pos.x - here.x).abs() > 1 || (pos.y - here.y).abs() > 1 {
                 return None;
@@ -1147,11 +1356,58 @@ pub(super) fn judge_trial(
 ) -> (bool, super::Judged) {
     let (mut kept, mut judged) = super::judge(rules, per_year, body, mind, trial);
     if trial.way == Way::Hands {
+        if kept {
+            keep_what_served(rules, mind, &trial.before.hands);
+        }
         kept &= mind.ways.hands != trial.before.hands;
         judged.kept = kept;
+        if kept {
+            judged.after.hands = mind.ways.hands;
+        }
         mind.handwork.drop_aim();
     }
     (kept, judged)
+}
+
+/// Of the deeds `mind` learnt since its hands knew `before`, only those
+/// of which something came that served stay known (D57, amended 27
+/// November 2026; the run of step 1 left "cut an oak with a flint" known
+/// to fifteen people, a cut whose bark only ever broke at the fold): a
+/// put-in of food in a kind of thing that served it (food lay in it
+/// while it carried more than its arms alone hold), and, step by step
+/// back from there, a deed whose product a deed kept is done on, with or
+/// in. The rest is forgotten as after a trial given up. Called when a
+/// trial of the hands is kept, before what it leaves is told; the deeds
+/// kept are noted as its own ([`Handwork::kept`]).
+pub(super) fn keep_what_served(rules: &Content, mind: &mut Mind, before: &Deeds) {
+    let mut kept: Vec<Deed> = before.iter().collect();
+    let mut left: Vec<Deed> = mind
+        .ways
+        .hands
+        .iter()
+        .filter(|d| !before.contains(*d))
+        .collect();
+    let serves = |kept: &[Deed], deed: Deed| {
+        if deed.gesture == Gesture::PutIn {
+            return loose_food(rules, deed.on) && mind.handwork.served(deed.with);
+        }
+        product(rules, deed).is_some_and(|p| {
+            kept.iter().any(|k| {
+                k.with == p || (matches!(k.gesture, Gesture::Fold | Gesture::PutIn) && k.on == p)
+            })
+        })
+    };
+    while let Some(i) = left.iter().position(|&d| serves(&kept, d)) {
+        kept.push(left.remove(i));
+    }
+    let mut hands = Deeds::default();
+    for &deed in &kept {
+        hands.add(deed);
+        if !before.contains(deed) && !mind.handwork.kept.contains(&deed) {
+            mind.handwork.kept.push(deed);
+        }
+    }
+    mind.ways.hands = hands;
 }
 
 /// What came of the deed it was doing: learnt, in a trial of its hands,
@@ -1166,10 +1422,16 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
     let worked = match deed.gesture {
         Gesture::PickUp if body.has(item) => true,
         Gesture::PickUp => return None,
-        Gesture::Cut | Gesture::Fold => mind.handwork.done.take()?,
+        Gesture::Cut | Gesture::Fold | Gesture::PutIn => mind.handwork.done.take()?,
     };
     mind.handwork.pending = None;
     if !worked {
+        // What gave nothing or broke the thing is remembered (amended 27
+        // November 2026), unless it is a deed its hands know: that one
+        // failed for the moment's sake.
+        if !mind.ways.hands.contains(deed) {
+            mind.handwork.fail(deed, rules.needs.hands.failures_kept);
+        }
         return None;
     }
     let tool = (deed.gesture == Gesture::PickUp && mind.handwork.fetch == Some(item)).then(|| {
@@ -1183,6 +1445,14 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
     {
         mind.handwork.made_kinds.push(made);
         mind.handwork.novel.push((deed, made));
+    }
+    // A put-in that held, new to its hands, is a novelty as well: the
+    // same things, one in the other.
+    if deed.gesture == Gesture::PutIn
+        && mind.handwork.practised(deed) == 0
+        && !mind.ways.hands.contains(deed)
+    {
+        mind.handwork.novel.push((deed, deed.with));
     }
     // A tool whose cut gave something served it (25 November 2026).
     if deed.gesture == Gesture::Cut && deed.with != NOTHING {
@@ -1207,7 +1477,7 @@ mod tests {
     use crate::Event;
     use crate::memory::{Access, Record};
     use crate::time::Calendar;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// The repository's content, a valley of minute ticks, a body beside
     /// a birch with a mind: the rules, world, brains, body, and the
@@ -1290,7 +1560,13 @@ mod tests {
     #[test]
     fn the_deeds_of_a_container_are_read_from_the_content() {
         let (rules, _, _, _, birch) = by_a_birch();
-        assert_eq!(container_deeds(&rules), bark_deeds(&rules, birch));
+        let mut deeds = bark_deeds(&rules, birch);
+        deeds.add(Deed {
+            gesture: Gesture::PutIn,
+            on: material(&rules, "berries"),
+            with: material(&rules, "birch_bark") | HOLLOW,
+        });
+        assert_eq!(container_deeds(&rules), deeds);
         assert!(container_deeds(&Content::sample()).is_empty());
     }
 
@@ -1402,7 +1678,14 @@ mod tests {
         let mut drawn_cuts = 0;
         for day in 0..200 {
             mind.handwork.tries = (day, 0);
-            if let Some((_, deed)) = draw(&world, &rules, (id, here), mind, (day, &sharp, 4)) {
+            if let Some((_, deed)) = draw(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (day, &sharp, 4),
+                &mut Vec::new(),
+            ) {
                 drawn_cuts += u32::from(deed.gesture == Gesture::Cut);
             }
         }
@@ -1483,14 +1766,34 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         let _ = hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()));
         assert!(!mind.handwork.served(container), "empty, it served nothing");
-        let berries = world.spawn_item("berries", 3000, here);
-        let mut events = Vec::new();
+        // Its arms full beside the hollow it carries: nothing holds by
+        // itself, a third kilogram is refused, and the hollow served
+        // nothing (amended 27 November 2026).
+        let berries = world.spawn_item("berries", 1000, here);
         world.queue(Intention::PickUp {
             body: id,
             item: berries,
         });
+        world.advance(1, &rules, &mut Vec::new());
+        let more = world.spawn_item("berries", 1000, here);
+        let mut events = Vec::new();
+        world.queue(Intention::PickUp {
+            body: id,
+            item: more,
+        });
         world.advance(1, &rules, &mut events);
-        assert!(world.body(id).unwrap().food_g() > 1000, "{events:?}");
+        assert_eq!(world.body(id).unwrap().food_g(), 1000, "{events:?}");
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let _ = hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()));
+        assert!(!mind.handwork.served(container));
+        // The berries put in it, more in its arms: it served.
+        assert!(world.put_now(id, (berries, hollow), &rules).is_some());
+        world.queue(Intention::PickUp {
+            body: id,
+            item: more,
+        });
+        world.advance(1, &rules, &mut events);
+        assert_eq!(world.body(id).unwrap().food_g(), 2000, "{events:?}");
         let mind = brains.minds.get_mut(&id).unwrap();
         let _ = hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()));
         assert!(mind.handwork.served(container));
@@ -1508,7 +1811,14 @@ mod tests {
         let mut gestures = BTreeSet::new();
         for day in 0..200 {
             mind.handwork.tries = (day, 0);
-            if let Some((_, deed)) = draw(&world, &rules, (id, here), mind, (day, &blunt, 4)) {
+            if let Some((_, deed)) = draw(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (day, &blunt, 4),
+                &mut Vec::new(),
+            ) {
                 gestures.insert(deed.gesture);
             }
         }
@@ -1523,8 +1833,14 @@ mod tests {
         let mut species = BTreeSet::new();
         for day in 0..200 {
             mind.handwork.tries = (day, 0);
-            if let Some((_, deed)) = draw(&world, &rules, (id, here), mind, (day, &sharp, 4))
-                && deed.gesture == Gesture::Cut
+            if let Some((_, deed)) = draw(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (day, &sharp, 4),
+                &mut Vec::new(),
+            ) && deed.gesture == Gesture::Cut
             {
                 cuts += 1;
                 assert_eq!(deed.with, flint_m, "only the thing with an edge cuts");
@@ -1618,8 +1934,14 @@ mod tests {
         let mut drawn = None;
         for seed in 0..200 {
             mind.handwork.tries = (day, 0);
-            if let Some((target, deed)) = draw(&world, &rules, (id, here), mind, (seed, &have, 4))
-                && deed.gesture == Gesture::Fold
+            if let Some((target, deed)) = draw(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (seed, &have, 4),
+                &mut Vec::new(),
+            ) && deed.gesture == Gesture::Fold
             {
                 drawn = Some((target, deed));
                 break;
@@ -1649,6 +1971,281 @@ mod tests {
         );
         assert_eq!(mind.handwork.practised(deed), 0);
         assert!(mind.handwork.novel.is_empty(), "nothing to tell");
+        // It remembers that folding an oak bark broke it (amended 27
+        // November 2026): with another in its hands, the fold is not
+        // drawn again, and the draw says what it set aside.
+        assert!(mind.handwork.failed(deed));
+        let oak = picked(&mut world, &rules, id, "oak_bark");
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let have = [(oak, oak_m)];
+        let mut news = Vec::new();
+        for seed in 0..200 {
+            mind.handwork.tries = (day, 0);
+            let drawn = draw(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (seed, &have, 4),
+                &mut news,
+            );
+            assert!(drawn.is_none_or(|(_, d)| d != deed), "not again");
+        }
+        assert!(
+            news.iter()
+                .all(|n| matches!(n, News::Skipped { body, deeds: 1, .. } if *body == id))
+                && news.len() == 200,
+            "{news:?}"
+        );
+    }
+
+    #[test]
+    fn the_failures_remembered_are_a_bounded_list_the_oldest_forgotten() {
+        let deed = |on| Deed {
+            gesture: Gesture::Fold,
+            on,
+            with: NOTHING,
+        };
+        let mut hands = Handwork::default();
+        for on in 0..3 {
+            hands.fail(deed(on), 2);
+            hands.fail(deed(on), 2);
+        }
+        assert_eq!(hands.failed, [deed(1), deed(2)]);
+        assert!(!hands.failed(deed(0)), "the oldest is forgotten");
+        // None kept: none remembered.
+        hands.fail(deed(7), 0);
+        assert_eq!(hands.failed, []);
+        assert_eq!(Content::sample().needs.hands.failures_kept, 16);
+    }
+
+    /// Carries a birch bark folded into a hollow: the hollow.
+    fn with_a_hollow(world: &mut World, rules: &Content, id: BodyId) -> ItemId {
+        let here = world.body(id).unwrap().pos();
+        let hollow = world.spawn_hollow("birch_bark", 200, here, rules);
+        world.queue(Intention::PickUp {
+            body: id,
+            item: hollow,
+        });
+        world.advance(1, rules, &mut Vec::new());
+        hollow
+    }
+
+    /// Lays `grams` of `material` at its feet and has it picked up.
+    fn loaded(
+        world: &mut World,
+        rules: &Content,
+        id: BodyId,
+        material: &str,
+        grams: u32,
+    ) -> ItemId {
+        let here = world.body(id).unwrap().pos();
+        let item = world.spawn_item(material, grams, here);
+        world.queue(Intention::PickUp { body: id, item });
+        world.advance(1, rules, &mut Vec::new());
+        assert!(world.body(id).unwrap().has(item));
+        item
+    }
+
+    /// Does `decision`, lets the gesture end, and has the mind see what
+    /// came of it.
+    fn done(
+        world: &mut World,
+        rules: &Content,
+        brains: &mut Brains,
+        id: BodyId,
+        decision: &Decision,
+    ) {
+        let mut events = Vec::new();
+        world.queue(decision.intention.clone());
+        world.advance(12, rules, &mut events);
+        brains.notice(&events, world, rules);
+        let here = world.body(id).unwrap().pos();
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.handwork.tries = (today(world), u32::MAX);
+        let _ = hands_turn(world, rules, (id, here), mind, (7, &mut Vec::new()));
+    }
+
+    #[test]
+    fn a_put_in_is_drawn_in_what_looks_like_it_holds_and_may_give_nothing() {
+        let (rules, mut world, mut brains, id, _) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let hollow = with_a_hollow(&mut world, &rules, id);
+        let flat = picked(&mut world, &rules, id, "oak_bark");
+        let berries = loaded(&mut world, &rules, id, "berries", 400);
+        let (berries_m, oak_m) = (material(&rules, "berries"), material(&rules, "oak_bark"));
+        let hollow_m = material(&rules, "birch_bark") | HOLLOW;
+        let have = [(hollow, hollow_m), (flat, oak_m), (berries, berries_m)];
+        let day = today(&world);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        in_a_trial(mind, &[], day);
+        // A thing is put in a hollow or on a sheet, never in berries: of
+        // the six put-ins the eye allows, none is preferred.
+        let mut puts = BTreeMap::new();
+        for seed in 0..400 {
+            mind.handwork.tries = (day, 0);
+            if let Some((target, deed)) = draw(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (seed, &have, 4),
+                &mut Vec::new(),
+            ) && deed.gesture == Gesture::PutIn
+            {
+                puts.insert(deed, target);
+            }
+        }
+        assert_eq!(puts.len(), 4, "{puts:?}");
+        assert!(puts.keys().all(|d| d.with == hollow_m || d.with == oak_m));
+        let put = |on, with| Deed {
+            gesture: Gesture::PutIn,
+            on,
+            with,
+        };
+        // On the flat bark, the berries do not stay: nothing learnt, the
+        // failure remembered.
+        let on_flat = put(berries_m, oak_m);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let decision = go_do(&world, &rules, (id, here), (puts[&on_flat], on_flat), mind);
+        assert!(mind.handwork.gestured);
+        done(&mut world, &rules, &mut brains, id, &decision);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        assert!(mind.handwork.failed(on_flat) && !mind.ways.hands.contains(on_flat));
+        assert_eq!(world.body(id).unwrap().stowed_g(), 0);
+        // In the hollow they stay: learnt in its trial, a novelty to
+        // tell, its arms free.
+        let in_hollow = put(berries_m, hollow_m);
+        let decision = go_do(
+            &world,
+            &rules,
+            (id, here),
+            (puts[&in_hollow], in_hollow),
+            mind,
+        );
+        done(&mut world, &rules, &mut brains, id, &decision);
+        let mind = &brains.minds[&id];
+        assert!(mind.ways.hands.contains(in_hollow));
+        assert_eq!(mind.handwork.practised(in_hollow), 1);
+        assert_eq!(mind.handwork.novel, [(in_hollow, hollow_m)]);
+        let body = world.body(id).unwrap();
+        assert_eq!((body.stowed_g(), body.arms_food_g()), (400, 0));
+    }
+
+    #[test]
+    fn a_body_that_knows_a_put_in_empties_its_full_arms_in_the_hollow_without_a_thought() {
+        let (rules, mut world, mut brains, id, _) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let hollow = with_a_hollow(&mut world, &rules, id);
+        let hollow_m = material(&rules, "birch_bark") | HOLLOW;
+        let known = Deed {
+            gesture: Gesture::PutIn,
+            on: material(&rules, "berries"),
+            with: hollow_m,
+        };
+        let turn = |world: &World, brains: &mut Brains| {
+            let mind = brains.minds.get_mut(&id).unwrap();
+            hands_turn(world, &rules, (id, here), mind, (7, &mut Vec::new()))
+        };
+        // It does not know the put-in: its arms full beside the hollow,
+        // nothing goes in by itself, and no thought puts it there.
+        brains.minds.get_mut(&id).unwrap().handwork.served = vec![hollow_m];
+        let nuts = loaded(&mut world, &rules, id, "hazelnuts", 600);
+        assert_eq!(turn(&world, &mut brains), HandsTurn::Free);
+        // It heard it told and tries it (a tale tried): the loose food of
+        // its arms, full or not, goes in the hollow the tale names.
+        let day = today(&world);
+        in_a_trial(brains.minds.get_mut(&id).unwrap(), &[known], day);
+        let HandsTurn::Decide(Some(heard)) = turn(&world, &mut brains) else {
+            panic!("the put-in heard, tried");
+        };
+        assert!(
+            matches!(heard.intention, Intention::PutIn { item, into, .. } if item == nuts && into == hollow)
+        );
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.trial = None;
+        mind.handwork.drop_aim();
+        // It knows it, no trial under way: its arms not full, it does
+        // nothing; full, it puts what they hold in the hollow, though the
+        // deed was learnt with berries.
+        brains.minds.get_mut(&id).unwrap().ways.hands.add(known);
+        assert_eq!(turn(&world, &mut brains), HandsTurn::Free);
+        let more = loaded(&mut world, &rules, id, "hazelnuts", 400);
+        assert_eq!(world.body(id).unwrap().food_room_g(&rules.movement), 0);
+        let HandsTurn::Decide(Some(decision)) = turn(&world, &mut brains) else {
+            panic!("a put-in");
+        };
+        assert!(
+            matches!(decision.intention, Intention::PutIn { into, .. } if into == hollow),
+            "{decision:?}"
+        );
+        done(&mut world, &rules, &mut brains, id, &decision);
+        // One pile went in: its arms have room again, it lacks nothing.
+        let body = world.body(id).unwrap();
+        assert_eq!((body.stowed_g(), body.arms_food_g()), (600, 400));
+        assert_eq!(world.item(nuts).unwrap().within(), Some(hollow));
+        assert!(world.item(more).unwrap().within().is_none());
+        assert_eq!(turn(&world, &mut brains), HandsTurn::Free);
+        assert_eq!(brains.minds[&id].handwork.practised(known), 1);
+        assert!(brains.minds[&id].trial.is_none(), "no trial for it");
+    }
+
+    #[test]
+    fn a_kept_trial_leaves_known_only_the_deeds_whose_product_served() {
+        let (rules, _, mut brains, id, birch) = by_a_birch();
+        let flint = material(&rules, "flint");
+        let hollow_m = material(&rules, "birch_bark") | HOLLOW;
+        let oak = u16::try_from(rules.species.iter().position(|s| s.id == "oak").unwrap()).unwrap();
+        let cut_oak = Deed {
+            gesture: Gesture::Cut,
+            on: oak,
+            with: flint,
+        };
+        let put = Deed {
+            gesture: Gesture::PutIn,
+            on: material(&rules, "berries"),
+            with: hollow_m,
+        };
+        let put_flint = Deed {
+            gesture: Gesture::PutIn,
+            on: flint,
+            with: hollow_m,
+        };
+        let mind = brains.minds.get_mut(&id).unwrap();
+        // It learnt the birch's chain, a put-in of berries, a put-in of
+        // its flint, and the cut of an oak whose bark only breaks.
+        let learn = |mind: &mut Mind| {
+            mind.ways.hands = bark_deeds(&rules, birch);
+            for deed in [cut_oak, put, put_flint] {
+                assert!(mind.ways.hands.add(deed));
+            }
+        };
+        // Nothing served: nothing of it stays.
+        learn(mind);
+        keep_what_served(&rules, mind, &Deeds::default());
+        assert!(mind.ways.hands.is_empty() && mind.handwork.kept.is_empty());
+        // The hollow held food beyond its arms: the put-in of food, the
+        // fold that gave the hollow, the cut that gave the bark and the
+        // flint taken for it stay; the oak's cut and the flint put in do
+        // not.
+        learn(mind);
+        mind.handwork.serve(hollow_m);
+        mind.handwork.serve(flint);
+        keep_what_served(&rules, mind, &Deeds::default());
+        let mut served = bark_deeds(&rules, birch);
+        served.add(put);
+        assert_eq!(mind.ways.hands, served);
+        assert_eq!(mind.handwork.kept.len(), 4);
+        // What it knew before the trial is not judged again.
+        let mut before = Deeds::default();
+        before.add(cut_oak);
+        mind.ways.hands.add(cut_oak);
+        keep_what_served(&rules, mind, &before);
+        assert!(mind.ways.hands.contains(cut_oak));
+        assert!(
+            !mind.handwork.kept.contains(&cut_oak),
+            "not from a kept trial"
+        );
     }
 
     #[test]

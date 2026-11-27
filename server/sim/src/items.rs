@@ -185,6 +185,7 @@ impl Item {
             made: Tick(0),
             place: Place::Ground { pos: tile },
             hollow_ml: 0,
+            within: None,
         }
     }
 }

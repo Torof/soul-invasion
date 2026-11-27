@@ -123,6 +123,14 @@ impl Material {
         (self.mass_kg * 1000.0).round().clamp(0.0, 1e9) as u32
     }
 
+    /// Whether a pile of it is loose (D57, amended 27 November 2026):
+    /// many small things, of which a part may go where the whole would
+    /// not. Food, as the arms hold it (D35), and whatever comes in bits.
+    #[must_use]
+    pub fn loose(&self) -> bool {
+        self.food.is_some() || self.form == Form::Bits
+    }
+
     /// The days after it was made that it tears, in a cycle of
     /// `days_per_cycle` days: its `wears_seasons` in whole days when set,
     /// else its `wears_days`; 0 when it never wears.
@@ -1417,8 +1425,8 @@ impl Learning {
 }
 
 /// The gestures of the hands (D57; the project lead, 24 November 2026:
-/// "C'est parfait"): picking up, cutting with what is in hand, folding.
-/// No recipe: what comes of a gesture is computed from what the
+/// "C'est parfait"): picking up, cutting with what is in hand, folding,
+/// putting a thing in another. No recipe: what comes of a gesture is computed from what the
 /// materials are on the scales they all share (hardness, edge,
 /// suppleness, toughness, form), never from what they are for (amended
 /// 27 November 2026). D30 placeholders, named and explained in
@@ -1437,9 +1445,14 @@ pub struct Hands {
     /// stiffer one breaks.
     #[serde(default = "Hands::default_fold_suppleness")]
     pub fold_suppleness: u8,
-    /// The grams of loose food a litre of hollow keeps together.
+    /// The grams of loose things a litre of hollow keeps together.
     #[serde(default = "Hands::default_loose_g_per_litre")]
     pub loose_g_per_litre: u32,
+    /// The gestures that gave nothing, or broke the thing, a body
+    /// remembers, at most (D57, amended 27 November 2026): the oldest
+    /// goes when one more comes. 0: none remembered.
+    #[serde(default = "Hands::default_failures_kept")]
+    pub failures_kept: u32,
     /// What a body sees (the project lead, 25 November 2026: "on ne coupe
     /// pas avec une baie"): the edge from which a thing looks like it
     /// could cut.
@@ -1473,6 +1486,7 @@ impl Hands {
             tries_per_day: 4,
             fold_suppleness: Self::default_fold_suppleness(),
             loose_g_per_litre: Self::default_loose_g_per_litre(),
+            failures_kept: Self::default_failures_kept(),
             edge_seen: Self::default_edge_seen(),
             supple_seen: Self::default_supple_seen(),
         }
@@ -1486,6 +1500,10 @@ impl Hands {
         500
     }
 
+    fn default_failures_kept() -> u32 {
+        16
+    }
+
     fn default_edge_seen() -> u8 {
         3
     }
@@ -1494,7 +1512,7 @@ impl Hands {
         5
     }
 
-    /// The grams of loose food a hollow of `hollow_ml` keeps together.
+    /// The grams of loose things a hollow of `hollow_ml` keeps together.
     #[must_use]
     pub fn holds_g(&self, hollow_ml: u32) -> u32 {
         u32::try_from(u64::from(hollow_ml) * u64::from(self.loose_g_per_litre) / 1000)
@@ -1517,9 +1535,10 @@ impl Hands {
             || self.edge_seen > 10
             || self.supple_seen > 10
             || !(1..=2000).contains(&self.loose_g_per_litre)
+            || self.failures_kept > 64
         {
             return Err(ContentError::Needs(
-                "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000",
+                "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000, failures_kept at most 64",
             ));
         }
         Ok(())
@@ -1529,16 +1548,18 @@ impl Hands {
 /// The refusals of the world a body remembers as a problem (D50 and D57,
 /// amended 26 November 2026; the project lead: "not a feeling added to
 /// push them, rather a limitation that leads to thought: my arms are full,
-/// I can't take more"). Each kind links a refusal of the world to the
-/// property of the materials its test read: `full` (a gathering stopped
-/// with its arms full, the plant still bearing) to `holds_g`. A lived
+/// I can't take more"). Each kind names a refusal of the world: `full` (a
+/// gathering stopped with its arms full, the plant still bearing), and
+/// the ailments felt (D59). Nothing names what would answer it: the label
+/// that tied `full` to a property of the materials, read by no decision,
+/// is gone (amended 27 November 2026). A lived
 /// problem lets a willing body try its hands there and then, and that
 /// trial is judged by the problem. No word for what would answer it. D30
 /// placeholders, named and explained in `content/needs.ron`. Absent (no
 /// kinds): nothing is remembered as a problem.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Problems {
-    /// The kinds remembered, each a refusal and its property.
+    /// The kinds remembered, each a refusal.
     pub kinds: Vec<ProblemKind>,
     /// A problem not lived again for this many seasons is forgotten.
     pub fades_seasons: u32,
@@ -1553,8 +1574,6 @@ pub struct ProblemKind {
     /// The refusal of the world, in the simulation's own word: `full`
     /// (a gathering stopped with all it could carry, [`crate::WorkEnd::Full`]).
     pub refusal: String,
-    /// The property of the materials the refusal's test read: `holds_g`.
-    pub property: String,
     /// The trials a body begins from this problem in a season, at most.
     pub trials_per_season: u32,
     /// A trial from this problem is given up when this many seasons
@@ -1564,13 +1583,12 @@ pub struct ProblemKind {
 }
 
 impl ProblemKind {
-    /// An ailment felt (D59): lived by the body, read by no material, and
-    /// no trial begun from it in this first step.
+    /// An ailment felt (D59): lived by the body, and no trial begun from
+    /// it in this first step.
     #[must_use]
     pub fn felt(refusal: &str) -> Self {
         Self {
             refusal: refusal.to_owned(),
-            property: "felt".to_owned(),
             trials_per_season: 0,
             gives_up_seasons: 1,
         }
@@ -1584,13 +1602,8 @@ impl ProblemKind {
     }
 }
 
-/// The refusals a problem may name, each with the one property its test
-/// reads (D50, amended 26 November 2026).
-const PROBLEM_LINKS: [(&str, &str); 3] = [
-    ("full", "holds_g"),
-    ("ill_gut", "felt"),
-    ("ill_chest", "felt"),
-];
+/// The refusals a problem may name (D50, amended 26 November 2026).
+const PROBLEM_REFUSALS: [&str; 3] = ["full", "ill_gut", "ill_chest"];
 
 impl Problems {
     /// The placeholders of `content/needs.ron` (D30).
@@ -1600,7 +1613,6 @@ impl Problems {
             kinds: vec![
                 ProblemKind {
                     refusal: "full".to_owned(),
-                    property: "holds_g".to_owned(),
                     trials_per_season: 1,
                     gives_up_seasons: 1,
                 },
@@ -1644,11 +1656,7 @@ impl Problems {
         if !self.on() {
             return Ok(());
         }
-        let linked = |k: &ProblemKind| {
-            PROBLEM_LINKS
-                .iter()
-                .any(|(r, p)| *r == k.refusal && *p == k.property)
-        };
+        let linked = |k: &ProblemKind| PROBLEM_REFUSALS.contains(&k.refusal.as_str());
         let unique = self
             .kinds
             .iter()
@@ -1664,8 +1672,8 @@ impl Problems {
                 .all(|k| linked(k) && k.gives_up_seasons > 0)
         {
             return Err(ContentError::Needs(
-                "problems: each refusal once, linked to the property its test reads \
-                 (full: holds_g; ill_gut, ill_chest: felt), gives_up_seasons and fades_seasons at least 1, mind_slots 1 to 255",
+                "problems: each refusal once, one the simulation knows \
+                 (full, ill_gut, ill_chest), gives_up_seasons and fades_seasons at least 1, mind_slots 1 to 255",
             ));
         }
         Ok(())
@@ -5141,18 +5149,19 @@ mod bounds_tests {
     }
 
     #[test]
-    fn the_problems_link_a_refusal_to_the_property_its_test_reads() {
+    fn the_problems_name_refusals_the_simulation_knows_and_no_property() {
         let repo = crate::crops::tests::content();
         assert_eq!(repo.needs.problems, Problems::placeholders());
         assert_eq!(repo.needs.problems.kind_of("full"), Some(0));
         assert!(!Problems::default().on() && Problems::default().validate().is_ok());
         let mut p = Problems::placeholders();
         assert!(p.validate().is_ok());
-        p.kinds[0].property = "wears_days".to_owned();
-        assert!(p.validate().is_err(), "full reads holds_g");
-        let mut p = Problems::placeholders();
         p.kinds[0].refusal = "water".to_owned();
-        assert!(p.validate().is_err(), "no such refusal linked");
+        assert!(p.validate().is_err(), "no such refusal");
+        // The label that named what answers `full` is gone (D57, amended
+        // 27 November 2026): nothing in the content says it.
+        let needs = include_str!("../../../content/needs.ron");
+        assert!(!needs.contains("property:") && !needs.contains("holds_g"));
         let mut p = Problems::placeholders();
         p.kinds.push(p.kinds[0].clone());
         assert!(p.validate().is_err(), "each refusal once");
