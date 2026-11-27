@@ -61,7 +61,7 @@ def person(path, who, first, last, everything):
 
 def trials(path):
     """Who put food in a hollow, and what came of its trial."""
-    wanted = ("put_in", '"carry"', "Tried", "body_died", "step: Began")
+    wanted = ("put_in", '"carry"', "Tried", "body_died", "step: Began", "step: Abandoned")
     # Food is what a gathering gives; a stone put in a hollow is no answer.
     food = {l["w"]["gives"] for l in lines(path, ("work_stopped",)) if l["k"] == "event"}
     story = defaultdict(list)
@@ -80,6 +80,8 @@ def trials(path):
                     others[what["on"]] += 1
         elif what.startswith("Tried") and "way: Hands" in what:
             story[body].append((line["t"], line["d"], "kept" if "kept: true" in what else "not", None))
+        elif "kind: 0, step: Abandoned" in what:
+            story[body].append((line["t"], line["d"], "given up", None))
         elif "step: Began" in what:
             story[body].append((line["t"], line["d"], "began", None))
     ends, why = Counter(), Counter()
@@ -94,6 +96,9 @@ def trials(path):
         stops = [s[3] for s in steps if s[2] == "stop" and s[0] > start and (not end or s[0] <= end[0])]
         full = [s for s in stops if s["food_g"] >= s["arms_g"]]
         with_hollow = [s for s in full if len(s["things"]) > 0]
+        # A trial heard at the fire is judged by the days, not by its
+        # problem: what served stays known whatever that judge says.
+        own = end is not None and any(s[2] == "given up" and s[0] == end[0] for s in steps)
         stowed = [s for s in full if s["stowed_g"] > 0]
         beyond = [s for s in full if s["food_g"] > s["arms_g"]]
         if name == "not":
@@ -105,8 +110,10 @@ def trials(path):
                 why["full stops with a thing on it, nothing put in"] += 1
             elif not beyond:
                 why["food in a hollow, never beyond the arms"] += 1
+            elif own:
+                why["beyond the arms, yet given up by its problem"] += 1
             else:
-                why["beyond the arms, yet not kept"] += 1
+                why["beyond the arms, judged by the days (the deed stays known)"] += 1
         print(
             f"person {body:>3}: put-in day {puts[0][1]:>3}, {name:<9} "
             f"day {end[1] if end else '-':>3} | full stops {len(full)}, with a thing "

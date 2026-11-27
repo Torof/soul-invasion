@@ -10,7 +10,8 @@
 //! prints them; an event's is its JSON. The last line tells how many
 //! lines were written and the seconds it took. A gathering stopped also
 //! writes a `"k": "carry"` line: the grams of food the body carries,
-//! those of them in a hollow, what its arms hold, and the things on it.
+//! those of them in a hollow, what its arms hold, and the things on it
+//! that are not food. A plant picked bare is not written.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -19,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use sim::brain::News;
-use sim::{Content, Event, World};
+use sim::{Content, Event, WorkEnd, World};
 
 use crate::RunError;
 
@@ -99,7 +100,18 @@ impl Journal {
             return;
         };
         let start = Instant::now();
-        for event in events.iter().filter(|e| told(e)) {
+        // A plant picked bare is the commonest line and tells nothing of
+        // a thing or a life: left out.
+        let bare = |e: &Event| {
+            matches!(
+                e,
+                Event::WorkStopped {
+                    why: WorkEnd::Bare,
+                    ..
+                }
+            )
+        };
+        for event in events.iter().filter(|e| told(e) && !bare(e)) {
             let what = serde_json::to_value(event).unwrap_or_default();
             let body = body_in(&what.to_string());
             let line = json!({"t": tick, "d": day, "k": "event", "b": body, "w": what});
@@ -113,6 +125,7 @@ impl Journal {
                     .into_iter()
                     .chain(body.carried().iter().copied())
                     .filter_map(|i| world.item(i).map(|item| (i.0, item.material())))
+                    .filter(|(_, m)| rules.material(m).is_none_or(|m| m.food.is_none()))
                     .collect();
                 let what = json!({
                     "food_g": body.food_g(),

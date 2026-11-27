@@ -1490,7 +1490,18 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
     if let Some(trial) = mind.trial.as_mut().filter(|t| t.way == Way::Hands)
         && mind.ways.hands.add(deed)
     {
-        trial.started_day = super::restarted_day(world, &rules.needs.trials, trial, today(world));
+        let day = today(world);
+        trial.started_day = super::restarted_day(world, &rules.needs.trials, trial, day);
+        // A trial from a problem that has just learnt something is not
+        // judged before it has had the days to live its problem again
+        // with it (amended 27 November 2026: in the run of seed 37 a hollow
+        // folded and filled on the last evening of its season was given
+        // up that same night).
+        if let Some(aim) = trial.problem.as_mut() {
+            aim.until = aim
+                .until
+                .max(day + u64::from(rules.needs.trials.trial_days));
+        }
     }
     tool
 }
