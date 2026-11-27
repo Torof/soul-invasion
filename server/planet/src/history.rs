@@ -433,6 +433,19 @@ pub struct History {
     /// above the sea of the start, without its grain and its pile's lift
     /// (version 7).
     pub high_at: Vec<Vec<i16>>,
+    /// Per step, what changed each cell's carried height since the step
+    /// before, m, cause by cause (see [`CAUSES`]).
+    pub cause_at: Vec<Vec<[i16; CAUSES]>>,
+    /// Per step, how each cell of continental crust is drawn: 0 the crust
+    /// it showed or that came there, 1 crust the grid hid at the step
+    /// before, 2 a copy of its neighbour (the grid's hole).
+    pub shown_at: Vec<Vec<u8>>,
+    /// Per step, continental crust the grid does not draw: bits hidden,
+    /// those of them shown at the step before, and cells drawn as copies.
+    pub hidden_at: Vec<[u32; 3]>,
+    /// Per step, the name of the bit of crust each cell draws
+    /// (`u32::MAX`: a copy): the same crust keeps its name for good.
+    pub id_at: Vec<Vec<u32>>,
     /// The relief's grain at each cell, m: fine, and broad. A continent's
     /// crust keeps the grain of its home (fine plus half the broad one);
     /// the ocean floor has the fine one of where it lies.
@@ -636,6 +649,9 @@ struct Rock {
     high: i16,
     /// How far it has still to sink as it cools, m (a stretched margin).
     cool: i16,
+    /// What changed its height since the step before, m, by cause (see
+    /// [`CAUSES`]).
+    why: [i16; CAUSES],
 }
 
 /// A bit of crust where it really is. Each step it turns with its plate,
@@ -648,6 +664,10 @@ struct Bit {
     /// The area it stands for, km² (its cell's at birth).
     area: u32,
     rock: Rock,
+    /// Whether a cell showed it at the step before.
+    seen: bool,
+    /// Its name, for good.
+    id: u32,
 }
 
 /// Where a hotspot stood under the crust, carried with the bit it marked.
@@ -806,6 +826,29 @@ fn lift(high: i16, by: i64) -> i16 {
     (i64::from(high) + by).clamp(-6_000, 8_000) as i16
 }
 
+/// The causes that change a crust's carried height, in the order of
+/// [`History::cause_at`]: a rift stretched it, it cooled, an arc
+/// built on it, a terrane docked, a plume lifted it, it wore down, it
+/// levelled with its neighbours, sediment filled it.
+pub const CAUSES: usize = 8;
+const BY_STRETCH: usize = 0;
+const BY_COOLING: usize = 1;
+const BY_ARC: usize = 2;
+const BY_DOCK: usize = 3;
+const BY_PLUME: usize = 4;
+const BY_WEAR: usize = 5;
+const BY_LEVEL: usize = 6;
+const BY_FILL: usize = 7;
+
+impl Rock {
+    /// Its carried height changes by `by` m, for a cause.
+    fn rise(&mut self, by: i64, cause: usize) {
+        let was = self.high;
+        self.high = lift(was, by);
+        self.why[cause] = lift(self.why[cause], i64::from(self.high) - i64::from(was));
+    }
+}
+
 /// The arcs build: volcanoes on the plates riding over
 /// a sinking floor, behind their active margins.
 fn arcs(sphere: &Sphere, rock: &mut [Rock], margin: &[u8]) {
@@ -820,7 +863,7 @@ fn arcs(sphere: &Sphere, rock: &mut [Rock], margin: &[u8]) {
             let top = ARC_TOP_M * bump(d - ARC_LINE_KM.0, ARC_LINE_KM.1) / 1000
                 + ARC_COAST_M * bump(d, 90) / 1000;
             let up = (top - i64::from(rock[c].high)).max(0) * ARC_RATE / 1000;
-            rock[c].high = lift(rock[c].high, up);
+            rock[c].rise(up, BY_ARC);
         }
     }
 }
@@ -837,7 +880,7 @@ fn weather(sphere: &Sphere, plate: &[u8], rock: &mut [Rock], margin: &[u8], grai
         }
         if r.cool > 0 {
             let sunk = (i64::from(r.cool) * COOLING / 1000).max(1);
-            r.high = lift(r.high, -sunk);
+            r.rise(-sunk, BY_COOLING);
             r.cool -= sunk as i16;
         }
     }
@@ -863,7 +906,8 @@ fn weather(sphere: &Sphere, plate: &[u8], rock: &mut [Rock], margin: &[u8], grai
         let worn = ((high[c] - PLAIN_M) * WEAR / 1000).max(0);
         let area = i64::from(sphere.area_km2[c]);
         let r = &mut rock[c];
-        r.high = lift(r.high, flow - worn);
+        r.rise(flow, BY_LEVEL);
+        r.rise(-worn, BY_WEAR);
         silt[plate[c] as usize] += worn * area;
         room[plate[c] as usize] += below(r).max(0) * area;
     }
@@ -874,7 +918,7 @@ fn weather(sphere: &Sphere, plate: &[u8], rock: &mut [Rock], margin: &[u8], grai
             continue;
         }
         let fill = deep * silt[p].min(room[p]) / room[p].max(1) * FILLING / 1000;
-        rock[c].high = lift(rock[c].high, fill);
+        rock[c].rise(fill, BY_FILL);
     }
 }
 
@@ -1444,6 +1488,60 @@ fn sync(bits: &mut [Bit], plate: &[u8], rock: &[Rock], disp: &[u32]) {
     }
 }
 
+/// The crust the grid does not draw lives on (version 9): what happened
+/// in the step to the nearest drawn crust of its plate (a rift's stretch,
+/// an arc, wear, a pile) happened to it too, so it is the same crust when
+/// the grid draws it again.
+fn follow(
+    sphere: &Sphere,
+    bits: &mut [Bit],
+    plate: &[u8],
+    rock: &[Rock],
+    disp: &[u32],
+    before: &[Rock],
+) {
+    let mut shown = vec![false; bits.len()];
+    for &d in disp {
+        if d != NO_BIT {
+            shown[d as usize] = true;
+        }
+    }
+    for i in 0..bits.len() {
+        let b = bits[i];
+        if shown[i] || b.rock.class == OCEAN {
+            continue;
+        }
+        let q = sphere.cell_of(b.pos);
+        let near = std::iter::once(q)
+            .chain(sphere.links[q].iter().map(|&(m, _)| m as usize))
+            .filter(|&c| {
+                disp[c] != NO_BIT && plate[c] == b.plate && rock[c].class != OCEAN && {
+                    let id = bits[disp[c] as usize].id as usize;
+                    id < before.len() && before[id].class != OCEAN
+                }
+            })
+            .min_by_key(|&c| (km_between(bits[disp[c] as usize].pos, b.pos), c));
+        let Some(c) = near else {
+            continue;
+        };
+        let (was, now) = (before[bits[disp[c] as usize].id as usize], rock[c]);
+        let r = &mut bits[i].rock;
+        for k in 0..CAUSES {
+            r.rise(i64::from(now.why[k]), k);
+        }
+        r.thick = (i64::from(r.thick) + i64::from(now.thick) - i64::from(was.thick))
+            .clamp(i64::from(OCEAN_THICK), THICK_MAX) as u16;
+        r.cool = (i64::from(r.cool) + i64::from(now.cool) - i64::from(was.cool)).max(0) as i16;
+        r.margins |= now.margins & !was.margins;
+        if now.orogeny != was.orogeny {
+            r.orogeny = now.orogeny;
+        }
+        if now.rift != was.rift {
+            r.rift = now.rift;
+        }
+    }
+}
+
 /// The largest continental mass (continents touching across plates),
 /// km², and how to cut it in two along the seams between its plates: the
 /// plates of one side (grown from its largest plate along its longest
@@ -1770,6 +1868,7 @@ pub fn run(
                     thick: CONTINENT_THICK,
                     high: high0[c],
                     cool: 0,
+                    why: [0; CAUSES],
                 }
             } else {
                 let d = i64::from(from_ridge[c].min(20_000));
@@ -1786,6 +1885,7 @@ pub fn run(
                     thick: OCEAN_THICK,
                     high: 0,
                     cool: 0,
+                    why: [0; CAUSES],
                 }
             }
         })
@@ -1917,6 +2017,8 @@ pub fn run(
             plate: plate[c],
             area: sphere.area_km2[c],
             rock: rock[c],
+            seen: true,
+            id: c as u32,
         })
         .collect();
     let mut disp: Vec<u32> = (0..CELLS as u32).collect();
@@ -1933,6 +2035,10 @@ pub fn run(
     let mut out_orogeny = Vec::with_capacity(s.steps + 1);
     let mut out_thick = Vec::with_capacity(s.steps + 1);
     let mut out_high = Vec::with_capacity(s.steps + 1);
+    let mut out_cause = Vec::with_capacity(s.steps + 1);
+    let mut out_shown = Vec::with_capacity(s.steps + 1);
+    let mut out_id = Vec::with_capacity(s.steps + 1);
+    let mut out_hidden = Vec::with_capacity(s.steps + 1);
     let mut out_marks = Vec::with_capacity(s.steps + 1);
     let mut out_heat = Vec::with_capacity(s.steps + 1);
     let mut continental_km2 = Vec::with_capacity(s.steps + 1);
@@ -1971,9 +2077,26 @@ pub fn run(
     let mut event = vec![Margin::Inland as u8; CELLS];
     let mut fronts: Vec<Front> = Vec::new();
     let mut last_kind = vec![0_u8; CELLS];
+    let mut next_bit = CELLS as u32;
+    // Each bit's rock as the step before left it, by the bit's name.
+    let mut before: Vec<Rock> = Vec::new();
+    let mut shown_now = vec![0_u8; CELLS];
+    let mut hidden_now = [0_u32; 3];
     for t in 0..=s.steps {
         let now_my = ((s.steps - t) as i64 * s.step_my) as u16;
         if t > 0 {
+            for r in &mut rock {
+                r.why = [0; CAUSES];
+            }
+            for b in &mut bits {
+                b.rock.why = [0; CAUSES];
+                b.seen = false;
+            }
+            for &d in &disp {
+                if d != NO_BIT {
+                    bits[d as usize].seen = true;
+                }
+            }
             let mut cont_of = [0_i64; MAXP];
             let mut cells_of = [0_i64; MAXP];
             for c in 0..CELLS {
@@ -2236,7 +2359,12 @@ pub fn run(
                     .filter(|&i| bits[i as usize].plate == pw)
                     .max_by_key(|&i| {
                         let b = &bits[i as usize];
-                        (rank(b.rock.class), dot(b.pos, x), std::cmp::Reverse(i))
+                        (
+                            rank(b.rock.class),
+                            b.seen,
+                            dot(b.pos, x),
+                            std::cmp::Reverse(i),
+                        )
                     })
                     .expect("the winner's bit");
                 let mut r = bits[iw as usize].rock;
@@ -2252,7 +2380,7 @@ pub fn run(
                 {
                     accrete.push((q, rider, pw, r.piece));
                     if r.margins & ACCRETED == 0 {
-                        r.high = lift(r.high, DOCK_M);
+                        r.rise(DOCK_M, BY_DOCK);
                     }
                     r.margins |= ACCRETED;
                     r.orogeny = now_my;
@@ -2281,7 +2409,7 @@ pub fn run(
                         }
                         TERRANE => {
                             if r.margins & ACCRETED == 0 {
-                                r.high = lift(r.high, DOCK_M);
+                                r.rise(DOCK_M, BY_DOCK);
                             }
                             r.margins |= ACCRETED;
                             r.orogeny = now_my;
@@ -2315,6 +2443,7 @@ pub fn run(
                         r.thick = TERRANE_THICK;
                         r.high = ARC_ISLAND_M;
                         r.cool = 0;
+                        r.why = [0; CAUSES];
                         made += area(q);
                     }
                 }
@@ -2376,19 +2505,20 @@ pub fn run(
                             ring.extend(sphere.links[m].iter().map(|&(k, _)| k as usize));
                         }
                     }
-                    let mut best: Option<(i64, u32)> = None;
+                    let mut best: Option<(bool, i64, u32)> = None;
                     for &m in &ring {
                         for &j in &spare[m] {
                             if used[j as usize] || dead[j as usize] {
                                 continue;
                             }
                             let d = km_between(bits[j as usize].pos, x);
-                            if d < *reach && best.is_none_or(|(bd, bj)| (d, j) < (bd, bj)) {
-                                best = Some((d, j));
+                            let k = (!bits[j as usize].seen, d, j);
+                            if d < *reach && best.is_none_or(|b| k < b) {
+                                best = Some(k);
                             }
                         }
                     }
-                    if let Some((_, j)) = best {
+                    if let Some((_, _, j)) = best {
                         used[j as usize] = true;
                         pending[q] = false;
                         plate[q] = bits[j as usize].plate;
@@ -2401,6 +2531,63 @@ pub fn run(
             // sampling, not a gap (the grid's cells are not all the same
             // size, a moving plate's bits are not either): it draws its
             // nearest neighbour again, and no crust is made or copied.
+            // Empty cells walled in by plates that move as one are holes of
+            // the sampling whatever their number (version 9): a rigid plate
+            // does not open, and no ocean floor is born inside it.
+            let mut inner = vec![false; CELLS];
+            let mut seen_hole = vec![false; CELLS];
+            for q0 in 0..CELLS {
+                if !pending[q0] || seen_hole[q0] {
+                    continue;
+                }
+                let (mut stack, mut cells) = (vec![q0], Vec::new());
+                seen_hole[q0] = true;
+                let (mut wall, mut one) = (NONE, true);
+                while let Some(q) = stack.pop() {
+                    cells.push(q);
+                    for &(m, _) in &sphere.links[q] {
+                        let m = m as usize;
+                        if pending[m] {
+                            if !seen_hole[m] {
+                                seen_hole[m] = true;
+                                stack.push(m);
+                            }
+                        } else {
+                            let g = group[plate[m] as usize];
+                            one &= wall == NONE || wall == g;
+                            wall = g;
+                        }
+                    }
+                }
+                if one && wall != NONE {
+                    for q in cells {
+                        inner[q] = true;
+                    }
+                }
+            }
+            loop {
+                let mut filled = false;
+                for q in 0..CELLS {
+                    if !pending[q] || !inner[q] {
+                        continue;
+                    }
+                    if let Some((_, m)) = sphere.links[q]
+                        .iter()
+                        .filter(|&&(m, _)| !pending[m as usize])
+                        .map(|&(m, km)| (km, m as usize))
+                        .min()
+                    {
+                        plate[q] = plate[m];
+                        rock[q] = rock[m];
+                        disp[q] = NO_BIT;
+                        pending[q] = false;
+                        filled = true;
+                    }
+                }
+                if !filled {
+                    break;
+                }
+            }
             for q in 0..CELLS {
                 if !pending[q] {
                     continue;
@@ -2459,6 +2646,7 @@ pub fn run(
                 thick: OCEAN_THICK,
                 high: 0,
                 cool: 0,
+                why: [0; CAUSES],
             };
             while !open.is_empty() {
                 let mut set = Vec::new();
@@ -2506,7 +2694,10 @@ pub fn run(
                     plate: plate[q],
                     area: sphere.area_km2[q],
                     rock: rock[q],
+                    seen: true,
+                    id: next_bit,
                 });
+                next_bit += 1;
                 for &(m, _) in &sphere.links[q] {
                     let m = m as usize;
                     if rock[m].class != OCEAN && event[m] != Margin::Suture as u8 {
@@ -2593,7 +2784,7 @@ pub fn run(
                     }
                     plate[c] = pw;
                     if rock[c].margins & ACCRETED == 0 {
-                        rock[c].high = lift(rock[c].high, DOCK_M);
+                        rock[c].rise(DOCK_M, BY_DOCK);
                     }
                     rock[c].margins |= ACCRETED;
                     rock[c].orogeny = now_my;
@@ -2760,6 +2951,7 @@ pub fn run(
                     // Sediment builds a shelf out.
                     high: lift(0, SHELF_M - i64::from(grain[m])),
                     cool: 0,
+                    why: [0; CAUSES],
                     home: m as u32,
                     margins: 0,
                     arc: 0,
@@ -2903,11 +3095,11 @@ pub fn run(
                 }
                 // A plume lifts the continent over it and floods it a little.
                 if rock[c].class != OCEAN {
-                    rock[c].high = lift(rock[c].high, PLUME_UP_M);
+                    rock[c].rise(PLUME_UP_M, BY_PLUME);
                     for &(m, _) in &sphere.links[c] {
                         let r = &mut rock[m as usize];
                         if r.class != OCEAN {
-                            r.high = lift(r.high, PLUME_UP_M / 3);
+                            r.rise(PLUME_UP_M / 3, BY_PLUME);
                         }
                     }
                 }
@@ -3193,6 +3385,30 @@ pub fn run(
                 m.bit = k;
                 k != NO_BIT
             });
+            let mut hidden = [0_u32; 3];
+            let mut is_shown = vec![false; bits.len()];
+            for &d in &disp {
+                if d != NO_BIT {
+                    is_shown[d as usize] = true;
+                }
+            }
+            for (i, b) in bits.iter().enumerate() {
+                if b.rock.class != OCEAN && !is_shown[i] {
+                    hidden[0] += 1;
+                    hidden[1] += u32::from(b.seen);
+                }
+            }
+            for c in 0..CELLS {
+                shown_now[c] = if rock[c].class == OCEAN {
+                    0
+                } else if disp[c] == NO_BIT {
+                    hidden[2] += 1;
+                    2
+                } else {
+                    u8::from(!bits[disp[c] as usize].seen)
+                };
+            }
+            hidden_now = hidden;
             shortened_km2.push(shortened);
             made_km2.push(made);
             for push in &mut pushes {
@@ -3214,7 +3430,7 @@ pub fn run(
                     let due = STRETCH_M * bump(i64::from(d[c]), i64::from(STRETCH_KM)) / 1000;
                     let more = due - i64::from(r.cool);
                     if more > 0 {
-                        r.high = lift(r.high, -more);
+                        r.rise(-more, BY_STRETCH);
                         r.cool = lift(r.cool, more);
                     }
                 }
@@ -3264,6 +3480,13 @@ pub fn run(
             }
         }
         sync(&mut bits, &plate, &rock, &disp);
+        if t > 0 {
+            follow(sphere, &mut bits, &plate, &rock, &disp, &before);
+        }
+        before.resize(next_bit as usize, rock[0]);
+        for b in &bits {
+            before[b.id as usize] = b.rock;
+        }
         // Collisions in progress: a collision begins where a front closes
         // between parted plates, and lasts while their continents touch;
         // how long their contact is, and how fast it still closes.
@@ -3361,6 +3584,20 @@ pub fn run(
         out_orogeny.push(rock.iter().map(|r| r.orogeny).collect::<Vec<u16>>());
         out_thick.push(rock.iter().map(|r| r.thick).collect::<Vec<u16>>());
         out_high.push(rock.iter().map(|r| r.high).collect::<Vec<i16>>());
+        out_cause.push(rock.iter().map(|r| r.why).collect::<Vec<[i16; CAUSES]>>());
+        out_shown.push(shown_now.clone());
+        out_id.push(
+            disp.iter()
+                .map(|&d| {
+                    if d == NO_BIT {
+                        NO_BIT
+                    } else {
+                        bits[d as usize].id
+                    }
+                })
+                .collect::<Vec<u32>>(),
+        );
+        out_hidden.push(hidden_now);
         out_marks.push(
             marks
                 .iter()
@@ -3464,6 +3701,10 @@ pub fn run(
         orogeny_at: out_orogeny,
         thick_at: out_thick,
         high_at: out_high,
+        cause_at: out_cause,
+        shown_at: out_shown,
+        id_at: out_id,
+        hidden_at: out_hidden,
         rough,
         broad,
         marks_at: out_marks,
