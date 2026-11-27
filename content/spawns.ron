@@ -27,10 +27,10 @@
     (material: "pebble", terrain: ford, per_thousand: 200),
     // Flint in the river gravels, and on the rocky ground at the foot of
     // the rock.
-    (material: "flint", terrain: grass, per_thousand: 150, near: Some((terrain: water, within: 3))),
-    (material: "flint", terrain: ford, per_thousand: 150),
-    (material: "flint", terrain: grass, per_thousand: 150, near: Some((terrain: rock, within: 3))),
-    (material: "flint", terrain: forest, per_thousand: 80, near: Some((terrain: rock, within: 3))),
+    (material: "flint_nodule", terrain: grass, per_thousand: 150, near: Some((terrain: water, within: 3))),
+    (material: "flint_nodule", terrain: ford, per_thousand: 150),
+    (material: "flint_nodule", terrain: grass, per_thousand: 150, near: Some((terrain: rock, within: 3))),
+    (material: "flint_nodule", terrain: forest, per_thousand: 80, near: Some((terrain: rock, within: 3))),
     // More of what the ground drops (D57, amended 27 November 2026), added
     // after the rules above so that their things keep their ids: quartz in
     // the river gravels, slate and sandstone fallen at the foot of the

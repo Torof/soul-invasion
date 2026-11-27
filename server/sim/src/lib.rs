@@ -1128,6 +1128,17 @@ pub enum Intention {
         /// The item taken out.
         item: ItemId,
     },
+    /// Strike the item `item` it carries with the item `with` it carries
+    /// (D57, amended 27 November 2026): a gesture of the content's
+    /// minutes, whatever comes of it.
+    Strike {
+        /// Who.
+        body: BodyId,
+        /// The item struck.
+        item: ItemId,
+        /// The item it is struck with.
+        with: ItemId,
+    },
 }
 
 impl Intention {
@@ -1169,7 +1180,8 @@ impl Intention {
             | Intention::Cut { body, .. }
             | Intention::Fold { body, .. }
             | Intention::PutIn { body, .. }
-            | Intention::TakeOut { body, .. } => body,
+            | Intention::TakeOut { body, .. }
+            | Intention::Strike { body, .. } => body,
         }
     }
 }
@@ -3531,12 +3543,9 @@ impl World {
                 tree,
             } => self.cut(id, with, (chunk, tree), rules, events),
             Intention::Fold { body: id, item } => self.fold(id, item, rules, events),
-            Intention::PutIn {
-                body: id,
-                item,
-                into,
-            } => self.put_in(id, (item, into), rules, events),
-            Intention::TakeOut { body: id, item } => self.take_out(id, item, rules, events),
+            Intention::PutIn { .. } | Intention::TakeOut { .. } | Intention::Strike { .. } => {
+                self.on_carried(intention, rules, events);
+            }
             Intention::Sleep { body: id } => {
                 if let Some(index) = self.index_of(id) {
                     let body = &mut self.bodies[index];

@@ -111,6 +111,22 @@ impl Material {
         self.edge > 0 && self.edge >= other.toughness && self.hardness > other.hardness
     }
 
+    /// Which of two things struck one against the other breaks (D57,
+    /// amended 27 November 2026), by what they are: the less tough of
+    /// the two, `Some(true)` when it is `self`; neither when they are as
+    /// tough, when one has no toughness to speak of (flesh, fruit), or
+    /// when the one that would break is supple enough to fold: it gives
+    /// under the blow.
+    #[must_use]
+    pub fn struck_with(&self, other: &Material, fold_suppleness: u8) -> Option<bool> {
+        if self.toughness == 0 || other.toughness == 0 || self.toughness == other.toughness {
+            return None;
+        }
+        let mine = self.toughness < other.toughness;
+        let broken = if mine { self } else { other };
+        (broken.suppleness < fold_suppleness).then_some(mine)
+    }
+
     /// Mass of one piece, in grams.
     // Not generation: content gives masses in kilograms, read once.
     #[allow(
@@ -193,6 +209,12 @@ pub struct Material {
     /// 0: not in seasons; never both; neither, it never wears.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub wears_seasons: u32,
+    /// What a piece broken off it by a blow is made of (D57, amended 27
+    /// November 2026), when the break changes what the eye and the hand
+    /// find: a nodule of flint breaks into keen flint. None: its pieces
+    /// are of itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breaks_into: Option<String>,
     /// How it looks.
     pub look: Look,
 }
@@ -4494,6 +4516,18 @@ impl Content {
     pub fn cut_gives(&self, tool: &Material, species: &Species) -> Option<&Material> {
         let bark = self.material(species.bark.as_deref()?)?;
         tool.works(bark).then_some(bark)
+    }
+
+    /// The material of the piece a blow of `with` on `on` breaks off
+    /// ([`Material::struck_with`]), whichever of the two breaks.
+    #[must_use]
+    pub fn strike_gives(&self, on: &Material, with: &Material) -> Option<&Material> {
+        let broken = if on.struck_with(with, self.needs.hands.fold_suppleness)? {
+            on
+        } else {
+            with
+        };
+        self.material(broken.breaks_into.as_deref().unwrap_or(&broken.id))
     }
 
     /// A small, valid content for tests: a stone, a branch and a berry.

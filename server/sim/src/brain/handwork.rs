@@ -149,6 +149,13 @@ pub(super) enum HandTarget {
         /// The thing it is put in.
         into: ItemId,
     },
+    /// A thing it carries, to strike with another it carries.
+    Strike {
+        /// The thing struck.
+        item: ItemId,
+        /// The thing it is struck with.
+        with: ItemId,
+    },
     /// A thing it carries in a hollow, to take out of it.
     Take {
         /// The thing taken out.
@@ -170,6 +177,7 @@ impl HandTarget {
         match self {
             HandTarget::Item(item, _)
             | HandTarget::Put { item, .. }
+            | HandTarget::Strike { item, .. }
             | HandTarget::Take { item } => Barred::Item(item),
             HandTarget::Tree { chunk, key, .. } => Barred::Tree(chunk, key),
         }
@@ -502,6 +510,11 @@ fn product(rules: &Content, deed: Deed) -> Option<u16> {
             material_index(rules, &bark.id)
         }
         Gesture::Fold => folds_into(rules, deed.on),
+        // The piece a blow breaks off, of the struck or of the striker.
+        Gesture::Strike => {
+            let piece = rules.strike_gives(stuff(rules, deed.on)?, stuff(rules, deed.with)?)?;
+            material_index(rules, &piece.id)
+        }
         // A put-in makes no kind of thing: the same things, one in the
         // other. Nor does a take-out.
         Gesture::PutIn | Gesture::TakeOut => None,
@@ -967,6 +980,7 @@ fn draw(
             Gesture::Fold => !plausible.folds.is_empty(),
             Gesture::PutIn => !plausible.puts.is_empty(),
             Gesture::TakeOut => !plausible.takes.is_empty(),
+            Gesture::Strike => !plausible.strikes.is_empty(),
         })
         .collect();
     if plausible.skipped > 0 {
@@ -995,6 +1009,10 @@ fn draw(
         Gesture::Fold => plausible.folds.get(pick(plausible.folds.len())).copied(),
         Gesture::PutIn => plausible.puts.get(pick(plausible.puts.len())).copied(),
         Gesture::TakeOut => plausible.takes.get(pick(plausible.takes.len())).copied(),
+        Gesture::Strike => plausible
+            .strikes
+            .get(pick(plausible.strikes.len()))
+            .copied(),
     }
 }
 
@@ -1013,6 +1031,9 @@ struct Plausible {
     puts: Vec<(HandTarget, Deed)>,
     /// A take-out of each thing it carries in a hollow.
     takes: Vec<(HandTarget, Deed)>,
+    /// A blow on each thing carried with each other thing carried one
+    /// can hit with.
+    strikes: Vec<(HandTarget, Deed)>,
     /// The different gestures set aside for a failure remembered.
     skipped: u32,
 }
@@ -1092,6 +1113,7 @@ impl Plausible {
                 }
             }
         }
+        out.strikes = strikes(world, rules, have, &mut remembered);
         // What lies in a thing it carries is seen there, and may be taken
         // out again (amended 27 November 2026).
         for &(item, on) in have {
@@ -1130,6 +1152,60 @@ fn bends_to_the_eye(rules: &Content, kind: u16) -> bool {
         && stuff(rules, kind).is_some_and(|m| {
             m.form == Form::Sheet || m.suppleness >= rules.needs.hands.supple_seen.max(1)
         })
+}
+
+/// The blows a body sees as plausible (D57, amended 27 November 2026):
+/// any thing in the hand may be struck with a thing one can hit with, a
+/// block or a stick, no food, no sheet, no strand; those `remembered` as
+/// having given nothing set aside. Which of the two breaks, if any, it
+/// does not see.
+fn strikes(
+    world: &World,
+    rules: &Content,
+    have: &[(ItemId, u16)],
+    remembered: &mut impl FnMut(Deed) -> bool,
+) -> Vec<(HandTarget, Deed)> {
+    let mut out: Vec<(HandTarget, Deed)> = Vec::new();
+    let free = |i: ItemId| world.item(i).is_some_and(|t| t.within().is_none());
+    for &(with, with_m) in have.iter().filter(|&&(_, m)| hits_to_the_eye(rules, m)) {
+        for &(item, on) in have {
+            if item == with
+                || kind_hollow(on)
+                || loose_food(rules, on)
+                || !free(item)
+                || !free(with)
+            {
+                continue;
+            }
+            let deed = Deed {
+                gesture: Gesture::Strike,
+                on,
+                with: with_m,
+            };
+            if !remembered(deed) && !out.iter().any(|(_, d)| *d == deed) {
+                out.push((HandTarget::Strike { item, with }, deed));
+            }
+        }
+    }
+    out
+}
+
+/// The blow of `deed` to do again: the two kinds of thing it names, both
+/// carried and in no hollow.
+fn strike_again(world: &World, have: &[(ItemId, u16)], deed: Deed) -> Option<(HandTarget, Deed)> {
+    let free = |i: ItemId| world.item(i).is_some_and(|t| t.within().is_none());
+    let of = |kind: u16| have.iter().find(|&&(i, m)| m == kind && free(i));
+    let (&(item, _), &(with, _)) = (of(deed.on)?, of(deed.with)?);
+    (item != with).then_some((HandTarget::Strike { item, with }, deed))
+}
+
+/// Whether a thing of the kind `kind` looks like one can hit with it: a
+/// block or a stick that is no food and no hollow. What breaks under it,
+/// or whether it breaks itself, a body finds by trying.
+fn hits_to_the_eye(rules: &Content, kind: u16) -> bool {
+    !kind_hollow(kind)
+        && stuff(rules, kind)
+            .is_some_and(|m| m.food.is_none() && matches!(m.form, Form::Block | Form::Stick))
 }
 
 /// Whether a thing of the kind `kind` looks like it could hold what is
@@ -1196,11 +1272,10 @@ fn needed(
                 .all(|m| !have.iter().any(|(_, h)| h == m))
         })
     };
-    if let Some(take) = take_again(world, rules, id, (deeds, have), mind) {
-        return Some((take, false));
-    }
-    if let Some(put) = put_again(world, rules, id, (deeds, have), mind) {
-        return Some((put, false));
+    if let Some(again) = take_again(world, rules, id, (deeds, have), mind)
+        .or_else(|| put_again(world, rules, id, (deeds, have), mind))
+    {
+        return Some((again, false));
     }
     let held = world.body(id)?.held();
     // The things lying near are looked at once, at the first deed that
@@ -1214,7 +1289,7 @@ fn needed(
                     .filter_map(|d| match d.gesture {
                         Gesture::Cut => Some(d.with),
                         Gesture::PickUp => Some(d.on),
-                        Gesture::Fold | Gesture::PutIn | Gesture::TakeOut => None,
+                        Gesture::Fold | Gesture::PutIn | Gesture::TakeOut | Gesture::Strike => None,
                     })
                     .collect();
                 materials.sort_unstable();
@@ -1225,13 +1300,23 @@ fn needed(
             .find(|n| n.0 == m)
             .map(|&(_, item, pos)| (item, pos))
     };
-    for gesture in [Gesture::Fold, Gesture::Cut, Gesture::PickUp] {
+    for gesture in [
+        Gesture::Fold,
+        Gesture::Cut,
+        Gesture::Strike,
+        Gesture::PickUp,
+    ] {
         for deed in deeds.iter().filter(|d| d.gesture == gesture) {
             if !lacks(deed) {
                 continue;
             }
             match gesture {
                 Gesture::PutIn | Gesture::TakeOut => {}
+                Gesture::Strike => {
+                    if let Some(again) = strike_again(world, have, deed) {
+                        return Some((again, false));
+                    }
+                }
                 Gesture::Fold => {
                     if let Some(&(item, _)) = have.iter().find(|(_, m)| *m == deed.on) {
                         return Some(((HandTarget::Item(item, here), deed), false));
@@ -1317,6 +1402,17 @@ fn go_do(
             why: Why::Hands,
         };
     }
+    if let HandTarget::Strike { item, with } = target {
+        begin(mind, deed, item);
+        return Decision {
+            intention: Intention::Strike {
+                body: id,
+                item,
+                with,
+            },
+            why: Why::Hands,
+        };
+    }
     if let HandTarget::Take { item } = target {
         begin(mind, deed, item);
         return Decision {
@@ -1328,7 +1424,7 @@ fn go_do(
         return decision;
     }
     let to = match target {
-        HandTarget::Put { .. } | HandTarget::Take { .. } => here,
+        HandTarget::Put { .. } | HandTarget::Take { .. } | HandTarget::Strike { .. } => here,
         HandTarget::Item(_, pos) => pos,
         HandTarget::Tree { at, .. } => {
             // A trunk takes its tile: it stands beside it.
@@ -1365,7 +1461,9 @@ fn act_on(
     let body = world.body(id)?;
     let intention = match target {
         // Done where it stands, never stepped to ([`go_do`]).
-        HandTarget::Put { .. } | HandTarget::Take { .. } => return None,
+        HandTarget::Put { .. } | HandTarget::Take { .. } | HandTarget::Strike { .. } => {
+            return None;
+        }
         HandTarget::Item(item, pos) => {
             if (pos.x - here.x).abs() > 1 || (pos.y - here.y).abs() > 1 {
                 return None;
@@ -1511,7 +1609,9 @@ pub(super) fn keep_what_served(rules: &Content, mind: &mut Mind, before: &Deeds,
         }
         product(rules, deed).is_some_and(|p| {
             kept.iter().any(|k| {
-                k.with == p || (matches!(k.gesture, Gesture::Fold | Gesture::PutIn) && k.on == p)
+                k.with == p
+                    || (matches!(k.gesture, Gesture::Fold | Gesture::PutIn | Gesture::Strike)
+                        && k.on == p)
             })
         })
     };
@@ -1540,7 +1640,7 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
     let worked = match deed.gesture {
         Gesture::PickUp if body.has(item) => true,
         Gesture::PickUp => return None,
-        Gesture::Cut | Gesture::Fold | Gesture::PutIn | Gesture::TakeOut => {
+        Gesture::Cut | Gesture::Fold | Gesture::PutIn | Gesture::TakeOut | Gesture::Strike => {
             mind.handwork.done.take()?
         }
     };

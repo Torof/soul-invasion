@@ -324,4 +324,12 @@
      kind: plant, mass_kg: 0.05, hardness: 0, suppleness: 9, toughness: 1,
      form: sheet, area_dm2: 9, wears_days: 1,
      flammable: false, food: None, look: (colour: "#5a8a4a")),
+    // The flint as the ground gives it (D57, amended 27 November 2026): a
+    // rounded nodule in its chalky rind, with no edge to speak of. Struck
+    // with a tougher stone, keen flint breaks off it, piece after piece.
+    (id: "flint_nodule", name: "Flint nodule",
+     description: "A rounded lump of flint in a pale rind, heavy in the hand.",
+     kind: stone, mass_kg: 1.2, hardness: 7, edge: 2, toughness: 5,
+     breaks_into: Some("flint"),
+     flammable: false, food: None, look: (colour: "#8a857a")),
 ]

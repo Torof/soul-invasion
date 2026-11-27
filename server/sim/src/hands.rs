@@ -40,16 +40,24 @@ pub enum Gesture {
     /// Take a thing out of the thing carried it lies in (27 November
     /// 2026): the put-in undone.
     TakeOut,
+    /// Strike a thing carried with another thing carried (27 November
+    /// 2026).
+    Strike,
 }
+
+/// A striker breaks a thing up to this many times its own mass (D57,
+/// amended 27 November 2026): a pebble breaks a branch, not a log.
+const STRIKE_MASS: u64 = 10;
 
 impl Gesture {
     /// Every gesture, in a fixed order.
-    pub const ALL: [Gesture; 5] = [
+    pub const ALL: [Gesture; 6] = [
         Gesture::PickUp,
         Gesture::Cut,
         Gesture::Fold,
         Gesture::PutIn,
         Gesture::TakeOut,
+        Gesture::Strike,
     ];
 
     /// Its name, as the vivarium writes it.
@@ -61,6 +69,7 @@ impl Gesture {
             Gesture::Fold => "fold",
             Gesture::PutIn => "put in",
             Gesture::TakeOut => "take out",
+            Gesture::Strike => "strike",
         }
     }
 }
@@ -385,6 +394,119 @@ impl World {
         );
     }
 
+    /// The gestures on things carried alone: put in, take out, strike.
+    pub(crate) fn on_carried(
+        &mut self,
+        intention: &crate::Intention,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) {
+        match *intention {
+            crate::Intention::PutIn { body, item, into } => {
+                self.put_in(body, (item, into), rules, events);
+            }
+            crate::Intention::TakeOut { body, item } => self.take_out(body, item, rules, events),
+            crate::Intention::Strike { body, item, with } => {
+                self.strike(body, (item, with), rules, events);
+            }
+            _ => {}
+        }
+    }
+
+    /// `id` strikes `item` with `with`, both carried (D57, amended 27
+    /// November 2026): busy the content's minutes, whatever comes of it.
+    pub(crate) fn strike(
+        &mut self,
+        id: BodyId,
+        (item, with): (ItemId, ItemId),
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) {
+        let refuse = |events: &mut Vec<Event>, reason| {
+            events.push(Event::GestureRefused {
+                body: id,
+                gesture: Gesture::Strike,
+                reason,
+            });
+        };
+        let Some(index) = self.index_of(id) else {
+            return refuse(events, Refusal::Unknown);
+        };
+        if !self.carries(index, item) || !self.carries(index, with) {
+            return refuse(events, Refusal::NotCarried);
+        }
+        let until = Tick(self.tick.0 + self.gesture_ticks(rules));
+        self.begin(
+            index,
+            Making {
+                gesture: Gesture::Strike,
+                item,
+                into: Some(with),
+                tree: None,
+                until,
+            },
+            events,
+        );
+    }
+
+    /// What a blow gives ([`Gesture::Strike`]), by what the two things
+    /// are ([`Material::struck_with`]): the less tough of the two breaks,
+    /// the struck or the striker, unless the other is too light to break
+    /// it (under a [`STRIKE_MASS`]th of its mass). A piece comes off: of
+    /// what the material breaks into when it names it, a piece of that
+    /// material's mass; else half of the thing. The piece, carried.
+    fn strike_gives(
+        &mut self,
+        index: usize,
+        (item, with): (ItemId, ItemId),
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) -> Option<ItemId> {
+        if item == with || !self.carries(index, item) || !self.carries(index, with) {
+            return None;
+        }
+        let (a, b) = (self.item(item)?, self.item(with)?);
+        if a.hollow_ml > 0 || b.hollow_ml > 0 || a.within.is_some() || b.within.is_some() {
+            return None;
+        }
+        let (on, by) = (rules.material(&a.material)?, rules.material(&b.material)?);
+        let mine = on.struck_with(by, rules.needs.hands.fold_suppleness)?;
+        let (broken, breaker, stuff) = if mine {
+            (item, b.mass_g, on)
+        } else {
+            (with, a.mass_g, by)
+        };
+        let mass = self.item(broken)?.mass_g;
+        if u64::from(breaker) * STRIKE_MASS < u64::from(mass) {
+            return None;
+        }
+        let into = stuff
+            .breaks_into
+            .as_deref()
+            .and_then(|id| rules.material(id));
+        let off = into.map_or(mass / 2, crate::content::Material::mass_g);
+        let piece = if off == 0 {
+            return None;
+        } else if off >= mass {
+            // Too small to break further: what is left is the piece.
+            let material = into?.id.clone();
+            self.items.get_mut(&broken)?.material = material;
+            broken
+        } else {
+            let part = ItemId(self.next_item);
+            let mut taken = self.items.get_mut(&broken)?.split(part, off)?;
+            self.next_item += 1;
+            if let Some(into) = into {
+                taken.material.clone_from(&into.id);
+            }
+            self.items.insert(part, taken);
+            self.bodies[index].carried.push(part);
+            part
+        };
+        self.inventory_changed(index, rules, events);
+        Some(piece)
+    }
+
     /// `id` takes `item` out of the thing carried it lies in (D57, amended
     /// 27 November 2026): busy the content's minutes, whatever comes of
     /// it.
@@ -613,9 +735,11 @@ impl World {
                     let species = self.trees_in(chunk).iter().find(|t| t.key == key)?.species;
                     Some(self.species.get(species)?.id.clone())
                 }),
-                Gesture::Fold | Gesture::PickUp | Gesture::PutIn | Gesture::TakeOut => {
-                    self.item(making.item).map(|i| i.material.clone())
-                }
+                Gesture::Fold
+                | Gesture::PickUp
+                | Gesture::PutIn
+                | Gesture::TakeOut
+                | Gesture::Strike => self.item(making.item).map(|i| i.material.clone()),
             }
             .unwrap_or_default();
             let (gave, broke) = match making.gesture {
@@ -628,6 +752,12 @@ impl World {
                     false,
                 ),
                 Gesture::TakeOut => (self.take_gives(index, making.item, rules, events), false),
+                Gesture::Strike => (
+                    making.into.and_then(|with| {
+                        self.strike_gives(index, (making.item, with), rules, events)
+                    }),
+                    false,
+                ),
                 Gesture::PickUp => (None, false),
             };
             events.push(Event::Gestured {
@@ -1154,6 +1284,53 @@ mod tests {
             item: pebble,
         });
         assert_eq!(gesture_ends(&mut world, &rules, id), None);
+    }
+
+    #[test]
+    fn the_less_tough_of_two_things_struck_breaks_and_a_nodule_gives_keen_flint() {
+        let rules = rules();
+        let (mut world, id, ..) = by_a_birch(&rules);
+        let strike = |world: &mut World, item, with| {
+            world.queue(Intention::Strike {
+                body: id,
+                item,
+                with,
+            });
+            gesture_ends(world, &rules, id)
+        };
+        let nodule = picked(&mut world, &rules, id, "flint_nodule", 1200);
+        let pebble = picked(&mut world, &rules, id, "pebble", 600);
+        // The pebble is the tougher: a piece of keen flint comes off the
+        // nodule, which keeps the rest.
+        let flake = strike(&mut world, nodule, pebble).expect("a piece");
+        let piece = world.item(flake).unwrap();
+        assert_eq!((piece.material(), piece.mass_g()), ("flint", 400));
+        assert_eq!(world.item(nodule).unwrap().mass_g(), 800);
+        assert!(body(&world, id).has(flake));
+        // The pebble struck with the nodule: the nodule breaks all the
+        // same, it is the less tough whichever hand holds it.
+        let second = strike(&mut world, pebble, nodule).expect("a piece");
+        assert_eq!(world.item(second).unwrap().material(), "flint");
+        assert_eq!(world.item(pebble).unwrap().mass_g(), 600);
+        // What is left is a piece itself.
+        assert_eq!(strike(&mut world, nodule, pebble), Some(nodule));
+        assert_eq!(world.item(nodule).unwrap().material(), "flint");
+        // A branch breaks in two under the pebble; a pebble does not break
+        // a log, forty times its mass; a bark that folds gives under the
+        // blow.
+        let branch = picked(&mut world, &rules, id, "branch", 1500);
+        let half = strike(&mut world, branch, pebble).expect("a half");
+        assert_eq!(
+            (
+                world.item(half).unwrap().material(),
+                world.item(half).unwrap().mass_g()
+            ),
+            ("branch", 750)
+        );
+        let bark = picked(&mut world, &rules, id, "birch_bark", 200);
+        assert_eq!(strike(&mut world, bark, pebble), None);
+        // As tough as each other: nothing.
+        assert_eq!(strike(&mut world, flake, half), None);
     }
 
     /// Folds a birch bark of 200 g on the body: the hollow.
