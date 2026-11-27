@@ -741,8 +741,8 @@ pub(super) fn next(world: &mut World) {
         *omega = next.omega;
         *group = next.group;
         // A rift's ocean is open once its two shores touch nowhere.
-        for r in &mut *rifts {
-            if r.cut_my != NEVER && r.parted_my == NEVER {
+        for (k, r) in rifts.iter_mut().enumerate() {
+            if r.cut_my != NEVER && r.parted_my == NEVER && !world.renamed.contains(&k) {
                 let (a, b) = (alias_of(&*alias, r.plate), alias_of(&*alias, r.new));
                 if a != b && parted[a as usize][b as usize] {
                     r.parted_my = now_my;

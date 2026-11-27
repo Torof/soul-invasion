@@ -31,6 +31,8 @@ pub(super) fn weld_and_escape(world: &mut World) {
     let alias = &mut world.alias;
     let born_t = &mut world.born_t;
     let next_id = &mut world.next_id;
+    let spare = &mut world.free;
+    let unnamed = &mut world.unnamed;
     let welds = &mut world.welds;
     let collisions = &mut world.collisions;
     let escapes = &mut world.escapes;
@@ -124,7 +126,6 @@ pub(super) fn weld_and_escape(world: &mut World) {
                 && closing >= ESCAPE_MIN_UM
                 && front_of[a][b] >= ESCAPE_CELLS
                 && !escaped[a][b]
-                && *next_id < MAXP
             {
                 escaped[a][b] = true;
                 let (over, ind) = if cont_of[a] >= cont_of[b] {
@@ -180,8 +181,10 @@ pub(super) fn weld_and_escape(world: &mut World) {
                 if km2 < 200_000 || 3 * km2 > cont_of[over] || !free {
                     continue;
                 }
-                let new = *next_id;
-                *next_id += 1;
+                let Some(new) = name(&mut *next_id, &mut *spare, &mut *unnamed) else {
+                    continue;
+                };
+                let new = new as usize;
                 for c in 0..CELLS {
                     if block[c] {
                         plate[c] = new as u8;

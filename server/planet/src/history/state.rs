@@ -37,6 +37,13 @@ pub(crate) struct World<'a> {
     pub(super) alias: [u8; MAXP],
     pub(super) born_t: [usize; MAXP],
     pub(super) next_id: usize,
+    /// Names of plates that are gone, free to be given again once no
+    /// new name is left ([`World::free_names`]); the rifts whose
+    /// record names such a plate (their ocean is not followed any
+    /// more); and the plates that could not be born for lack of a name.
+    pub(super) free: Vec<u8>,
+    pub(super) renamed: Vec<usize>,
+    pub(super) unnamed: u32,
     pub(super) young: usize,
     pub(super) edges_last: (Vec<Spot>, Vec<Spot>, Vec<Spot>),
     // The crust: the continents' pieces, the bits of ocean floor, the
@@ -116,6 +123,79 @@ pub(crate) struct World<'a> {
 }
 
 impl World<'_> {
+    /// Once every new name has been given, the names of the plates that
+    /// are gone (no cell of the grid, no floor, no crust) are free
+    /// again: what the world remembers of each is forgotten, or passed
+    /// to the plate that took it in.
+    pub(super) fn free_names(&mut self) {
+        if self.next_id < MAXP {
+            return;
+        }
+        let mut alive = [false; MAXP];
+        for &p in &self.plate {
+            alive[p as usize] = true;
+        }
+        for b in &self.bits {
+            alive[b.plate as usize] = true;
+        }
+        for c in self.land.cells.iter().filter(|c| !c.dead) {
+            alive[c.plate as usize] = true;
+        }
+        for p in 0..MAXP {
+            if alive[p] || self.free.contains(&(p as u8)) {
+                continue;
+            }
+            let heir = alias_of(&self.alias, p as u8);
+            let gone = heir as usize == p;
+            for (k, r) in self.rifts.iter_mut().enumerate() {
+                for name in [&mut r.plate, &mut r.new] {
+                    if *name as usize == p && !gone {
+                        *name = heir;
+                    } else if *name as usize == p && !self.renamed.contains(&k) {
+                        self.renamed.push(k);
+                    }
+                }
+            }
+            for tr in &mut self.troughs {
+                if tr.plate as usize == p {
+                    tr.plate = heir;
+                }
+            }
+            for push in &mut self.pushes {
+                for name in [&mut push.plates.0, &mut push.plates.1] {
+                    if *name as usize == p && gone {
+                        push.strength = 0;
+                    } else if *name as usize == p {
+                        *name = heir;
+                    }
+                }
+            }
+            for q in 0..MAXP {
+                if self.alias[q] as usize == p {
+                    self.alias[q] = if gone { q as u8 } else { heir };
+                }
+                for (a, b) in [(p, q), (q, p)] {
+                    self.parted[a][b] = true;
+                    self.broken[a][b] = false;
+                    self.contact[a][b] = 0;
+                    self.closing_of[a][b] = 0;
+                    self.quiet[a][b] = 0;
+                    self.front_of[a][b] = 0;
+                    self.record_of[a][b] = usize::MAX;
+                    self.escaped[a][b] = false;
+                }
+            }
+            self.alias[p] = p as u8;
+            self.shed[p] = false;
+            self.pulled[p] = 0;
+            self.silt[p] = 0;
+            self.born_t[p] = 0;
+            self.omega[p] = [0; 3];
+            self.group[p] = p as u8;
+            self.free.push(p as u8);
+        }
+    }
+
     /// A scene's imposed turns replace the forces' (nothing to do in a
     /// planet's history).
     pub(super) fn impose(&mut self) {
@@ -123,6 +203,22 @@ impl World<'_> {
             self.omega[p as usize] = turn;
         }
     }
+}
+
+/// A name for a plate about to be born: a new one while any is left, then
+/// the name of a plate that is gone ([`World::free_names`]). None when
+/// every name is borne by a living plate: the plate is not born, and the
+/// history counts it (`History::unnamed`), never in silence.
+pub(super) fn name(next_id: &mut usize, free: &mut Vec<u8>, unnamed: &mut u32) -> Option<u8> {
+    if *next_id < MAXP {
+        *next_id += 1;
+        return Some((*next_id - 1) as u8);
+    }
+    if free.is_empty() {
+        *unnamed += 1;
+        return None;
+    }
+    Some(free.remove(0))
 }
 
 /// What the mechanisms of one step hand to one another; made anew at
@@ -222,4 +318,20 @@ pub struct Scene {
     /// Plates whose turn is imposed at every step: the turn's axis
     /// scaled by its speed in µm a year (0 holds the plate still).
     pub turns: Vec<(u8, V3)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_name_is_new_then_given_again_and_running_out_is_counted() {
+        let (mut next_id, mut free, mut unnamed) = (MAXP - 1, vec![7_u8, 3], 0_u32);
+        assert_eq!(name(&mut next_id, &mut free, &mut unnamed), Some(63));
+        assert_eq!(name(&mut next_id, &mut free, &mut unnamed), Some(7));
+        assert_eq!(name(&mut next_id, &mut free, &mut unnamed), Some(3));
+        assert_eq!(unnamed, 0);
+        assert_eq!(name(&mut next_id, &mut free, &mut unnamed), None);
+        assert_eq!(unnamed, 1);
+    }
 }

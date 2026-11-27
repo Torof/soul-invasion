@@ -9,7 +9,9 @@
    (`tools/bilan.sh vNN OUT_DIR`), with the release build.
 3. **The proof** (`tools/preuve.py`) says whether the worlds changed. A
    tooling change must leave it identical. A change of the model moves it:
-   save the new reference (`--save`) in the same commit.
+   save the new reference (`--save`) in the same commit. The bilan has
+   one line a section in the proof: a round that adds rows to the bilan
+   moves the lines of the sections it touched, and only those.
 4. **One archive of the page, no more**: `tools/page.py --previous NN`
    keeps the page before it as `carte-vNN.html` (the previous version
    only). Older archives are not regenerated, and no copy is made per try.
@@ -59,7 +61,7 @@ seconds a planet takes.
 | `site.rs`, `zoom.rs` | Our continent: its site on a subduction margin, its shape across the margin. |
 | `tests.rs` | The tests. |
 | `examples/planet.rs` | Draws seeds: maps, the page's layers (`PLANET_LAYERS`), `graine-N.json`. |
-| `examples/bilan.rs` | The one measuring tool: a table over many seeds, a JSON per version. |
+| `examples/bilan.rs` | The one measuring tool: a table over many seeds, a JSON per version. Sections: 1 flips, 2 rigid pieces, 3 plates, 4 crust kept, 5 water inside the continents, 6 crust and its plate, 7 rifts, 9 collisions (begun, one step only, welded), 10 the engine (the step the plates start to move, trenches and ridges through time, the ocean floor's age, plates not born for lack of a name), 11 relief and sea (land above 2,000 and 4,000 m, crust under water), 8 seconds. |
 | `examples/banc.rs` | The bench: small written scenes, one mechanism each, a sheet of their steps. |
 | `tools/` | `preuve.py` (identity proof), `bilan.sh`, `page.py` + `carte.html` (the page), `planche.py` (sheets). |
 
@@ -119,6 +121,12 @@ the grid's view (`paint`, `seats`) and who rides over whom
 `Mark`, the named causes of a change of height); `plates.rs` the merge
 of two plates (`absorb`) and the parts of a plate (`parts`);
 `record.rs` the public records and `History`.
+
+A plate's name is its id, below `MAXP` (64). A new plate takes a new
+name while any is left; after that, the names of the plates that are
+gone are given again (`World::free_names` and `name`, `state.rs`). A
+plate that finds no name is not born and is counted
+(`History::unnamed`, a row of the bilan that must be 0).
 
 ## The bench
 

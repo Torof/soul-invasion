@@ -15,7 +15,10 @@
 //! not) and what makes it change; whether a continent moves with its
 //! plate; the rifts (how sinuous the cuts, how far the first cut strays
 //! from a straight line, the share of its path in the belts of the
-//! mosaic); the collisions of continents; the seconds a planet takes.
+//! mosaic); the collisions of continents; the engine (when the plates
+//! start to move, the trenches and ridges through time, the ocean
+//! floor's age); the relief and the sea (high ground, the crust under
+//! water); the plates' names; the seconds a planet takes.
 //!
 //! The planets are made on every core (`PLANET_THREADS` to change it),
 //! each counted alone, and their counts added in the order of the seeds:
@@ -32,6 +35,8 @@
     clippy::cast_sign_loss,
     clippy::similar_names,
     clippy::struct_excessive_bools,
+    clippy::cast_possible_wrap,
+    clippy::naive_bytecount,
     reason = "a measuring tool: one long count, written as rounded shares"
 )]
 
@@ -95,6 +100,17 @@ const FAR_KM: u32 = 1000;
 /// A cell of crust slides on its plate when it ends a step farther than
 /// this from where its plate's turn carries it, km.
 const SLIDE_KM: i64 = 2;
+/// The plates move once their mean speed, weighted by their areas,
+/// reaches this, mm a year.
+const MOVING_MM: i64 = 10;
+/// A late start: this step or later.
+const LATE_STEP: i64 = 16;
+/// Ocean floor older than this, My, is old (the Earth has almost none).
+const OLD_FLOOR_MY: i64 = 200;
+/// The boundary kinds of `History::kind` counted for the engine: a
+/// ridge, and the side of a trench that sinks.
+const KIND_RIDGE: u8 = 1;
+const KIND_TRENCH: u8 = 4;
 
 /// A cell of crust at a step.
 #[derive(Clone, Copy)]
@@ -170,6 +186,31 @@ struct Count {
     in_belts_first: Vec<i64>,
     belt_land: Vec<i64>,
     belt_wide: Vec<i64>,
+    // The engine: each planet's first step with a mean speed of
+    // `MOVING_MM`; at each quarter of the history, the mean speed and
+    // the cells of trench and of ridge, added over the planets.
+    moving: Vec<i64>,
+    speed_at: [u64; 5],
+    trench_at: [u64; 5],
+    ridge_at: [u64; 5],
+    trench_cells: u64,
+    // Today's ocean floor: the share older than `OLD_FLOOR_MY`, ‰, and
+    // the oldest, My, of each planet.
+    old_floor: Vec<i64>,
+    oldest_floor: Vec<i64>,
+    // Collisions that lasted one step, and welds.
+    brief: u64,
+    welds: u64,
+    // Today's land above 2,000 and 4,000 m, ‰ of the land, and the
+    // highest point, m, of each planet.
+    high: [Vec<i64>; 2],
+    highest: Vec<i64>,
+    // Cells of continental crust and those under water: at the start,
+    // through the history, today.
+    crust: [u64; 3],
+    wet: [u64; 3],
+    // Plates that could not be born for lack of a name.
+    unnamed: u64,
 }
 
 impl Count {
@@ -219,6 +260,20 @@ impl Count {
             in_belts_first,
             belt_land,
             belt_wide,
+            moving,
+            speed_at,
+            trench_at,
+            ridge_at,
+            trench_cells,
+            old_floor,
+            oldest_floor,
+            brief,
+            welds,
+            high: [high2, high4],
+            highest,
+            crust,
+            wet,
+            unnamed,
         } = o;
         self.steps += steps;
         self.planets += planets;
@@ -260,6 +315,21 @@ impl Count {
         self.in_belts_first.extend(in_belts_first);
         self.belt_land.extend(belt_land);
         self.belt_wide.extend(belt_wide);
+        self.moving.extend(moving);
+        sum(&mut self.speed_at, speed_at);
+        sum(&mut self.trench_at, trench_at);
+        sum(&mut self.ridge_at, ridge_at);
+        self.trench_cells += trench_cells;
+        self.old_floor.extend(old_floor);
+        self.oldest_floor.extend(oldest_floor);
+        self.brief += brief;
+        self.welds += welds;
+        self.high[0].extend(high2);
+        self.high[1].extend(high4);
+        self.highest.extend(highest);
+        sum(&mut self.crust, crust);
+        sum(&mut self.wet, wet);
+        self.unnamed += unnamed;
     }
 }
 
@@ -281,6 +351,7 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
     let mut prev: Option<HashMap<u32, Seen>> = None;
     let mut volume0 = 0_i64;
     let mut sea_before = world.at_step(0).sea_rise_m;
+    let mut moving: Option<i64> = None;
     let mut first_t = [usize::MAX; MAXP];
     let mut last_t = [0_usize; MAXP];
     for t in 0..=last {
@@ -315,6 +386,53 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
             if t == last {
                 n.plates_today[class] += 1;
             }
+        }
+        // The engine: how fast the plates go, their trenches and ridges.
+        let speed = (0..MAXP)
+            .map(|p| km2[p] / 1000 * h.motion[t][p].speed_mm)
+            .sum::<i64>()
+            / (km2.iter().sum::<i64>() / 1000);
+        if speed >= MOVING_MM && moving.is_none() {
+            moving = Some(t as i64);
+        }
+        let trench = h.kind[t].iter().filter(|&&k| k == KIND_TRENCH).count() as u64;
+        let ridge = h.kind[t].iter().filter(|&&k| k == KIND_RIDGE).count() as u64;
+        n.trench_cells += trench;
+        for k in 0..5 {
+            if t == last * k / 4 {
+                n.speed_at[k] += speed as u64;
+                n.trench_at[k] += trench;
+                n.ridge_at[k] += ridge;
+            }
+        }
+        // The crust under water.
+        let crust = (0..CELLS).filter(|&c| h.class[t][c] != OCEAN).count() as u64;
+        let wet = (0..CELLS)
+            .filter(|&c| h.class[t][c] != OCEAN && !now.dry(c))
+            .count() as u64;
+        for (k, counted) in [t == 0, true, t == last].into_iter().enumerate() {
+            if counted {
+                n.crust[k] += crust;
+                n.wet[k] += wet;
+            }
+        }
+        if t == last {
+            // Today's ocean floor and today's relief.
+            let floor: Vec<i64> = (0..CELLS)
+                .filter(|&c| h.class[t][c] == OCEAN)
+                .map(|c| i64::from(h.age[t][c]))
+                .collect();
+            let old = floor.iter().filter(|&&a| a > OLD_FLOOR_MY).count();
+            n.old_floor.push((old * 1000 / floor.len().max(1)) as i64);
+            n.oldest_floor
+                .push(floor.iter().copied().max().unwrap_or(0));
+            let land = now.elevation.iter().filter(|&&e| e > 0).count().max(1);
+            for (k, m) in [2_000, 4_000].into_iter().enumerate() {
+                let above = now.elevation.iter().filter(|&&e| e > m).count();
+                n.high[k].push((above * 1000 / land) as i64);
+            }
+            n.highest
+                .push(i64::from(now.elevation.iter().copied().max().unwrap_or(0)));
         }
         // The water on the continents: ground below the sea's level,
         // linked to the ocean (a path of such ground to the ocean's
@@ -517,6 +635,9 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
             }
         }
     }
+    // A planet that never moves counts as starting after its last step.
+    n.moving.push(moving.unwrap_or(last as i64 + 1));
+    n.unnamed += u64::from(h.unnamed);
     rifts(&world, &mut n);
     (n, [volume, area], seconds)
 }
@@ -593,6 +714,8 @@ fn main() {
         ]
     };
     let switched: u64 = n.switched.iter().sum();
+    let late = n.moving.iter().filter(|&&t| t >= LATE_STEP).count();
+    let quarters = |v: &[u64; 5]| v.map(|x| per(x, n.planets));
     let table = json!({
         "version": version,
         "seeds": seeds_arg,
@@ -629,9 +752,9 @@ fn main() {
                 &SIZES.map(|s| s.0),
                 n.hollows.iter().map(|&v| json!(per(v, n.steps + n.planets))).collect(),
             ),
-            "hollows, k km2 per planet": per(n.hollow_km2 / 1000, n.steps + n.planets),
+            "hollows, k km2 per step": per(n.hollow_km2 / 1000, n.steps + n.planets),
             "of which the model paints as sea, %": pc(n.hollow_painted_sea_km2, n.hollow_km2),
-            "inland water linked to the ocean (over 300 km from its floor), k km2 per planet": per(n.linked_km2 / 1000, n.steps + n.planets),
+            "inland water linked to the ocean (over 300 km from its floor), k km2 per step": per(n.linked_km2 / 1000, n.steps + n.planets),
             "ground gone below the sea's level, in a hollow under 200 k km2": by_cause(&n.sunk[0]),
             "ground gone below the sea's level, in a larger hollow": by_cause(&n.sunk[1]),
             "ground gone below the sea's level, in linked inland water": by_cause(&n.sunk[2]),
@@ -650,6 +773,29 @@ fn main() {
         "9 collisions of continents, per planet": {
             "begun": per(n.collisions[0], n.planets),
             "of which a front of 40 cells or more (about 3,700 km)": per(n.collisions[1], n.planets),
+            "of which lasted one step only": per(n.brief, n.planets),
+            "that welded their two plates": per(n.welds, n.planets),
+        },
+        "10 the engine": {
+            "step at which the plates' mean speed (weighted by area) first reaches 10 mm a year: least, median, most": spread(&mut n.moving),
+            "planets where that is step 16 or later": late,
+            "mean speed, mm a year, at steps 0, 1/4, 1/2, 3/4 of the history and today: mean of the planets": quarters(&n.speed_at),
+            "cells of trench (the side that sinks) at the same steps, per planet": quarters(&n.trench_at),
+            "cells of ridge at the same steps, per planet": quarters(&n.ridge_at),
+            "cells of trench per step, through the history": per(n.trench_cells, n.steps + n.planets),
+            "today's ocean floor older than 200 My, per mille of the floor: least, median, most": spread(&mut n.old_floor),
+            "today's oldest ocean floor, My: least, median, most": spread(&mut n.oldest_floor),
+            "plates not born for lack of a name (must be 0)": n.unnamed,
+        },
+        "11 relief and sea": {
+            "today's land above 2,000 m, per mille of the land: least, median, most": spread(&mut n.high[0]),
+            "today's land above 4,000 m, per mille of the land: least, median, most": spread(&mut n.high[1]),
+            "today's highest point, m: least, median, most": spread(&mut n.highest),
+            "continental crust under water, % of its cells: at the start, through the history, today": [
+                pc(n.wet[0], n.crust[0]),
+                pc(n.wet[1], n.crust[1]),
+                pc(n.wet[2], n.crust[2]),
+            ],
         },
         "7 rifts, per planet": {
             "started (a trough)": per(n.rifts[0], n.planets),
@@ -690,7 +836,9 @@ fn rifts(world: &Planet, n: &mut Count) {
     for c in &world.history.collisions {
         n.collisions[0] += 1;
         n.collisions[1] += u64::from(c.front_cells >= 40);
+        n.brief += u64::from(c.steps <= 1);
     }
+    n.welds += world.history.welds.len() as u64;
     for r in &world.history.rifts {
         n.rifts[0] += 1;
         n.rifts[1] += u64::from(r.cut_my != never);

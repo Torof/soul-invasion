@@ -198,6 +198,8 @@ pub(super) fn one_piece(world: &mut World) {
     let alias = &mut world.alias;
     let born_t = &mut world.born_t;
     let next_id = &mut world.next_id;
+    let free = &mut world.free;
+    let unnamed = &mut world.unnamed;
     let captures = &mut world.captures;
     let cut_off = &mut world.cut_off;
     let built_km2 = &mut world.built_km2;
@@ -269,9 +271,13 @@ pub(super) fn one_piece(world: &mut World) {
         }
         let old = id as usize;
         let enclosed = edge.iter().filter(|&&n| n > 0).count() == 1 && km2 < ENCLOSED_KM2;
-        if km2 >= PART_KM2 && !enclosed && *next_id < MAXP {
-            let new = *next_id;
-            *next_id += 1;
+        let named = if km2 >= PART_KM2 && !enclosed {
+            name(&mut *next_id, &mut *free, &mut *unnamed)
+        } else {
+            None
+        };
+        if let Some(new) = named {
+            let new = new as usize;
             to[k] = new as u8;
             fresh_plate[new] = true;
             for p in 0..MAXP {

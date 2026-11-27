@@ -8,7 +8,7 @@
 It runs the `planet` example on seeds 14 and 9 with every layer, and the
 `bilan` on seeds 1-30, with the default settings (or `--settings file.ron`),
 and hashes what they write: every layer file, the numbers of each seed, its
-journal of events and the bilan's table. Clock times are left out (born_ms, total_ms, the bilan's
+journal of events and each section of the bilan's table. Clock times are left out (born_ms, total_ms, the bilan's
 seconds). A tooling change must leave every line identical; a change of the
 model moves them, and the new reference is saved with it.
 """
@@ -79,7 +79,14 @@ def main():
             print(f"bilan 1-30: {seconds:.0f} s", file=sys.stderr)
             bilan = json.loads(table.read_text())
             bilan.pop("8 seconds per planet")
-            lines.append(f"bilan-30 {sha([json.dumps(bilan, sort_keys=True).encode()])}")
+            # One line a section of the table: a round that adds rows to
+            # one section leaves the lines of the others as they were.
+            for section, rows in sorted(bilan.items()):
+                if isinstance(rows, dict):
+                    name = section.replace(" ", "_")
+                    lines.append(f"bilan-30 {name} {sha([json.dumps(rows, sort_keys=True).encode()])}")
+            if os.environ.get("PREUVE_WHOLE"):
+                print(f"bilan-30 {sha([json.dumps(bilan, sort_keys=True).encode()])}", file=sys.stderr)
     text = "\n".join(lines) + "\n"
     print(text, end="")
     if "--save" in args:

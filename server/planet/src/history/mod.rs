@@ -151,6 +151,7 @@ pub(crate) fn advance(world: &mut World, t: usize) {
     let s = world.s;
     world.step = Step::new(t, ((s.steps - t) as i64 * s.step_my) as u16);
     if t > 0 {
+        world.free_names();
         crust::begin_step(world);
         collisions::weld_and_escape(world);
         rifts::troughs(world);

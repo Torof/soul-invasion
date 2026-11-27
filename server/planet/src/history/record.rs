@@ -26,7 +26,9 @@ pub const SWITCH_CRUMB: u8 = 7;
 pub const SWITCH_RIFT: u8 = 8;
 /// No mountain building on record.
 pub const NEVER: u16 = u16::MAX;
-/// Plate ids are below this.
+/// Plate ids are below this: the names a history has for its plates. A
+/// name is given once while new ones are left, then the names of plates
+/// that are gone are given again (`World::free_names`).
 pub const MAXP: usize = 64;
 /// Pieces: the supercontinent's plates first, terranes from here, island
 /// arcs from [`ARC_BASE`] (plus the plate that raised them).
@@ -336,6 +338,10 @@ pub struct History {
     pub plates_at_start: (usize, usize),
     /// Terranes placed in the ocean at the start.
     pub terranes: usize,
+    /// Plates that could not be born (a rift's cut, a part cut off, a
+    /// block escaping) because every one of the [`MAXP`] names was borne
+    /// by a living plate. Must be 0: the bilan says so.
+    pub unnamed: u32,
     /// Per step, each cell's plate.
     pub plate: Vec<Vec<u8>>,
     /// Per step, each cell's crust class ([`OCEAN`], [`CONTINENT`],
@@ -633,6 +639,7 @@ pub(crate) fn finish(world: World) -> History {
         upwelling,
         plates_at_start,
         placed,
+        unnamed,
         rough,
         broad,
         hotspots,
@@ -683,6 +690,7 @@ pub(crate) fn finish(world: World) -> History {
         heat_at: out_heat,
         plates_at_start,
         terranes: placed as usize,
+        unnamed,
         plate: out_plate,
         class: out_class,
         age: out_age,

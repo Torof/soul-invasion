@@ -342,6 +342,8 @@ pub(super) fn troughs(world: &mut World) {
     let alias = &world.alias;
     let born_t = &mut world.born_t;
     let next_id = &mut world.next_id;
+    let free = &mut world.free;
+    let unnamed = &mut world.unnamed;
     let rifts = &mut world.rifts;
     let lips = &mut world.lips;
     let troughs = &mut world.troughs;
@@ -634,9 +636,6 @@ pub(super) fn troughs(world: &mut World) {
     // floor from both ends. Each side keeps its lattice: the two shores
     // fit for good. The new plate is a plate from now on.
     for &k in &cuts {
-        if *next_id >= MAXP {
-            continue;
-        }
         let old = troughs[k].plate;
         let path = &troughs[k].path;
         let seat = seats(&*land, top);
@@ -687,8 +686,11 @@ pub(super) fn troughs(world: &mut World) {
             continue;
         }
         let away = u32::from(count[1] <= count[0]);
-        let new = *next_id as u8;
-        *next_id += 1;
+        // (With no name left for it the plate is not cut at this step:
+        // counted, and tried again at the next.)
+        let Some(new) = name(&mut *next_id, &mut *free, &mut *unnamed) else {
+            continue;
+        };
         let side_new: Vec<bool> = (0..CELLS)
             .map(|c| plate[c] == old && label[c] == away)
             .collect();
