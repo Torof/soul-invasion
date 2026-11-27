@@ -167,7 +167,7 @@ impl Default for Settings {
         Self {
             radius_km: RADIUS_KM,
             land_per_mille: 175,
-            crust_per_mille: 340,
+            crust_per_mille: 240,
             supercontinent_warp: 1000,
             supercontinent_fray: 1000,
             supercontinent_latitude: 150,
@@ -454,7 +454,7 @@ const P_AGE: u64 = 0x0c50_0107;
 const P_OCEAN: u64 = 0x0c50_0108;
 const P_RIFT: u64 = 0x0c50_0109;
 const P_ARC: u64 = 0x0c50_010a;
-const P_SINK: u64 = 0x0c50_010c;
+const P_SILT: u64 = 0x0c50_010c;
 const P_ESCAPE: u64 = 0x0c50_010b;
 
 /// The supercontinent's default warp and fray: an irregular cap, not a
@@ -572,6 +572,8 @@ struct Bit {
     /// The area it stands for, km² (its cell's at birth).
     area: u32,
     rock: Rock,
+    /// Steps in a row it has not been shown.
+    unseen: u8,
 }
 
 /// Where a hotspot stood under the crust, carried with the bit it marked.
@@ -615,15 +617,20 @@ const THICK_MAX: i64 = 700;
 /// Two plates in a collision and its front's length, cells.
 type Grip = (u8, u8, i64);
 
-/// Of a continent's crust run under another, the share that sinks into
-/// the mantle each step, ‰ (its area gone, its thickness on the pile);
-/// the rest stays under the pile, its own, unseen, and comes back if the
-/// two part. All of it sinking took a third of the continents in 200 My.
-const STACK_SINK: u64 = 500;
-/// Each step, a pile spreads this much toward its neighbours, and its
-/// excess over a continent's thickness keeps this much (erosion), ‰.
+/// Each step, a pile spreads this much toward its neighbours, ‰.
 const THICK_SPREAD: i64 = 400;
-const THICK_KEEP: i64 = 970;
+/// Each step a continent loses this much of its thickness above a
+/// continent's, ‰ (wear); the silt builds its plate's margins out, a
+/// shore cell at a time once there is enough for this thickness there (no
+/// continental crust is ever lost, 27 November, version 5.1).
+/// A continental mass larger than this, km², splits (version 5.1): the
+/// lead's largest land is 16–28 M km², a mass's crust is a third more.
+const SPLIT_KM2: i64 = 40_000_000;
+const SPLIT_EVERY: usize = 3;
+/// Steps a hidden spare of a plate's own waits before it piles up.
+const SPARE_STEPS: u8 = 3;
+const WEAR: i64 = 500;
+const SPILL_THICK: i64 = 200;
 /// Two colliding plates weld once they have stood still this many steps.
 const WELD_QUIET: usize = 4;
 /// The most of two colliding plates' relative motion a front takes away
@@ -1101,6 +1108,77 @@ fn sync(bits: &mut [Bit], plate: &[u8], rock: &[Rock], disp: &[u32]) {
     }
 }
 
+/// The largest continental mass (continents touching across plates),
+/// km², and how to cut it in two along the seams between its plates: the
+/// plates of one side (grown from its largest plate along its longest
+/// seams until it holds half the mass), or none if it is one plate.
+fn joined(sphere: &Sphere, plate: &[u8], rock: &[Rock]) -> (i64, usize, Option<[bool; MAXP]>) {
+    let land = |c: usize| rock[c].class != OCEAN;
+    let mut seen = vec![false; CELLS];
+    let mut best: (i64, Vec<usize>) = (0, Vec::new());
+    for s in 0..CELLS {
+        if seen[s] || !land(s) {
+            continue;
+        }
+        seen[s] = true;
+        let mut part = vec![s];
+        let mut k = 0;
+        while k < part.len() {
+            let c = part[k];
+            k += 1;
+            for &(m, _) in &sphere.links[c] {
+                let m = m as usize;
+                if !seen[m] && land(m) {
+                    seen[m] = true;
+                    part.push(m);
+                }
+            }
+        }
+        let km2: i64 = part.iter().map(|&c| i64::from(sphere.area_km2[c])).sum();
+        if km2 > best.0 {
+            best = (km2, part);
+        }
+    }
+    let mut seam = vec![[0_i64; MAXP]; MAXP];
+    let mut own = [0_i64; MAXP];
+    for &c in &best.1 {
+        own[plate[c] as usize] += i64::from(sphere.area_km2[c]);
+        for &(m, _) in &sphere.links[c] {
+            let (a, b) = (plate[c] as usize, plate[m as usize] as usize);
+            if land(m as usize) && a != b {
+                seam[a][b] += 1;
+            }
+        }
+    }
+    let first = (0..MAXP)
+        .max_by_key(|&p| (own[p], std::cmp::Reverse(p)))
+        .expect("plates");
+    if (0..MAXP).all(|p| p == first || own[p] == 0) {
+        return (best.0, first, None);
+    }
+    let mut side = [false; MAXP];
+    side[first] = true;
+    let mut held = own[first];
+    while held * 2 < best.0 {
+        let Some(next) = (0..MAXP)
+            .filter(|&p| !side[p] && own[p] > 0)
+            .max_by_key(|&p| {
+                let tie: i64 = (0..MAXP).filter(|&q| side[q]).map(|q| seam[p][q]).sum();
+                (tie, own[p], std::cmp::Reverse(p))
+            })
+        else {
+            break;
+        };
+        if held + own[next] > best.0 * 7 / 10 && held * 10 >= best.0 * 3 {
+            break;
+        }
+        side[next] = true;
+        held += own[next];
+    }
+    let rest = best.0 - held;
+    (best.0, first, (rest * 10 >= best.0 * 2).then_some(side))
+}
+
 /// Pairs of plates whose continents touch, have not parted, and now move
 /// apart: their boundary opens.
 fn opening(
@@ -1421,6 +1499,8 @@ pub fn run(
     let mut collisions: Vec<Collision> = Vec::new();
     let mut escapes: Vec<Escape> = Vec::new();
     let mut lips: Vec<Lip> = Vec::new();
+    let mut silt = [0_i64; MAXP];
+    let mut last_split = 0;
     // Collisions in progress: the step of first contact (+1), the mean
     // closing seen last, µm a year, and the front's cells.
     let mut contact = vec![[0_usize; MAXP]; MAXP];
@@ -1441,6 +1521,7 @@ pub fn run(
             plate: plate[c],
             area: sphere.area_km2[c],
             rock: rock[c],
+            unseen: 0,
         })
         .collect();
     let mut disp: Vec<u32> = (0..CELLS as u32).collect();
@@ -1802,23 +1883,14 @@ pub fn run(
                             b.rock.margins |= ACCRETED;
                             spare[q].push(j);
                         }
-                        // Continents sliding past or parting: the other's
-                        // bit stays its own, unseen here.
-                        _ if !pressed[q] => {}
-                        // A full pile takes no more: the bit stays under
-                        // it, its own, unseen.
-                        _ if i64::from(r.thick) >= THICK_MAX => {}
+                        // A continent's bit run under another continent
+                        // piles on it (below, once the holes are filled).
                         _ => {
-                            if hash(&[seed, P_SINK, u64::from(j), t as u64]) % 1000 < STACK_SINK {
-                                shortened += i64::from(bj.area);
-                                dead[j as usize] = true;
+                            if pressed[q] {
+                                r.orogeny = now_my;
+                                r.margins |= SUTURE;
+                                event[q] = Margin::Suture as u8;
                             }
-                            let add =
-                                i64::from(bj.rock.thick) * i64::from(bj.area) / area(q).max(1);
-                            r.thick = (i64::from(r.thick) + add).min(THICK_MAX) as u16;
-                            r.orogeny = now_my;
-                            r.margins |= SUTURE;
-                            event[q] = Margin::Suture as u8;
                         }
                     }
                 }
@@ -1964,6 +2036,7 @@ pub fn run(
                     plate: plate[q],
                     area: sphere.area_km2[q],
                     rock: rock[q],
+                    unseen: 0,
                 });
                 for &(m, _) in &sphere.links[q] {
                     let m = m as usize;
@@ -1974,6 +2047,47 @@ pub fn run(
                 }
             }
             dead.resize(bits.len(), false);
+            // Continental crust left unseen under a continent (run under
+            // it, or a sampling spare) piles on it: the area shrinks, the
+            // volume stays; what a full pile cannot take waits under it.
+            // Continental crust never sinks into the mantle.
+            let mut shown = vec![false; bits.len()];
+            for &d in &disp {
+                if d != NO_BIT {
+                    shown[d as usize] = true;
+                }
+            }
+            for i in 0..bits.len() {
+                if shown[i] {
+                    bits[i].unseen = 0;
+                    continue;
+                }
+                bits[i].unseen = bits[i].unseen.saturating_add(1);
+                let b = bits[i];
+                if dead[i] || b.rock.class == OCEAN {
+                    continue;
+                }
+                let q = sphere.cell_of(b.pos);
+                // A spare of the cell's own plate is kept a while for the
+                // sampling's holes.
+                if rock[q].class == OCEAN || (plate[q] == b.plate && b.unseen < SPARE_STEPS) {
+                    continue;
+                }
+                let room = (THICK_MAX - i64::from(rock[q].thick)) * area(q);
+                let vol = i64::from(b.rock.thick) * i64::from(b.area);
+                let take = room.min(vol);
+                if take <= 0 {
+                    continue;
+                }
+                rock[q].thick += (take / area(q).max(1)) as u16;
+                let gone = take / i64::from(b.rock.thick).max(1);
+                shortened += gone;
+                if take == vol {
+                    dead[i] = true;
+                } else {
+                    bits[i].area -= gone as u32;
+                }
+            }
             // Where each bit is drawn: its cell, or the cell it fills.
             let mut drawn: Vec<u32> = at;
             drawn.resize(bits.len(), 0);
@@ -2087,18 +2201,75 @@ pub fn run(
                         flow += (thick[m] - thick[c]) * THICK_SPREAD / 1000 / 8;
                     }
                 }
-                let base = i64::from(if rock[c].class == CONTINENT {
-                    CONTINENT_THICK
-                } else {
-                    TERRANE_THICK
-                });
-                let v = thick[c] + flow;
-                let v = if v > base {
-                    base + (v - base) * THICK_KEEP / 1000
-                } else {
-                    v
+                rock[c].thick = (thick[c] + flow).clamp(i64::from(OCEAN_THICK), THICK_MAX) as u16;
+            }
+            // The piles wear down: what a continent loses above its
+            // thickness goes, as silt, to build its plate's margins out
+            // (no continental crust is ever lost).
+            for c in 0..CELLS {
+                if rock[c].class != CONTINENT {
+                    continue;
+                }
+                let worn = (i64::from(rock[c].thick) - i64::from(CONTINENT_THICK)) * WEAR / 1000;
+                if worn > 0 {
+                    rock[c].thick -= worn as u16;
+                    silt[plate[c] as usize] += worn * area(c);
+                }
+            }
+            // The silt lands on the open coast first (not in a narrow sea
+            // between two plates' continents), then, for a plate with none,
+            // on any coast: its own plate's ocean first, else (another
+            // plate's ocean, a trench) it joins the continent's plate
+            // there, a wedge.
+            let mut shore: Vec<(bool, bool, u64, usize, u8)> = (0..CELLS)
+                .filter(|&m| rock[m].class == OCEAN && disp[m] != NO_BIT)
+                .filter_map(|m| {
+                    let p = sphere.links[m]
+                        .iter()
+                        .map(|&(c, _)| c as usize)
+                        .find(|&c| rock[c].class == CONTINENT)
+                        .map(|c| plate[c])?;
+                    let alone = sphere.links[m].iter().all(|&(c, _)| {
+                        std::iter::once(c)
+                            .chain(sphere.links[c as usize].iter().map(|&(k, _)| k))
+                            .all(|k| rock[k as usize].class == OCEAN || plate[k as usize] == p)
+                    });
+                    Some((
+                        !alone,
+                        plate[m] != p,
+                        hash(&[seed, P_SILT, t as u64, m as u64]),
+                        m,
+                        p,
+                    ))
+                })
+                .collect();
+            shore.sort_unstable();
+            let mut open_coast = [false; MAXP];
+            for &(narrow, _, _, m, p) in &shore {
+                let need = SPILL_THICK * area(m);
+                let u = p as usize;
+                if !narrow {
+                    open_coast[u] = true;
+                }
+                if silt[u] < need || (narrow && open_coast[u]) || rock[m].class != OCEAN {
+                    continue;
+                }
+                let c = sphere.links[m]
+                    .iter()
+                    .map(|&(c, _)| c as usize)
+                    .find(|&c| rock[c].class == CONTINENT && plate[c] == p)
+                    .expect("a continent beside");
+                let v = silt[u].min(i64::from(CONTINENT_THICK) * area(m));
+                silt[u] -= v;
+                plate[m] = p;
+                rock[m] = Rock {
+                    thick: (v / area(m).max(1)) as u16,
+                    margins: 0,
+                    arc: 0,
+                    rift: 0,
+                    orogeny: NEVER,
+                    ..rock[c]
                 };
-                rock[c].thick = v.clamp(i64::from(OCEAN_THICK), THICK_MAX) as u16;
             }
             sync(&mut bits, &plate, &rock, &disp);
             let mut cells_of = [0_i64; MAXP];
@@ -2165,10 +2336,104 @@ pub fn run(
             }
             // 11. A later rift: the plate carrying the most continent
             // splits, along its old seams where it has them.
-            if rift_when.contains(&t) && next_id < MAXP {
-                let big = (0..MAXP)
-                    .max_by_key(|&p| (cont_of[p], std::cmp::Reverse(p)))
-                    .expect("plates");
+            // A later rift parts the largest mass first along the seam
+            // where two plates' continents met (an old collision); a mass
+            // on one plate splits as below.
+            // A mass grown past SPLIT_KM2 splits too, a rift every
+            // SPLIT_EVERY steps at most.
+            let (mass_km2, mass_plate, side) = if t > s.rift_steps + 2 {
+                joined(sphere, &plate, &rock)
+            } else {
+                (0, 0, None)
+            };
+            let due =
+                rift_when.contains(&t) || (mass_km2 >= SPLIT_KM2 && t >= last_split + SPLIT_EVERY);
+            let split = side
+                .filter(|_| due && mass_km2 >= s.rift_min_km2)
+                .map(|sd| (sd, mass_km2));
+            if due {
+                last_split = t;
+            }
+            if let Some((side, km2)) = split {
+                let index = rifts.len() as u8 + 1;
+                let (mut ca, mut cb, mut line) = ([0_i64; 3], [0_i64; 3], [0_i64; 3]);
+                let mut pairs: Vec<(u8, u8)> = Vec::new();
+                for c in 0..CELLS {
+                    if rock[c].class == OCEAN {
+                        continue;
+                    }
+                    let x = sphere.centre[c];
+                    let p = plate[c] as usize;
+                    if side[p] {
+                        ca = add(ca, x);
+                    } else {
+                        cb = add(cb, x);
+                    }
+                    for &(m, _) in &sphere.links[c] {
+                        let o = plate[m as usize] as usize;
+                        if rock[m as usize].class != OCEAN && side[p] && !side[o] {
+                            line = add(line, x);
+                            rock[c].margins |= RIFT;
+                            rock[c].rift = index;
+                            event[c] = Margin::Rift as u8;
+                            if !pairs.contains(&(p as u8, o as u8)) {
+                                pairs.push((p as u8, o as u8));
+                            }
+                        }
+                    }
+                }
+                let centre = normalize(line);
+                let normal = normalize(tangent(centre, sub(normalize(cb), normalize(ca))));
+                let half = s.rift_open_mm * 1000 / 2;
+                let mut done = [false; MAXP];
+                for &(a, b) in &pairs {
+                    let (ua, ub) = (a as usize, b as usize);
+                    for (at, km2) in flood(sphere, &plate, &mut rock, (a, b), &plumes, &mut spent) {
+                        lips.push(Lip {
+                            my: now_my,
+                            at,
+                            km2,
+                        });
+                    }
+                    for (u, dir) in [(ua, normal.map(|v| -v)), (ub, normal)] {
+                        if !done[u] {
+                            done[u] = true;
+                            omega[u] = add(omega[u], lateral(centre, dir, half));
+                        }
+                    }
+                    pushes.push(Push {
+                        centre,
+                        normal,
+                        reach_km: RIFT_REACH_KM,
+                        expansion_km: RIFT_EXPANSION_KM,
+                        strength: 2 * half,
+                        plates: Some((a, b)),
+                    });
+                    contact[ua.min(ub)][ua.max(ub)] = 0;
+                    broken[ua][ub] = true;
+                    broken[ub][ua] = true;
+                    fresh.push((a, b, t));
+                }
+                sync(&mut bits, &plate, &rock, &disp);
+                if let Some(&(a, b)) = pairs.first() {
+                    rifts.push(Rift {
+                        my: now_my,
+                        plate: a,
+                        new: b,
+                        centre,
+                        area_km2: km2,
+                        aborted: false,
+                    });
+                }
+            }
+            if split.is_none() && due && next_id < MAXP {
+                let big = if mass_km2 > 0 {
+                    mass_plate
+                } else {
+                    (0..MAXP)
+                        .max_by_key(|&p| (cont_of[p], std::cmp::Reverse(p)))
+                        .expect("plates")
+                };
                 if cont_of[big] >= s.rift_min_km2 {
                     let mut sum = [0_i64; 3];
                     for c in 0..CELLS {

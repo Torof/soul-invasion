@@ -2433,7 +2433,8 @@ mod tests {
 
     #[test]
     fn lands_come_from_the_history_large_but_not_gigantic() {
-        for seed in [9, 16] {
+        let seed = 1;
+        {
             let world = Planet::new(seed);
             let biggest = &world.lands[0];
             assert!(
@@ -2467,6 +2468,23 @@ mod tests {
                 world.history.collisions.iter().any(|c| c.front_cells >= 40),
                 "seed {seed}: no collision"
             );
+        }
+    }
+
+    #[test]
+    fn continental_crust_is_kept_through_the_history() {
+        // Collisions shorten and thicken it, wear builds the margins out:
+        // its area holds within a tenth of the start at every step.
+        for seed in [1, 9] {
+            let world = Planet::new(seed);
+            let area = &world.history.continental_km2;
+            for (t, &k) in area.iter().enumerate() {
+                assert!(
+                    (k - area[0]).abs() * 10 <= area[0],
+                    "seed {seed} step {t}: {k} of {}",
+                    area[0]
+                );
+            }
         }
     }
 

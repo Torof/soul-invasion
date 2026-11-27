@@ -290,6 +290,7 @@ fn history_json(world: &Planet) -> serde_json::Value {
         "shortened_km2": h.shortened_km2.iter().sum::<i64>(),
         "arcs_made_km2": h.made_km2.iter().sum::<i64>(),
         "continental_km2": [h.continental_km2[0], h.continental_km2[last]],
+        "continental_steps_km2": h.continental_km2,
         "ocean_floor": {"mean_my": floor_age / floor_km2.max(1), "max_my": floor_max,
             "young_per_mille": young_km2 * 1000 / floor_km2.max(1)},
         "plates_today": speeds.iter().map(|&(a, v)| json!([a, v])).collect::<Vec<_>>(),
