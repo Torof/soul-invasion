@@ -282,7 +282,8 @@ fn history_json(world: &Planet) -> serde_json::Value {
         "plates_at_end": alive(last), "terranes": h.terranes,
         "welds": h.welds.iter().map(|w| json!([w.my, w.kept, w.absorbed, w.kept_km2,
             w.absorbed_km2, w.parted])).collect::<Vec<_>>(),
-        "rifts": h.rifts.iter().map(|r| json!([r.my, r.plate, r.new, r.area_km2, r.aborted]))
+        "rifts": h.rifts.iter().map(|r| json!([r.my, r.plate, r.new, r.area_km2, r.aborted, r.cut_my,
+            r.parted_my, r.failed_my, r.cells]))
             .collect::<Vec<_>>(),
         "collisions": h.collisions.iter().map(|c| json!([c.from_my, c.a, c.b,
             if c.welded_my == planet::history::NEVER { -1 } else { i64::from(c.welded_my) },
@@ -339,8 +340,12 @@ fn metrics(world: &Planet) -> serde_json::Value {
     };
     // 1. Rifts: do the halves part, and are they apart five steps later?
     let (mut never, mut back, mut apart, mut unknown) = (0, 0, 0, 0);
-    for r in &h.rifts {
-        let t0 = last - r.my as usize / step_my;
+    for r in h
+        .rifts
+        .iter()
+        .filter(|r| r.cut_my != planet::history::NEVER)
+    {
+        let t0 = last - r.cut_my as usize / step_my;
         // The halves as drawn at the rift's step, or the next (plates
         // moving as one are drawn as one).
         let mut side = vec![0_u8; CELLS];

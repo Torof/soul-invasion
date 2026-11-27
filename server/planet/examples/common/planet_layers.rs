@@ -160,7 +160,9 @@ fn fine_layers(world: &Planet, w: usize, h: usize, lon0: i64) -> (Layer, Layer) 
         let lat = 900 - (2 * y as i64 + 1) * 1800 / (2 * fh as i64);
         for x in 0..fw {
             let lon = lon0 - 1800 + (2 * x as i64 + 1) * 3600 / (2 * fw as i64);
-            surface.push(world.surface(planet::from_lat_lon(lat, lon)));
+            let p = planet::from_lat_lon(lat, lon);
+            let (e, continental) = world.surface(p);
+            surface.push((e, continental, e > 0 || world.basin_at(p)));
         }
     }
     let right = |i: usize| (i / fw) * fw + (i % fw + 1) % fw;
@@ -171,13 +173,17 @@ fn fine_layers(world: &Planet, w: usize, h: usize, lon0: i64) -> (Layer, Layer) 
             let (mut sum, mut cont, mut edge) = ([0_u32; 3], 0_u32, false);
             for k in 0..FINE * FINE {
                 let i = (y * FINE + k / FINE) * fw + x * FINE + k % FINE;
-                let (e, continental) = surface[i];
+                let (e, continental, land) = surface[i];
                 let mut col = hypsometric(i64::from(e));
-                if e <= 0 && continental {
+                if land && e <= 0 {
+                    // A hollow the ocean does not reach: land below the
+                    // sea's level, darker the deeper (a later layer may
+                    // put a lake in it).
+                    col = mix([196, 184, 140], [128, 116, 92], i64::from(-e).min(1000));
+                } else if e <= 0 && continental {
                     col = mix(col, [150, 190, 210], 350);
                 }
-                let land = e > 0;
-                if land != (surface[right(i)].0 > 0) || land != (surface[down(i)].0 > 0) {
+                if land != surface[right(i)].2 || land != surface[down(i)].2 {
                     col = [25, 25, 25];
                 }
                 for c in 0..3 {
@@ -681,6 +687,28 @@ pub fn step_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         l.ring(x, y, 5, 2, [255, 240, 120, 255]);
     }
     l.write(dir, &name("manteau"));
+    // The rifts: the troughs in progress (red), the abandoned ones
+    // (brown), drawn along their cells of crust.
+    let mut l = Layer::new(w, hgt);
+    let mut before: Option<((i64, i64), u16)> = None;
+    for &(p, rift, failed) in &h.rifts_at[t] {
+        let here = at(p);
+        let col = if failed {
+            [120, 70, 30, 255]
+        } else {
+            [255, 40, 0, 255]
+        };
+        match before {
+            Some((there, r))
+                if r == rift && (here.0 - there.0).abs() < 12 && (here.1 - there.1).abs() < 12 =>
+            {
+                l.segment(there, here, 2, col);
+            }
+            _ => l.dot(here.0, here.1, 1, col),
+        }
+        before = Some((here, rift));
+    }
+    l.write(dir, &name("rifts"));
 }
 
 /// A grid of the zoom's values read at the continent view's pixels,

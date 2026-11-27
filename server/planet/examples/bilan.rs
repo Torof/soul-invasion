@@ -105,12 +105,6 @@ struct Seen {
     size: u8,
 }
 
-/// Whether the model paints this cell of crust dry. Version 10: any
-/// ground above the sea's level, and no other.
-fn painted_dry(now: &Planet, tile: &history::Tile, _cell: usize) -> bool {
-    !tile.under && now.tile_height(tile) > 0
-}
-
 fn back(p: &Piece, x: V3) -> V3 {
     let m = p.turn;
     normalize([0, 1, 2].map(|j| dot([m[0][j], m[1][j], m[2][j]], x)))
@@ -152,8 +146,10 @@ struct Count {
     slid: u64,
     slid_worst_km: i64,
     switched: [u64; 9],
-    rifts: [u64; 3],
+    rifts: [u64; 5],
     rift_my: Vec<i64>,
+    failed_my: Vec<i64>,
+    rift_cells: Vec<i64>,
 }
 
 fn main() {
@@ -240,12 +236,11 @@ fn main() {
                 .filter(|&c| h.class[t][c] == OCEAN)
                 .map(|c| (c, 0))
                 .collect();
-            let (linked, _) = sphere.spread(&floor, |_, b| low_cell[b], u32::MAX - 1);
             let (from_ocean, _) = sphere.spread(&floor, |_, _| true, 2_000);
             let mut water = vec![0_u8; CELLS];
             for c in 0..CELLS {
                 if h.class[t][c] != OCEAN && low_cell[c] {
-                    water[c] = if linked[c] == u32::MAX {
+                    water[c] = if now.basin[c] {
                         1
                     } else if from_ocean[c] >= INLAND_KM {
                         2
@@ -298,13 +293,13 @@ fn main() {
             if prev.is_some() {
                 n.steps += 1;
             }
-            for piece in pieces {
+            for (k, piece) in pieces.iter().enumerate() {
                 for (i, x) in piece.tiles.iter().enumerate() {
                     let pos = piece.place(sphere, i);
                     let cell = sphere.cell_of(pos);
                     let shown = drawn.get(&x.id).copied();
                     let me = Seen {
-                        dry: painted_dry(&now, x, cell),
+                        dry: now.tile_dry(k, i),
                         low: !x.under && now.tile_height(x) <= 0,
                         far: now.near[cell].0 > FAR_KM,
                         under: x.under,
@@ -435,7 +430,7 @@ fn main() {
                 }
             }
         }
-        rifts(&world, &settings, &mut n);
+        rifts(&world, &mut n);
     }
     let round = |x: f64| (x * 1000.0).round() / 1000.0;
     let pc = |a: u64, b: u64| round(100.0 * a as f64 / b.max(1) as f64);
@@ -466,7 +461,14 @@ fn main() {
         Value::Object(out)
     };
     seconds.sort_by(f64::total_cmp);
-    n.rift_my.sort_unstable();
+    let spread = |v: &mut Vec<i64>| {
+        v.sort_unstable();
+        [
+            v.first().copied().unwrap_or(0),
+            v.get(v.len() / 2).copied().unwrap_or(0),
+            v.last().copied().unwrap_or(0),
+        ]
+    };
     let switched: u64 = n.switched.iter().sum();
     let table = json!({
         "version": version,
@@ -523,14 +525,14 @@ fn main() {
             "share by cause, % of changes": named(&SWITCHES, n.switched.iter().map(|&v| json!(pc(v, switched))).collect()),
         },
         "7 rifts, per planet": {
-            "started": per(n.rifts[0], n.planets),
-            "became an ocean": per(n.rifts[1], n.planets),
-            "failed": per(n.rifts[2], n.planets),
-            "from first trough to ocean, My: least, median, most": [
-                n.rift_my.first().copied().unwrap_or(0),
-                n.rift_my.get(n.rift_my.len() / 2).copied().unwrap_or(0),
-                n.rift_my.last().copied().unwrap_or(0),
-            ],
+            "started (a trough)": per(n.rifts[0], n.planets),
+            "cut through (the crust gave way, the plate is two)": per(n.rifts[1], n.planets),
+            "of which an open ocean (shores touch nowhere)": per(n.rifts[2], n.planets),
+            "failed (abandoned trough)": per(n.rifts[3], n.planets),
+            "still a trough at the end": per(n.rifts[4], n.planets),
+            "from first trough to the cut, My: least, median, most": spread(&mut n.rift_my),
+            "from first trough to abandon, My: least, median, most": spread(&mut n.failed_my),
+            "trough's greatest length, cells of about 92 km: least, median, most": spread(&mut n.rift_cells),
         },
         "8 seconds per planet": {
             "median": round(seconds[seconds.len() / 2]),
@@ -544,17 +546,24 @@ fn main() {
     }
 }
 
-/// The rifts of a planet: started, become an ocean, failed, and how long
-/// from the first trough to the ocean. Version 10: a rift is one cut in
-/// one step (no trough before it).
-fn rifts(world: &Planet, _settings: &Settings, n: &mut Count) {
+/// The rifts of a planet: started, cut through (the crust gave way and
+/// the plate was cut in two), open (an ocean: the two shores touch
+/// nowhere), failed (abandoned troughs), still troughs at the end; and
+/// how long from the first trough to the cut.
+fn rifts(world: &Planet, n: &mut Count) {
+    let never = history::NEVER;
     for r in &world.history.rifts {
         n.rifts[0] += 1;
-        if r.aborted {
-            n.rifts[2] += 1;
-        } else {
-            n.rifts[1] += 1;
-            n.rift_my.push(0);
+        n.rifts[1] += u64::from(r.cut_my != never);
+        n.rifts[2] += u64::from(r.parted_my != never);
+        n.rifts[3] += u64::from(r.aborted);
+        n.rifts[4] += u64::from(!r.aborted && r.cut_my == never);
+        if r.cut_my != never {
+            n.rift_my.push(i64::from(r.my) - i64::from(r.cut_my));
         }
+        if r.aborted {
+            n.failed_my.push(i64::from(r.my) - i64::from(r.failed_my));
+        }
+        n.rift_cells.push(i64::from(r.cells));
     }
 }

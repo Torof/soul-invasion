@@ -23,8 +23,7 @@
 //!    continent (a lid), cold where slabs sink, with the deep mantle's
 //!    own provinces; it lingers and spreads. The heat under the
 //!    supercontinent is what breaks it (no scripted upwelling), and
-//!    plumes rise where it is hottest. Later rifts push their two halves
-//!    apart.
+//!    plumes rise where it is hottest.
 //! 4. **Divergent boundaries** leave gaps: new oceanic crust of age 0
 //!    fills them from both sides, so the ocean floor carries symmetric age
 //!    stripes.
@@ -41,12 +40,20 @@
 //! 6. **The break-up only opens.** Plates whose continents touch and have
 //!    not parted move as one while the forces press them together: a
 //!    boundary inside a continent exists only once it opens.
-//! 7. **Rifts.** Later, the plate carrying the most continent may split,
-//!    along its old seams where it has them, its halves parting at once
-//!    at a few cm a year; if they are held together again before they
-//!    have parted, the rift is aborted (a failed rift stays in the crust).
-//!    Where a plume stands near a boundary that opens, the continent is
-//!    flooded with basalt.
+//! 7. **Rifts** (version 11, the lead's 27 November: « de vrais
+//!    rifts »). The world starts with few plates, the supercontinent on
+//!    one: plates are born of rifts, and a rift is a process. Where the
+//!    forces on a plate's two sides would pull them apart and the
+//!    lithosphere is weak (a warm mantle under it, an old suture, an old
+//!    failed rift), a trough begins: the crust along it stretches, thins
+//!    and sinks step after step, slowly at first, faster as it necks;
+//!    its tips grow toward the weakest crust ahead. Once the trough has
+//!    crossed its continent and its crust has given way, the plate is
+//!    cut in two along it, each side keeping its lattice (the two shores
+//!    fit), and the forces alone part them. A trough the pull has left
+//!    is abandoned: a failed rift, its thinned crust a basin. No size
+//!    threshold, no drawn date, no push added. Where a plume stands near
+//!    a boundary that opens, the continent is flooded with basalt.
 //! 8. **Hotspots** mark the crust passing over them, a mark a million
 //!    years, carried with the crust: their chains bend as the plates
 //!    turned, and are as old as the history.
@@ -113,7 +120,8 @@ pub struct Settings {
     /// The supercontinent's middle stays within this latitude, tenths of a
     /// degree (low: it straddles the equator, as Pangaea did).
     pub supercontinent_latitude: i64,
-    /// Plates the supercontinent lies on at the start: it breaks along
+    /// Plates the supercontinent lies on at the start. One since version
+    /// 11: plates are born of rifts. With more, it also breaks along
     /// their borders.
     pub continent_plates: (i64, i64),
     /// How unequal those plates are, [`ONE`] units of the largest seed
@@ -121,8 +129,7 @@ pub struct Settings {
     pub plate_inequality: i64,
     /// Oceanic plates at the start, around the supercontinent.
     pub ocean_plates: (i64, i64),
-    /// Steps a later rift waits after the start; a plate younger than
-    /// twice this does not weld.
+    /// A plate younger than twice this many steps does not weld.
     pub rift_steps: usize,
     /// Steps of the history.
     pub steps: usize,
@@ -135,8 +142,6 @@ pub struct Settings {
     /// The mantle's drag grows with speed: at this speed, mm a year, it is
     /// twice a plain drag (the fast plates slow, no ceiling).
     pub mantle_drag_mm: i64,
-    /// A later rift's halves part at this speed, mm a year.
-    pub rift_open_mm: i64,
     /// A collision's front grips the two plates: each step it takes away
     /// a share of their relative motion, ‰, of this times the front's
     /// length (cell sides) times a thousand over the smaller continent's
@@ -174,10 +179,6 @@ pub struct Settings {
     /// force is far too weak to move a plate, and nothing else sorts
     /// continents by latitude.
     pub pole_flight: i64,
-    /// Later rifts: the plate carrying the most continent splits.
-    pub later_rifts: (i64, i64),
-    /// A plate splits only if it carries this much continent, km².
-    pub rift_min_km2: i64,
     /// Steps of subduction under an ocean's edge before its island arc
     /// rises (a third of its cells becomes arc crust).
     pub arc_steps: i64,
@@ -206,15 +207,14 @@ impl Default for Settings {
             supercontinent_fray: 1000,
             supercontinent_latitude: 150,
             supercontinent_flatten: 2200,
-            continent_plates: (14, 18),
+            continent_plates: (1, 1),
             plate_inequality: 100_000,
-            ocean_plates: (5, 8),
+            ocean_plates: (3, 5),
             rift_steps: 4,
             steps: 40,
             step_my: 5,
             speed_mm: (10, 250),
             mantle_drag_mm: 150,
-            rift_open_mm: 30,
             collision_resist: 3,
             weld_stop_mm: 5,
             heat_push: 150,
@@ -224,8 +224,6 @@ impl Default for Settings {
             ridge_push: 300,
             continent_drag: 800,
             pole_flight: 0,
-            later_rifts: (2, 4),
-            rift_min_km2: 12_000_000,
             arc_steps: 4,
             terranes: (18, 28),
             terrane_cells: (1, 5),
@@ -320,21 +318,36 @@ pub struct Motion {
     pub omega: V3,
 }
 
-/// A later rift.
+/// A rift (version 11): a process over several steps. It starts as a
+/// trough where a plate is pulled apart and weak, grows along its
+/// length, and either cuts the plate in two (an ocean opens between two
+/// shores that fit) or is abandoned (a failed rift: its thinned crust
+/// stays, a basin).
 #[derive(Debug, Clone, Copy)]
 pub struct Rift {
-    /// When, millions of years ago.
+    /// When its trough began, millions of years ago.
     pub my: u16,
-    /// The plate that split, and the new one.
+    /// The plate it tears, and the plate born of it ([`NONE`] until the
+    /// plate is cut).
     pub plate: u8,
     /// See `plate`.
     pub new: u8,
-    /// The continent's middle where it split.
+    /// Where it began.
     pub centre: V3,
-    /// The continent the plate carried, km².
+    /// The continent its plate carried when it began, km².
     pub area_km2: i64,
-    /// The halves welded again before parting.
+    /// Abandoned: a failed rift.
     pub aborted: bool,
+    /// When the crust gave way and the plate was cut in two, millions of
+    /// years ago ([`NEVER`]: not yet, or never).
+    pub cut_my: u16,
+    /// When its two shores no longer touched anywhere, millions of years
+    /// ago ([`NEVER`]: not yet, or never).
+    pub parted_my: u16,
+    /// When it was abandoned, millions of years ago ([`NEVER`]: not).
+    pub failed_my: u16,
+    /// Its trough's greatest length, cells of crust.
+    pub cells: u32,
 }
 
 /// Two plates welded by a collision.
@@ -633,8 +646,12 @@ pub struct History {
     pub shortened_km2: Vec<i64>,
     /// Per step, island-arc crust made since the step before, km².
     pub made_km2: Vec<i64>,
-    /// The later rifts.
+    /// The rifts, in order of their beginning.
     pub rifts: Vec<Rift>,
+    /// Per step, the cells of crust along each rift's trough: where, the
+    /// rift (an index into [`History::rifts`]), and whether it is
+    /// abandoned.
+    pub rifts_at: Vec<Vec<(V3, u16, bool)>>,
     /// The welds, in order.
     pub welds: Vec<Weld>,
     /// The accretions, in order.
@@ -685,7 +702,6 @@ const P_HOT: u64 = 0x0c50_010d;
 const P_TERRANE: u64 = 0x0c50_0106;
 const P_AGE: u64 = 0x0c50_0107;
 const P_OCEAN: u64 = 0x0c50_0108;
-const P_RIFT: u64 = 0x0c50_0109;
 const P_ARC: u64 = 0x0c50_010a;
 const P_SILT: u64 = 0x0c50_010c;
 const P_ESCAPE: u64 = 0x0c50_010b;
@@ -727,12 +743,9 @@ pub const SLAB_YOUNG_MY: i64 = 10;
 /// The most an old slab pulls, per mille of the pull at
 /// [`Settings::slab_age_my`].
 const SLAB_MOST: i64 = 1_500;
-/// A rift's or an escape's push keeps this much of its strength per step,
+/// An escape's push keeps this much of its strength per step,
 /// per mille.
 const PUSH_KEEP: i64 = 960;
-/// A later rift's push: its expansion and reach, km.
-const RIFT_EXPANSION_KM: i64 = 1_500;
-const RIFT_REACH_KM: i64 = 3_500;
 /// Oceanic plates' seeds stay this far apart and from the
 /// supercontinent's plates' seeds, km.
 const OCEAN_SEED_APART_KM: i64 = 3_000;
@@ -834,6 +847,8 @@ struct Rock {
     high: i16,
     /// How far it has still to sink as it cools, m (a stretched margin).
     cool: i16,
+    /// How far stretching has lowered it in all, m.
+    sunk: i16,
     /// What changed its height since the step before, m, by cause (see
     /// [`CAUSES`]).
     why: [i16; CAUSES],
@@ -1307,7 +1322,7 @@ fn precedence(cont_of: &[i64; MAXP], floor: &[i64; MAXP], p: u8, class: u8) -> R
     }
 }
 
-/// A push on two plates, a later rift's halves or an escaping block and
+/// A push on two plates, an escaping block and
 /// the plate it leaves: away from a great circle (`normal`), growing
 /// with the distance from it up to `expansion_km`, within `reach_km` of
 /// `centre`.
@@ -1349,10 +1364,6 @@ const THICK_SPREAD: i64 = 120;
 /// margins out, a shore cell at a time once there is enough for
 /// [`SPILL_THICK`] there (no continental crust is ever lost, 27 November,
 /// version 5.1).
-/// A continental mass larger than this, km², splits (version 5.1): the
-/// lead's largest land is 16–28 M km², a mass's crust is a third more.
-const SPLIT_KM2: i64 = 40_000_000;
-const SPLIT_EVERY: usize = 3;
 const SPILL_THICK: i64 = 200;
 /// Two colliding plates weld once they have stood still this many steps.
 const WELD_QUIET: usize = 4;
@@ -1394,11 +1405,39 @@ const ESCAPE_MM: i64 = 25;
 /// continent this far around it, km.
 const LIP_REACH_KM: i64 = 800;
 const LIP_KM: i64 = 400;
-/// A later rift's line: seams this near count, within this of its middle;
-/// its halves grow from this far on each side and stop at the seams, km.
-const RIFT_SEAM_KM: i64 = 250;
-const RIFT_SPAN_KM: i64 = 3_000;
-const RIFT_SIDE_KM: i64 = 500;
+/// A rift (version 11). Along a line across a plate, the forces on the
+/// plate's two sides would part them at some speed if nothing held them
+/// (the same balance that turns the plates). The lithosphere holds: it
+/// lets through only a share of that speed, its weakness, ‰: little
+/// where it is cold and whole, more over a warm mantle (up to
+/// [`WEAK_WARM`] at [`WEAK_HOT`]), more along an old suture or a failed
+/// rift. As the crust thins the line weakens (necking): the share goes
+/// to the whole as the square of the stretching done.
+const WEAK_COLD: i64 = 10;
+const WEAK_WARM: i64 = 50;
+const WEAK_HOT: i64 = 2_500;
+const WEAK_SEAM: i64 = 40;
+/// The stretched zone's width at the start, km (a narrow rift), and the
+/// crust's thickness at which it gives way, tenths of a km: the plate is
+/// cut there and the ocean opens.
+const RIFT_WIDTH_KM: i64 = 200;
+const BREAK_THICK: u16 = 150;
+/// A trough exists once its line stretches this fast, µm a year; below
+/// it for this many steps it is abandoned (a failed rift).
+const RIFT_LEAST_UM: i64 = 1_000;
+const RIFT_IDLE: usize = 4;
+/// Each tip of a trough grows as fast as the trough stretches: this
+/// many km for each m of opening (the East African rift: ~4 mm a year
+/// and ~60 km a million years; once the crust necks the stretching
+/// races, and the tips with it: the rift unzips). It grows toward the
+/// weakest crust ahead: within a cone about the line across the pull, a
+/// km off the line costing [`RIFT_OFF`] ‰ of weakness per hundred km.
+const RIFT_GROW: i64 = 10;
+const RIFT_OFF: i64 = 10;
+/// Where a plate may begin to tear: at the weakest of this many spots of
+/// its continent, this far apart, km, along the best of twelve lines.
+const RIFT_SPOTS: usize = 6;
+const RIFT_SPOT_APART_KM: i64 = 800;
 
 /// Height a km of extra crust raises a continent, m (Airy isostasy:
 /// crust 2.8, mantle 3.3).
@@ -1477,7 +1516,7 @@ impl Rock {
 /// margins cool and sink, high ground wears down and its sediment fills
 /// the low ground. All of it in the pieces' own lattices (version 10):
 /// `margin` is each cell of crust's margin.
-fn weather(sphere: &Sphere, land: &mut Land, margin: &[u8], grain: &[i16]) {
+fn weather(sphere: &Sphere, land: &mut Land, margin: &[u8], grain: &[i16], sea: i64) {
     let active: Vec<usize> = (0..land.cells.len())
         .filter(|&i| margin[i] == Margin::Active as u8)
         .collect();
@@ -1508,13 +1547,18 @@ fn weather(sphere: &Sphere, land: &mut Land, margin: &[u8], grain: &[i16]) {
     let mut silt = [0_i64; MAXP];
     let mut room = [0_i64; MAXP];
     let below = |r: &Rock| {
-        SHELF_M
+        sea + SHELF_M
             - i64::from(r.high)
             - i64::from(grain[r.home as usize])
             - (i64::from(r.thick) - i64::from(CONTINENT_THICK)).max(0) * ISOSTASY_M / 10
     };
     for (i, c) in land.cells.iter_mut().enumerate() {
-        let worn = ((high[i] - PLAIN_M) * WEAR / 1000).max(0);
+        // Wear stops at its base level, the sea: ground is not worn down
+        // under it (version 11).
+        let above = high[i] - sea
+            + i64::from(grain[c.rock.home as usize])
+            + (i64::from(c.rock.thick) - i64::from(CONTINENT_THICK)).max(0) * ISOSTASY_M / 10;
+        let worn = ((high[i] - PLAIN_M) * WEAR / 1000).clamp(0, above.max(0));
         let area = i64::from(c.area);
         c.rock.rise(flow[i], BY_LEVEL);
         c.rock.rise(-worn, BY_WEAR);
@@ -1668,6 +1712,50 @@ fn drive(
     let mut torque = vec![[0_i64; 3]; MAXP];
     let mut cells = [0_i64; MAXP];
     let mut cont = [0_i64; MAXP];
+    let (cell_tq, edge_tq) = torques(sphere, s, plate, rock, pushes, alias, heat, edges);
+    for c in 0..CELLS {
+        let p = plate[c] as usize;
+        cells[p] += 1;
+        if rock[c].class != OCEAN {
+            cont[p] += 1;
+        }
+        torque[p] = add(torque[p], cell_tq[c]);
+    }
+    for &(_, p, tq) in &edge_tq {
+        torque[p as usize] = add(torque[p as usize], tq);
+    }
+    drive_from(
+        sphere,
+        s,
+        plate,
+        rock,
+        edges,
+        prev,
+        held,
+        (torque, cells, cont),
+    )
+}
+
+/// The forces on the plates, as torques: each cell's, on its own plate
+/// (an escape's push, the mantle's heat under a continent),
+/// and the edges' (a cell, the plate it acts on, the torque): slabs,
+/// their suction, ridges.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the forces' inputs, each one named"
+)]
+fn torques(
+    sphere: &Sphere,
+    s: &Settings,
+    plate: &[u8],
+    rock: &[Rock],
+    pushes: &[Push],
+    alias: &[u8; MAXP],
+    heat: &[i32],
+    edges: Edges,
+) -> (Vec<V3>, Vec<(u32, u8, V3)>) {
+    let mut cell_tq = vec![[0_i64; 3]; CELLS];
+    let mut edge_tq = Vec::new();
     let pushes: Vec<Push> = pushes
         .iter()
         .filter(|p| p.strength > 0)
@@ -1682,10 +1770,6 @@ fn drive(
     for c in 0..CELLS {
         let p = plate[c];
         let x = sphere.centre[c];
-        cells[p as usize] += 1;
-        if rock[c].class != OCEAN {
-            cont[p as usize] += 1;
-        }
         let mut f = [0_i64; 3];
         for push in &pushes {
             if p != push.plates.0 && p != push.plates.1 {
@@ -1723,7 +1807,7 @@ fn drive(
             let n = sphere.links[c].len() as i64 * 1000;
             f = add(f, slope.map(|v| -v * 2 * HEAT_LID_KM * s.heat_push / n));
         }
-        torque[p as usize] = add(torque[p as usize], cross(x, f));
+        cell_tq[c] = cross(x, f);
     }
     for (spots, strength) in [
         (edges.slab, s.slab_pull),
@@ -1732,9 +1816,94 @@ fn drive(
     ] {
         for &(c, p, dir, weight) in spots {
             let f = scale(dir, strength * weight);
-            torque[p as usize] = add(torque[p as usize], cross(sphere.centre[c], f));
+            edge_tq.push((c as u32, p, cross(sphere.centre[c], f)));
         }
     }
+    (cell_tq, edge_tq)
+}
+
+/// A load on a plate: where, its torque, the drag it adds, and whether
+/// it is a cell of continent.
+type Load = (V3, V3, i64, bool);
+
+/// How fast the two sides of a line across a plate would part if nothing
+/// held them together, µm a year (negative: pressed together): each
+/// side turns as the forces on it alone would turn it, against the
+/// mantle's drag, as a plate does. The line is the great circle through
+/// `x` whose pole is `n`. None where a side holds no continent beyond
+/// the stretched zone: a rift tears a continent, not its shore.
+fn parting(loads: &[Load], x: V3, n: V3, v0: i64) -> Option<i64> {
+    let band = sin(i64::from(STRETCH_KM) * ONE / RADIUS_KM);
+    let mut tq = [[0_i64; 3]; 2];
+    let mut rs = [0_i64; 2];
+    let mut far = [false; 2];
+    for &(at, t, r, cont) in loads {
+        let side = dot(at, n);
+        let k = usize::from(side > 0);
+        tq[k] = add(tq[k], t);
+        rs[k] += r;
+        far[k] |= cont && side.abs() > band;
+    }
+    if !far[0] || !far[1] {
+        return None;
+    }
+    let w = [0, 1].map(|k| {
+        let w = tq[k].map(|v| v * 1000 / rs[k].max(1));
+        let u = norm(w);
+        if u > 0 {
+            w.map(|v| v * dragged(u, v0) / u)
+        } else {
+            w
+        }
+    });
+    Some(dot(sub(cross(w[1], x), cross(w[0], x)), n))
+}
+
+/// How weak the lithosphere is under a cell of crust, ‰ (see
+/// [`WEAK_COLD`]).
+fn weak(heat: i32, r: &Rock) -> i64 {
+    let warm = i64::from(heat).clamp(0, WEAK_HOT) * WEAK_WARM / WEAK_HOT;
+    let seam = if r.margins & (SUTURE | OLD_SUTURE | FAILED_RIFT) != 0 {
+        WEAK_SEAM
+    } else {
+        0
+    };
+    WEAK_COLD + warm + seam
+}
+
+/// A rift in progress (version 11): a trough along cells of crust of one
+/// plate. It is carried with its plate; each step the pull across it
+/// stretches and thins the crust along it, and its tips grow. Once it
+/// has crossed its continent and its crust has given way, the plate is
+/// cut along it. A trough the pull has left is abandoned: it stays.
+struct Trough {
+    /// Its record, an index into the rifts.
+    record: usize,
+    plate: u8,
+    /// The cells of crust along it, in order from one tip to the other.
+    path: Vec<u32>,
+    /// The pole of the great circle it follows: the pull's direction.
+    normal: V3,
+    /// How far it has opened, m.
+    ext_m: i64,
+    /// Whether each tip has reached its continent's edge.
+    done: [bool; 2],
+    /// Steps without stretching.
+    idle: usize,
+    failed: bool,
+}
+
+/// The plates' turns from the torques on them (see [`drive`]).
+fn drive_from(
+    sphere: &Sphere,
+    s: &Settings,
+    plate: &[u8],
+    rock: &[Rock],
+    edges: Edges,
+    prev: Option<&[V3]>,
+    held: &[[bool; MAXP]],
+    (torque, cells, cont): (Vec<V3>, [i64; MAXP], [i64; MAXP]),
+) -> Drive {
     let resist: Vec<i64> = (0..MAXP)
         .map(|p| cells[p] * 1000 + s.continent_drag * cont[p])
         .collect();
@@ -2075,22 +2244,9 @@ fn parts(sphere: &Sphere, plate: &[u8]) -> (Vec<u32>, Vec<Part>) {
     (part, out)
 }
 
-/// The pairs that may be held together: continents that have not parted,
-/// but not a young rift's halves (a rift opens for a while).
-fn held(
-    parted: &[[bool; MAXP]; MAXP],
-    fresh: &[(u8, u8, usize)],
-    t: usize,
-    young: usize,
-) -> Vec<[bool; MAXP]> {
-    let mut out: Vec<[bool; MAXP]> = parted.iter().map(|row| row.map(|p| !p)).collect();
-    for &(a, b, at) in fresh {
-        if t < at + young {
-            out[a as usize][b as usize] = false;
-            out[b as usize][a as usize] = false;
-        }
-    }
-    out
+/// The pairs that may be held together: continents that have not parted.
+fn held(parted: &[[bool; MAXP]; MAXP]) -> Vec<[bool; MAXP]> {
+    parted.iter().map(|row| row.map(|p| !p)).collect()
 }
 
 /// The shown floor and its plates written back to their bits (the
@@ -2103,77 +2259,6 @@ fn sync(bits: &mut [Bit], plate: &[u8], rock: &[Rock], disp: &[u32]) {
             b.rock = rock[c];
         }
     }
-}
-
-/// The largest continental mass (continents touching across plates),
-/// km², and how to cut it in two along the seams between its plates: the
-/// plates of one side (grown from its largest plate along its longest
-/// seams until it holds half the mass), or none if it is one plate.
-fn joined(sphere: &Sphere, plate: &[u8], rock: &[Rock]) -> (i64, usize, Option<[bool; MAXP]>) {
-    let land = |c: usize| rock[c].class != OCEAN;
-    let mut seen = vec![false; CELLS];
-    let mut best: (i64, Vec<usize>) = (0, Vec::new());
-    for s in 0..CELLS {
-        if seen[s] || !land(s) {
-            continue;
-        }
-        seen[s] = true;
-        let mut part = vec![s];
-        let mut k = 0;
-        while k < part.len() {
-            let c = part[k];
-            k += 1;
-            for &(m, _) in &sphere.links[c] {
-                let m = m as usize;
-                if !seen[m] && land(m) {
-                    seen[m] = true;
-                    part.push(m);
-                }
-            }
-        }
-        let km2: i64 = part.iter().map(|&c| i64::from(sphere.area_km2[c])).sum();
-        if km2 > best.0 {
-            best = (km2, part);
-        }
-    }
-    let mut seam = vec![[0_i64; MAXP]; MAXP];
-    let mut own = [0_i64; MAXP];
-    for &c in &best.1 {
-        own[plate[c] as usize] += i64::from(sphere.area_km2[c]);
-        for &(m, _) in &sphere.links[c] {
-            let (a, b) = (plate[c] as usize, plate[m as usize] as usize);
-            if land(m as usize) && a != b {
-                seam[a][b] += 1;
-            }
-        }
-    }
-    let first = (0..MAXP)
-        .max_by_key(|&p| (own[p], std::cmp::Reverse(p)))
-        .expect("plates");
-    if (0..MAXP).all(|p| p == first || own[p] == 0) {
-        return (best.0, first, None);
-    }
-    let mut side = [false; MAXP];
-    side[first] = true;
-    let mut held = own[first];
-    while held * 2 < best.0 {
-        let Some(next) = (0..MAXP)
-            .filter(|&p| !side[p] && own[p] > 0)
-            .max_by_key(|&p| {
-                let tie: i64 = (0..MAXP).filter(|&q| side[q]).map(|q| seam[p][q]).sum();
-                (tie, own[p], std::cmp::Reverse(p))
-            })
-        else {
-            break;
-        };
-        if held + own[next] > best.0 * 7 / 10 && held * 10 >= best.0 * 3 {
-            break;
-        }
-        side[next] = true;
-        held += own[next];
-    }
-    let rest = best.0 - held;
-    (best.0, first, (rest * 10 >= best.0 * 2).then_some(side))
 }
 
 /// Pairs of plates whose continents touch, have not parted, and now move
@@ -2419,6 +2504,9 @@ pub fn run(
                     margins |= OLD_SUTURE;
                     orogeny = old_my;
                 }
+                if old_rift[c] {
+                    margins |= FAILED_RIFT;
+                }
                 Rock {
                     class: CONTINENT,
                     piece: plate[c],
@@ -2434,6 +2522,7 @@ pub fn run(
                     thick: CONTINENT_THICK,
                     high: high0[c],
                     cool: 0,
+                    sunk: 0,
                     why: [0; CAUSES],
                 }
             } else {
@@ -2451,6 +2540,7 @@ pub fn run(
                     thick: OCEAN_THICK,
                     high: 0,
                     cool: 0,
+                    sunk: 0,
                     why: [0; CAUSES],
                 }
             }
@@ -2543,15 +2633,6 @@ pub fn run(
     }
     let mut born_t = [0_usize; MAXP];
     let mut next_id = seeds.len();
-    let mut rift_when: Vec<usize> = {
-        let n = draw(seed, P_RIFT, 0, s.later_rifts.0, s.later_rifts.1).max(0) as u64;
-        let (lo, hi) = (s.rift_steps as i64 + 3, s.steps as i64 - 3);
-        (0..n)
-            .filter(|_| lo <= hi)
-            .map(|k| draw(seed, P_RIFT, 1 + k, lo, hi) as usize)
-            .collect()
-    };
-    rift_when.sort_unstable();
     let mut rifts: Vec<Rift> = Vec::new();
     let mut welds: Vec<Weld> = Vec::new();
     let mut accretions: Vec<Accretion> = Vec::new();
@@ -2562,14 +2643,16 @@ pub fn run(
     let mut built_km2 = vec![0];
     let mut lips: Vec<Lip> = Vec::new();
     let mut silt = [0_i64; MAXP];
-    let mut last_split = 0;
     // Collisions in progress: the step of first contact (+1), the mean
     // closing seen last, µm a year, and the front's cells.
     let mut contact = vec![[0_usize; MAXP]; MAXP];
     let mut closing_of = vec![[0_i64; MAXP]; MAXP];
-    // Steps each collision has stood still, and the young rifts.
+    // Steps each collision has stood still.
     let mut quiet = vec![[0_usize; MAXP]; MAXP];
-    let mut fresh: Vec<(u8, u8, usize)> = Vec::new();
+    // The rifts in progress and the abandoned ones, and the forces at
+    // the plates' edges read at the last step.
+    let mut troughs: Vec<Trough> = Vec::new();
+    let mut edges_last: (Vec<Spot>, Vec<Spot>, Vec<Spot>) = (Vec::new(), Vec::new(), Vec::new());
     let mut front_of = vec![[0_i64; MAXP]; MAXP];
     let mut record_of = vec![[usize::MAX; MAXP]; MAXP];
     let mut escaped = vec![[false; MAXP]; MAXP];
@@ -2623,6 +2706,7 @@ pub fn run(
     let mut out_heat = Vec::with_capacity(s.steps + 1);
     let mut out_pieces = Vec::with_capacity(s.steps + 1);
     let mut out_turned = vec![vec![[0_i64; 3]; MAXP]];
+    let mut out_rifts = Vec::with_capacity(s.steps + 1);
     let mut continental_km2 = Vec::with_capacity(s.steps + 1);
     let mut shortened_km2 = vec![0];
     let mut made_km2 = vec![0];
@@ -2641,7 +2725,7 @@ pub fn run(
             grips: &[],
         },
         None,
-        &held(&parted, &fresh, 0, young),
+        &held(&parted),
     );
     let mut omega = first.omega;
     let mut group = first.group;
@@ -2842,6 +2926,410 @@ pub fn run(
                     }
                 }
             }
+            // 3b. Rifts (version 11, the lead's 27 November: « de vrais
+            // rifts »). A plate tears where it is pulled apart and weak:
+            // a trough begins, stretches and thins the crust along it
+            // step after step, grows at its tips toward the weakest
+            // crust ahead, and cuts the plate in two once it has crossed
+            // the continent and the crust has given way. A trough the
+            // pull has left is abandoned and stays.
+            {
+                let (cell_tq, edge_tq) = torques(
+                    sphere,
+                    s,
+                    &plate,
+                    &rock,
+                    &pushes,
+                    &alias,
+                    &heat,
+                    Edges {
+                        slab: &edges_last.0,
+                        suction: &edges_last.1,
+                        ridge: &edges_last.2,
+                        grips: &[],
+                    },
+                );
+                let mut loads: Vec<Vec<Load>> = vec![Vec::new(); MAXP];
+                for c in 0..CELLS {
+                    let p = plate[c] as usize;
+                    if cont_of[p] > 0 {
+                        let land_here = rock[c].class != OCEAN;
+                        loads[p].push((
+                            sphere.centre[c],
+                            cell_tq[c],
+                            1000 + if land_here { s.continent_drag } else { 0 },
+                            rock[c].class == CONTINENT,
+                        ));
+                    }
+                }
+                for &(c, p, tq) in &edge_tq {
+                    if cont_of[p as usize] > 0 {
+                        loads[p as usize].push((sphere.centre[c as usize], tq, 0, false));
+                    }
+                }
+                let v0 = s.mantle_drag_mm * 1000;
+                let break_m = RIFT_WIDTH_KM * 1000 * i64::from(CONTINENT_THICK - BREAK_THICK)
+                    / i64::from(BREAK_THICK);
+                let mut busy = [false; MAXP];
+                let mut on_path = vec![false; land.cells.len()];
+                for tr in &troughs {
+                    for &i in &tr.path {
+                        on_path[i as usize] = true;
+                    }
+                }
+                let mut cuts: Vec<usize> = Vec::new();
+                for k in 0..troughs.len() {
+                    if troughs[k].failed {
+                        continue;
+                    }
+                    let pl = alias_of(&alias, troughs[k].plate);
+                    let mut path = std::mem::take(&mut troughs[k].path);
+                    path.retain(|&i| {
+                        let c = &land.cells[i as usize];
+                        !c.dead && c.plate == pl
+                    });
+                    let record = troughs[k].record;
+                    let give_up = |land: &mut Land, rifts: &mut Vec<Rift>| {
+                        rifts[record].aborted = true;
+                        rifts[record].failed_my = now_my;
+                        for c in &mut land.cells {
+                            if usize::from(c.rock.rift) == record + 1 {
+                                c.rock.margins |= FAILED_RIFT;
+                            }
+                        }
+                    };
+                    if path.is_empty() || busy[pl as usize] {
+                        troughs[k].failed = true;
+                        troughs[k].path = path;
+                        give_up(&mut land, &mut rifts);
+                        continue;
+                    }
+                    busy[pl as usize] = true;
+                    troughs[k].plate = pl;
+                    let at = |i: u32| land.cells[i as usize].pos;
+                    let mid = at(path[path.len() / 2]);
+                    let mut n = if path.len() >= 5 {
+                        normalize(cross(mid, sub(at(path[path.len() - 1]), at(path[0]))))
+                    } else {
+                        normalize(tangent(mid, troughs[k].normal))
+                    };
+                    if dot(n, troughs[k].normal) < 0 {
+                        n = n.map(|v| -v);
+                    }
+                    troughs[k].normal = n;
+                    let pull = parting(&loads[pl as usize], mid, n, v0).unwrap_or(0);
+                    let w0 = path
+                        .iter()
+                        .map(|&i| {
+                            let c = &land.cells[i as usize];
+                            weak(heat[c.cell as usize], &c.rock)
+                        })
+                        .sum::<i64>()
+                        / path.len() as i64;
+                    let done_share = (troughs[k].ext_m * 1000 / break_m).min(1000);
+                    let w = w0 + (1000 - w0) * done_share / 1000 * done_share / 1000;
+                    let rate = pull * w / 1000;
+                    if rate < RIFT_LEAST_UM {
+                        troughs[k].idle += 1;
+                        if troughs[k].idle >= RIFT_IDLE {
+                            troughs[k].failed = true;
+                            give_up(&mut land, &mut rifts);
+                        }
+                        troughs[k].path = path;
+                        continue;
+                    }
+                    troughs[k].idle = 0;
+                    // Its tips grow toward the weakest crust ahead.
+                    for e in 0..2 {
+                        if troughs[k].done[e] {
+                            continue;
+                        }
+                        let mut budget = rate * s.step_my * RIFT_GROW / 1000;
+                        while budget > 0 {
+                            let i = if e == 0 {
+                                path[0]
+                            } else {
+                                path[path.len() - 1]
+                            } as usize;
+                            let me = land.cells[i];
+                            let line = normalize(cross(n, me.pos));
+                            let dir = if e == 0 { line.map(|v| -v) } else { line };
+                            let mut around: Vec<usize> =
+                                land.kin(sphere, i).map(|(j, _)| j).collect();
+                            let q = me.cell as usize;
+                            for m in std::iter::once(q)
+                                .chain(sphere.links[q].iter().map(|&(m, _)| m as usize))
+                            {
+                                if top[m] != NO_BIT && land.cells[top[m] as usize].frame != me.frame
+                                {
+                                    around.push(top[m] as usize);
+                                }
+                            }
+                            let mut best: Option<(i64, std::cmp::Reverse<usize>, i64)> = None;
+                            for cone in [ONE / 2, ONE / 10] {
+                                for &j in &around {
+                                    let o = &land.cells[j];
+                                    if o.dead || o.under || o.plate != pl || on_path[j] {
+                                        continue;
+                                    }
+                                    let km = km_between(o.pos, me.pos);
+                                    if km == 0 {
+                                        continue;
+                                    }
+                                    let along =
+                                        dot(normalize(tangent(me.pos, sub(o.pos, me.pos))), dir);
+                                    if along < cone {
+                                        continue;
+                                    }
+                                    let off = dot(o.pos, n).abs() * RADIUS_KM / ONE;
+                                    let score =
+                                        weak(heat[o.cell as usize], &o.rock) - off * RIFT_OFF / 100;
+                                    let key = (score, std::cmp::Reverse(j), km);
+                                    if best.is_none_or(|b| key > b) {
+                                        best = Some(key);
+                                    }
+                                }
+                                if best.is_some() {
+                                    break;
+                                }
+                            }
+                            let Some((_, std::cmp::Reverse(j), km)) = best else {
+                                troughs[k].done[e] = true;
+                                break;
+                            };
+                            on_path[j] = true;
+                            if e == 0 {
+                                path.insert(0, j as u32);
+                            } else {
+                                path.push(j as u32);
+                            }
+                            budget -= km;
+                        }
+                    }
+                    // The pull stretches and thins the crust along it: it
+                    // sinks, and will sink as much again as it cools. The
+                    // crust's volume is kept: a thinned cell stands for a
+                    // wider crust.
+                    let more = rate * s.step_my;
+                    let from: Vec<usize> = path.iter().map(|&i| i as usize).collect();
+                    let d = land.spread(sphere, &from, |_| true, STRETCH_KM);
+                    for (i, c) in land.cells.iter_mut().enumerate() {
+                        if d[i] == u32::MAX || c.dead {
+                            continue;
+                        }
+                        // Each cell thins from where it is (a cell the
+                        // trough has just reached has all to do), down to
+                        // the thickness at which the crust gives way on
+                        // the axis, less toward the zone's edge.
+                        let reach = bump(i64::from(d[i]), i64::from(STRETCH_KM));
+                        let least = i64::from(BREAK_THICK)
+                            + i64::from(CONTINENT_THICK - BREAK_THICK) * (1000 - reach) / 1000;
+                        let r = &mut c.rock;
+                        let was = i64::from(r.thick);
+                        r.rift = (record + 1).min(255) as u8;
+                        let thin = (more * was / (RIFT_WIDTH_KM * 1000) * was
+                            / i64::from(CONTINENT_THICK)
+                            * reach
+                            / 1000)
+                            .min(was - least);
+                        if thin <= 0 {
+                            continue;
+                        }
+                        r.thick = (was - thin) as u16;
+                        c.area = (i64::from(c.area) * was / (was - thin)) as u32;
+                        let drop = thin * STRETCH_M / i64::from(CONTINENT_THICK - BREAK_THICK);
+                        r.rise(-drop, BY_STRETCH);
+                        r.cool = lift(r.cool, drop);
+                        r.sunk = lift(r.sunk, drop);
+                    }
+                    for &i in &path {
+                        let c = &mut land.cells[i as usize];
+                        if c.event != Margin::Suture as u8 {
+                            c.event = Margin::Rift as u8;
+                        }
+                    }
+                    troughs[k].ext_m = (troughs[k].ext_m + more).min(break_m);
+                    rifts[record].cells = rifts[record].cells.max(path.len() as u32);
+                    if troughs[k].done == [true; 2] && troughs[k].ext_m >= break_m {
+                        cuts.push(k);
+                    }
+                    troughs[k].path = path;
+                }
+                // The crust has given way along a trough that crosses its
+                // continent: the plate is cut in two along it, and on
+                // through its floor from both ends. Each side keeps its
+                // lattice: the two shores fit for good.
+                let mut cut_done = vec![false; troughs.len()];
+                for &k in &cuts {
+                    if next_id >= MAXP {
+                        continue;
+                    }
+                    let old = troughs[k].plate;
+                    let path = &troughs[k].path;
+                    let seat = seats(&land, &top);
+                    let mut on = vec![false; CELLS];
+                    for &i in path {
+                        on[seat[i as usize] as usize] = true;
+                    }
+                    let mut sources: Vec<(usize, u32)> = Vec::new();
+                    for (j, &i) in path.iter().enumerate() {
+                        let x = land.cells[i as usize].pos;
+                        let a = land.cells[path[j.saturating_sub(1)] as usize].pos;
+                        let b = land.cells[path[(j + 1).min(path.len() - 1)] as usize].pos;
+                        let left = cross(x, sub(b, a));
+                        let q = seat[i as usize] as usize;
+                        for &(m, _) in &sphere.links[q] {
+                            let m = m as usize;
+                            if plate[m] == old && !on[m] {
+                                let side = dot(sub(sphere.centre[m], sphere.centre[q]), left) > 0;
+                                sources.push((m, u32::from(side)));
+                            }
+                        }
+                    }
+                    let (_, label) =
+                        sphere.spread(&sources, |_, b| plate[b] == old && !on[b], 30_000);
+                    let mut count = [0_usize; 2];
+                    for c in 0..CELLS {
+                        if plate[c] == old && label[c] < 2 {
+                            count[label[c] as usize] += 1;
+                        }
+                    }
+                    if count[0] == 0 || count[1] == 0 {
+                        continue;
+                    }
+                    let away = u32::from(count[1] <= count[0]);
+                    let new = next_id as u8;
+                    next_id += 1;
+                    let side_new: Vec<bool> = (0..CELLS)
+                        .map(|c| plate[c] == old && label[c] == away)
+                        .collect();
+                    for c in 0..CELLS {
+                        if side_new[c] {
+                            plate[c] = new;
+                            if disp[c] != NO_BIT {
+                                bits[disp[c] as usize].plate = new;
+                            }
+                        }
+                    }
+                    for (i, c) in land.cells.iter_mut().enumerate() {
+                        if c.plate == old && side_new[seat[i] as usize] {
+                            c.plate = new;
+                            c.switch = SWITCH_RIFT;
+                        }
+                    }
+                    for (at, km2) in flood(sphere, &mut land, &top, (old, new), &plumes, &mut spent)
+                    {
+                        lips.push(Lip {
+                            my: now_my,
+                            at,
+                            km2,
+                        });
+                    }
+                    let (o, w) = (old as usize, new as usize);
+                    for p in 0..MAXP {
+                        parted[w][p] = parted[o][p];
+                        parted[p][w] = parted[p][o];
+                    }
+                    parted[o][w] = false;
+                    parted[w][o] = false;
+                    broken[o][w] = true;
+                    broken[w][o] = true;
+                    born_t[w] = t;
+                    group[w] = new;
+                    omega[w] = omega[o];
+                    let r = &mut rifts[troughs[k].record];
+                    r.new = new;
+                    r.cut_my = now_my;
+                    cut_done[k] = true;
+                }
+                let mut k = 0;
+                troughs.retain(|_| {
+                    k += 1;
+                    !cut_done[k - 1]
+                });
+                if cut_done.iter().any(|&c| c) {
+                    cont_of = land.weight();
+                }
+                // A plate with no trough begins to tear where the pull
+                // across its weakest crust stretches it fast enough.
+                for p in 0..MAXP {
+                    if busy[p] || cont_of[p] == 0 || alias[p] != p as u8 || loads[p].is_empty() {
+                        continue;
+                    }
+                    let mut spots: Vec<(i64, u32, usize)> = land
+                        .cells
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| {
+                            !c.dead
+                                && !c.under
+                                && c.plate as usize == p
+                                && c.rock.class == CONTINENT
+                        })
+                        .map(|(i, c)| (weak(heat[c.cell as usize], &c.rock), c.id, i))
+                        .collect();
+                    spots.sort_unstable_by_key(|&(w, id, _)| (std::cmp::Reverse(w), id));
+                    let mut picked: Vec<(i64, usize)> = Vec::new();
+                    for &(w, _, i) in &spots {
+                        if picked.len() == RIFT_SPOTS {
+                            break;
+                        }
+                        let x = land.cells[i].pos;
+                        if picked
+                            .iter()
+                            .all(|&(_, j)| km_between(x, land.cells[j].pos) >= RIFT_SPOT_APART_KM)
+                        {
+                            picked.push((w, i));
+                        }
+                    }
+                    let mut best: Option<(i64, std::cmp::Reverse<usize>, usize, V3)> = None;
+                    for (order, &(w, i)) in picked.iter().enumerate() {
+                        let x = land.cells[i].pos;
+                        let (e, nn) = (east_at(x), north_at(x, east_at(x)));
+                        for a in 0..12 {
+                            let angle = a * TAU / 24;
+                            let n = normalize(add(scale(e, cos(angle)), scale(nn, sin(angle))));
+                            if let Some(pull) = parting(&loads[p], x, n, v0) {
+                                let key = (
+                                    pull * w / 1000,
+                                    std::cmp::Reverse(order * 12 + a as usize),
+                                    i,
+                                    n,
+                                );
+                                if best.is_none_or(|b| (key.0, key.1) > (b.0, b.1)) {
+                                    best = Some(key);
+                                }
+                            }
+                        }
+                    }
+                    if let Some((rate, _, i, n)) = best
+                        && rate >= RIFT_LEAST_UM
+                    {
+                        troughs.push(Trough {
+                            record: rifts.len(),
+                            plate: p as u8,
+                            path: vec![i as u32],
+                            normal: n,
+                            ext_m: 0,
+                            done: [false; 2],
+                            idle: 0,
+                            failed: false,
+                        });
+                        rifts.push(Rift {
+                            my: now_my,
+                            plate: p as u8,
+                            new: NONE,
+                            centre: land.cells[i].pos,
+                            area_km2: cont_of[p],
+                            aborted: false,
+                            cut_my: NEVER,
+                            parted_my: NEVER,
+                            failed_my: NEVER,
+                            cells: 1,
+                        });
+                    }
+                }
+            }
             // 4. The plates turn, carrying their crust. A piece of
             // continent only changes its turn; every bit of floor moves
             // exactly, from where it was, not from a cell.
@@ -2868,6 +3356,9 @@ pub fn run(
             }
             for b in &mut bits {
                 b.pos = normalize(apply(&turn[b.plate as usize], b.pos));
+            }
+            for tr in &mut troughs {
+                tr.normal = normalize(apply(&turn[tr.plate as usize], tr.normal));
             }
             land.turn(sphere, &turn);
             let n = bits.len();
@@ -3110,6 +3601,7 @@ pub fn run(
                         r.thick = TERRANE_THICK;
                         r.high = ARC_ISLAND_M;
                         r.cool = 0;
+                        r.sunk = 0;
                         r.why = [0; CAUSES];
                         made += area(q);
                         // The floor there is crust now.
@@ -3236,6 +3728,7 @@ pub fn run(
                 thick: OCEAN_THICK,
                 high: 0,
                 cool: 0,
+                sunk: 0,
                 why: [0; CAUSES],
             };
             let again = |q: usize, m: usize, rock: &[Rock], pending: &[bool]| {
@@ -3464,6 +3957,15 @@ pub fn run(
                 if same > usize::from(rock[c].class == OCEAN) {
                     continue;
                 }
+                // Not a speck if its crust holds to its plate's in its own
+                // lattice (version 11).
+                if top[c] != NO_BIT
+                    && land
+                        .kin(sphere, top[c] as usize)
+                        .any(|(j, _)| land.cells[j].plate == plate[c])
+                {
+                    continue;
+                }
                 let mut tally: [(u8, u8); 8] = [(NONE, 0); 8];
                 for &(m, _) in &sphere.links[c] {
                     let o = plate[m as usize];
@@ -3505,13 +4007,16 @@ pub fn run(
                     }
                 }
             }
-            // 9. Piles spread and wear down, in their pieces.
+            // 9. Piles spread and wear down, in their pieces: what stands
+            // above a continent's thickness (a rift's thinned crust is not
+            // filled again from its sides, version 11).
             let thick: Vec<i64> = land.cells.iter().map(|c| i64::from(c.rock.thick)).collect();
+            let pile = |i: usize| thick[i].max(i64::from(CONTINENT_THICK));
             let spread: Vec<i64> = (0..land.cells.len())
                 .map(|i| {
                     land.kin(sphere, i)
                         .filter(|&(j, _)| land.cells[j].plate == land.cells[i].plate)
-                        .map(|(j, _)| (thick[j] - thick[i]) * THICK_SPREAD / 1000 / 8)
+                        .map(|(j, _)| (pile(j) - pile(i)) * THICK_SPREAD / 1000 / 8)
                         .sum()
                 })
                 .collect();
@@ -3608,6 +4113,7 @@ pub fn run(
                     // Sediment builds a shelf out.
                     high: lift(0, SHELF_M - i64::from(grain[m])),
                     cool: 0,
+                    sunk: 0,
                     why: [0; CAUSES],
                     home: m as u32,
                     margins: 0,
@@ -3634,10 +4140,42 @@ pub fn run(
             // its plate is taken by the plate it touches most; a large one
             // is a plate of its own from now on.
             let (part, list) = parts(sphere, &plate);
+            // Parts the grid's view shows apart but whose continent is
+            // one in its own lattice are one part (version 11): a
+            // continent is not cut from its plate by the way the view
+            // draws a neck of it.
+            let mut one: Vec<u32> = (0..list.len() as u32).collect();
+            let find = |one: &mut Vec<u32>, mut k: u32| {
+                while one[k as usize] != k {
+                    one[k as usize] = one[one[k as usize] as usize];
+                    k = one[k as usize];
+                }
+                k
+            };
+            let seat = seats(&land, &top);
+            for i in 0..land.cells.len() {
+                let c = &land.cells[i];
+                let a = part[seat[i] as usize];
+                if c.dead || list[a as usize].0 != c.plate {
+                    continue;
+                }
+                for (j, _) in land.kin(sphere, i) {
+                    let b = part[seat[j] as usize];
+                    if a != b && land.cells[j].plate == c.plate && list[b as usize].0 == c.plate {
+                        let (ra, rb) = (find(&mut one, a), find(&mut one, b));
+                        one[ra.max(rb) as usize] = ra.min(rb);
+                    }
+                }
+            }
+            let mut whole = vec![0_i64; list.len()];
+            for k in 0..list.len() {
+                let r = find(&mut one, k as u32) as usize;
+                whole[r] += list[k].1;
+            }
             let mut main = [(0_i64, u32::MAX); MAXP];
-            for (k, &(id, km2, _)) in list.iter().enumerate() {
-                if km2 > main[id as usize].0 {
-                    main[id as usize] = (km2, k as u32);
+            for (k, &(id, _, _)) in list.iter().enumerate() {
+                if one[k] == k as u32 && whole[k] > main[id as usize].0 {
+                    main[id as usize] = (whole[k], k as u32);
                 }
             }
             let most = |edge: &[u32; MAXP]| {
@@ -3648,7 +4186,7 @@ pub fn run(
             let mut to = vec![NONE; list.len()];
             let mut fresh_plate = [false; MAXP];
             for (k, &(id, km2, edge)) in list.iter().enumerate() {
-                if main[id as usize].1 == k as u32 {
+                if main[id as usize].1 == find(&mut one, k as u32) {
                     continue;
                 }
                 let old = id as usize;
@@ -3708,9 +4246,22 @@ pub fn run(
             }
             // A crumb of a plate is taken by the plate it touches most, and
             // a small plate enclosed in one other plate by that plate.
+            // (A plate is counted whole: its parts joined through their
+            // continent's own lattice are one.)
             let (_, list) = parts(sphere, &plate);
-            let mut gone = [false; MAXP];
+            let mut whole: Vec<Part> = Vec::new();
             for &(id, km2, edge) in &list {
+                if let Some(w) = whole.iter_mut().find(|w| w.0 == id) {
+                    w.1 += km2;
+                    for p in 0..MAXP {
+                        w.2[p] += edge[p];
+                    }
+                } else {
+                    whole.push((id, km2, edge));
+                }
+            }
+            let mut gone = [false; MAXP];
+            for &(id, km2, edge) in &whole {
                 let around = (0..MAXP).filter(|&p| edge[p] > 0).count();
                 let Some(by) = most(&edge) else {
                     continue;
@@ -3814,250 +4365,6 @@ pub fn run(
                     });
                 }
             }
-            // 11. A later rift: the plate carrying the most continent
-            // splits, along its old seams where it has them.
-            // A later rift parts the largest mass first along the seam
-            // where two plates' continents met (an old collision); a mass
-            // on one plate splits as below.
-            // A mass grown past SPLIT_KM2 splits too, a rift every
-            // SPLIT_EVERY steps at most.
-            let (mass_km2, mass_plate, side) = if t > s.rift_steps + 2 {
-                joined(sphere, &plate, &rock)
-            } else {
-                (0, 0, None)
-            };
-            let due =
-                rift_when.contains(&t) || (mass_km2 >= SPLIT_KM2 && t >= last_split + SPLIT_EVERY);
-            let split = side
-                .filter(|_| due && mass_km2 >= s.rift_min_km2)
-                .map(|sd| (sd, mass_km2));
-            if due {
-                last_split = t;
-            }
-            if let Some((side, km2)) = split {
-                let index = rifts.len() as u8 + 1;
-                let (mut ca, mut cb, mut line) = ([0_i64; 3], [0_i64; 3], [0_i64; 3]);
-                let mut pairs: Vec<(u8, u8)> = Vec::new();
-                for i in 0..land.cells.len() {
-                    let c = land.cells[i];
-                    if c.dead || c.under {
-                        continue;
-                    }
-                    let p = c.plate as usize;
-                    if side[p] {
-                        ca = add(ca, c.pos);
-                    } else {
-                        cb = add(cb, c.pos);
-                        continue;
-                    }
-                    for o in land.facing(sphere, &top, i) {
-                        if !side[o as usize] {
-                            line = add(line, c.pos);
-                            let c = &mut land.cells[i];
-                            c.rock.margins |= RIFT;
-                            c.rock.rift = index;
-                            c.event = Margin::Rift as u8;
-                            if !pairs.contains(&(p as u8, o)) {
-                                pairs.push((p as u8, o));
-                            }
-                        }
-                    }
-                }
-                let centre = normalize(line);
-                let normal = normalize(tangent(centre, sub(normalize(cb), normalize(ca))));
-                let half = s.rift_open_mm * 1000 / 2;
-                let mut done = [false; MAXP];
-                for &(a, b) in &pairs {
-                    let (ua, ub) = (a as usize, b as usize);
-                    for (at, km2) in flood(sphere, &mut land, &top, (a, b), &plumes, &mut spent) {
-                        lips.push(Lip {
-                            my: now_my,
-                            at,
-                            km2,
-                        });
-                    }
-                    for (u, dir) in [(ua, normal.map(|v| -v)), (ub, normal)] {
-                        if !done[u] {
-                            done[u] = true;
-                            omega[u] = add(omega[u], lateral(centre, dir, half));
-                        }
-                    }
-                    pushes.push(Push {
-                        centre,
-                        normal,
-                        reach_km: RIFT_REACH_KM,
-                        expansion_km: RIFT_EXPANSION_KM,
-                        strength: 2 * half,
-                        plates: (a, b),
-                    });
-                    contact[ua.min(ub)][ua.max(ub)] = 0;
-                    broken[ua][ub] = true;
-                    broken[ub][ua] = true;
-                    fresh.push((a, b, t));
-                }
-                if let Some(&(a, b)) = pairs.first() {
-                    rifts.push(Rift {
-                        my: now_my,
-                        plate: a,
-                        new: b,
-                        centre,
-                        area_km2: km2,
-                        aborted: false,
-                    });
-                }
-            }
-            if split.is_none() && due && next_id < MAXP {
-                let big = if mass_km2 > 0 {
-                    mass_plate
-                } else {
-                    (0..MAXP)
-                        .max_by_key(|&p| (cont_of[p], std::cmp::Reverse(p)))
-                        .expect("plates")
-                };
-                if cont_of[big] >= s.rift_min_km2 {
-                    let mut sum = [0_i64; 3];
-                    for c in &land.cells {
-                        if c.plate as usize == big && c.rock.class == CONTINENT && !c.dead {
-                            sum = add(sum, c.pos);
-                        }
-                    }
-                    let centre = normalize(sum);
-                    let seam: Vec<bool> = (0..CELLS)
-                        .map(|c| {
-                            plate[c] as usize == big
-                                && rock[c].class == CONTINENT
-                                && rock[c].margins & (OLD_SUTURE | SUTURE) != 0
-                        })
-                        .collect();
-                    let a0 = draw(seed, P_RIFT, 100 + t as u64, 0, TAU);
-                    let (e, nn) = (east_at(centre), north_at(centre, east_at(centre)));
-                    let band = sin(RIFT_SEAM_KM * ONE / RADIUS_KM);
-                    let normal_at = |k: i64| {
-                        let a = a0 + k * TAU / 36;
-                        normalize(add(scale(e, cos(a)), scale(nn, sin(a))))
-                    };
-                    let normal = normal_at(
-                        (0..18)
-                            .max_by_key(|&k| {
-                                let nk = normal_at(k);
-                                let score = (0..CELLS)
-                                    .filter(|&c| {
-                                        seam[c]
-                                            && dot(sphere.centre[c], nk).abs() < band
-                                            && km_between(sphere.centre[c], centre) < RIFT_SPAN_KM
-                                    })
-                                    .count();
-                                (score, std::cmp::Reverse(k))
-                            })
-                            .expect("directions"),
-                    );
-                    let far = sin(RIFT_SIDE_KM * ONE / RADIUS_KM);
-                    let sources: Vec<(usize, u32)> = (0..CELLS)
-                        .filter(|&c| plate[c] as usize == big)
-                        .filter_map(|c| {
-                            let side = dot(sphere.centre[c], normal);
-                            if side > far {
-                                Some((c, 0))
-                            } else if side < -far {
-                                Some((c, 1))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    let (_, label) =
-                        sphere.spread(&sources, |_, b| plate[b] as usize == big && !seam[b], 6_000);
-                    let (old, new) = (big as u8, next_id as u8);
-                    next_id += 1;
-                    let side_new: Vec<bool> = (0..CELLS)
-                        .map(|c| {
-                            plate[c] == old
-                                && match label[c] {
-                                    0 => false,
-                                    1 => true,
-                                    _ => dot(sphere.centre[c], normal) < 0,
-                                }
-                        })
-                        .collect();
-                    for c in 0..CELLS {
-                        if side_new[c] {
-                            plate[c] = new;
-                        }
-                    }
-                    for (i, b) in bits.iter_mut().enumerate() {
-                        if b.plate == old && side_new[drawn[i] as usize] {
-                            b.plate = new;
-                        }
-                    }
-                    // The piece is cut in two: each half keeps its
-                    // lattice, so the two shores fit for good.
-                    let seat = seats(&land, &top);
-                    for (i, c) in land.cells.iter_mut().enumerate() {
-                        if c.plate == old && side_new[seat[i] as usize] {
-                            c.plate = new;
-                            c.switch = SWITCH_RIFT;
-                        }
-                    }
-                    let index = rifts.len() as u8 + 1;
-                    for i in 0..land.cells.len() {
-                        let c = land.cells[i];
-                        if c.dead || (c.plate != old && c.plate != new) {
-                            continue;
-                        }
-                        if land
-                            .facing(sphere, &top, i)
-                            .iter()
-                            .any(|&o| o == old || o == new)
-                        {
-                            let c = &mut land.cells[i];
-                            c.rock.margins |= RIFT;
-                            c.rock.rift = index;
-                            c.event = Margin::Rift as u8;
-                        }
-                    }
-                    for (at, km2) in flood(sphere, &mut land, &top, (old, new), &plumes, &mut spent)
-                    {
-                        lips.push(Lip {
-                            my: now_my,
-                            at,
-                            km2,
-                        });
-                    }
-                    let (o, w) = (old as usize, new as usize);
-                    for p in 0..MAXP {
-                        parted[w][p] = parted[o][p];
-                        parted[p][w] = parted[p][o];
-                    }
-                    parted[o][w] = false;
-                    parted[w][o] = false;
-                    broken[o][w] = true;
-                    broken[w][o] = true;
-                    born_t[w] = t;
-                    group[w] = new;
-                    fresh.push((old, new, t));
-                    // The halves part at once, at the rift's speed.
-                    let half = s.rift_open_mm * 1000 / 2;
-                    let base = omega[o];
-                    omega[o] = add(base, lateral(centre, normal, half));
-                    omega[w] = add(base, lateral(centre, normal.map(|v| -v), half));
-                    pushes.push(Push {
-                        centre,
-                        normal,
-                        reach_km: RIFT_REACH_KM,
-                        expansion_km: RIFT_EXPANSION_KM,
-                        strength: 2 * half,
-                        plates: (old, new),
-                    });
-                    rifts.push(Rift {
-                        my: now_my,
-                        plate: old,
-                        new,
-                        centre,
-                        area_km2: cont_of[o],
-                        aborted: false,
-                    });
-                }
-            }
             sync(&mut bits, &plate, &rock, &disp);
             // The floor sunk and the crust piled leave the record.
             let mut new_ix = vec![NO_BIT; bits.len()];
@@ -4075,6 +4382,14 @@ pub fn run(
                 }
             }
             let land_ix = land.compact();
+            for tr in &mut troughs {
+                tr.path = tr
+                    .path
+                    .iter()
+                    .map(|&i| land_ix[i as usize])
+                    .filter(|&i| i != NO_BIT)
+                    .collect();
+            }
             for d in &mut top {
                 if *d != NO_BIT {
                     *d = land_ix[*d as usize];
@@ -4137,10 +4452,11 @@ pub fn run(
                     }
                     let r = &mut c.rock;
                     let due = STRETCH_M * bump(i64::from(d[i]), i64::from(STRETCH_KM)) / 1000;
-                    let more = due - i64::from(r.cool);
+                    let more = due - i64::from(r.sunk);
                     if more > 0 {
                         r.rise(-more, BY_STRETCH);
                         r.cool = lift(r.cool, more);
+                        r.sunk = lift(r.sunk, more);
                     }
                 }
             }
@@ -4211,7 +4527,23 @@ pub fn run(
             }
         }
         if t > 0 {
-            weather(sphere, &mut land, &margin_of, &grain);
+            // The sea, the base level of wear and of filling: the level
+            // that leaves the settings' share of land dry now.
+            let whole: Vec<i64> = (0..CELLS)
+                .map(|c| {
+                    if rock[c].class == OCEAN {
+                        i64::from(i16::MIN)
+                    } else {
+                        i64::from(rock[c].high)
+                            + i64::from(grain[rock[c].home as usize])
+                            + (i64::from(rock[c].thick) - i64::from(CONTINENT_THICK)).max(0)
+                                * ISOSTASY_M
+                                / 10
+                    }
+                })
+                .collect();
+            let sea = quantile(sphere, &whole, 1000 - s.land_per_mille);
+            weather(sphere, &mut land, &margin_of, &grain, sea);
         } else {
             // Heights are counted from the sea of the start, the one
             // that leaves the settings' share of land dry.
@@ -4346,6 +4678,16 @@ pub fn run(
                 .collect::<Vec<u32>>(),
         );
         out_pieces.push(land.pieces(&group, &floor_born(&plate, &rock)));
+        out_rifts.push(
+            troughs
+                .iter()
+                .flat_map(|tr| {
+                    tr.path
+                        .iter()
+                        .map(|&i| (land.cells[i as usize].pos, tr.record as u16, tr.failed))
+                })
+                .collect::<Vec<(V3, u16, bool)>>(),
+        );
         out_hidden.push(hidden_now);
         out_marks.push(
             marks
@@ -4381,29 +4723,16 @@ pub fn run(
                     grips: &grips,
                 },
                 Some(&omega),
-                &held(&parted, &fresh, t, young),
+                &held(&parted),
             );
             omega = next.omega;
             group = next.group;
-            // A later rift whose halves are held together again before
-            // they parted has aborted: a failed rift stays in the crust.
-            for (i, r) in rifts.iter_mut().enumerate() {
-                let (a, b) = (alias_of(&alias, r.plate), alias_of(&alias, r.new));
-                if !r.aborted
-                    && a != b
-                    && !parted[a as usize][b as usize]
-                    && group[a as usize] == group[b as usize]
-                {
-                    r.aborted = true;
-                    for c in &mut land.cells {
-                        if usize::from(c.rock.rift) == i + 1 {
-                            c.rock.margins |= FAILED_RIFT;
-                        }
-                    }
-                    for push in &mut pushes {
-                        if push.plates == (r.plate, r.new) {
-                            push.strength = 0;
-                        }
+            // A rift's ocean is open once its two shores touch nowhere.
+            for r in &mut rifts {
+                if r.cut_my != NEVER && r.parted_my == NEVER {
+                    let (a, b) = (alias_of(&alias, r.plate), alias_of(&alias, r.new));
+                    if a != b && parted[a as usize][b as usize] {
+                        r.parted_my = now_my;
                     }
                 }
             }
@@ -4418,6 +4747,7 @@ pub fn run(
                 }
             }
         }
+        edges_last = (seen.slab, seen.suction, seen.ridge);
     }
     paint(&land, &top, &mut plate, &mut rock);
     let mut crust = vec![crust_cut - 400; CELLS];
@@ -4456,6 +4786,7 @@ pub fn run(
         shortened_km2,
         made_km2,
         rifts,
+        rifts_at: out_rifts,
         welds,
         accretions,
         collisions,
