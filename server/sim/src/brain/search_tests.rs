@@ -139,7 +139,10 @@ fn it_goes_where_she_said_she_went_not_where_she_is() {
     next_day(&mut world);
     brains.fire_absent(&world, &rules, &[(CAMP, vec![husband])]);
     let told = steps(&mut brains);
-    assert_eq!(told[0], (husband, wife, SearchStep::Noticed));
+    assert!(matches!(
+        told[0],
+        (h, w, SearchStep::Noticed { nights: 1, said: true, kin: 1, stayed: None, .. }) if h == husband && w == wife
+    ));
     assert!(matches!(told[1], (h, w, SearchStep::Begun { .. }) if h == husband && w == wife));
     brains.watch_searches(&world, &rules);
     let (decision, _) = turn(&world, &rules, &mut brains, husband);
@@ -186,7 +189,20 @@ fn one_last_seen_at_the_camp_with_no_place_said_is_noticed_but_not_searched() {
     next_day(&mut world);
     brains.fire_absent(&world, &rules, &[(CAMP, vec![husband])]);
     let told = steps(&mut brains);
-    assert_eq!(told, [(husband, wife, SearchStep::Noticed)]);
+    assert_eq!(
+        told,
+        [(
+            husband,
+            wife,
+            SearchStep::Noticed {
+                tie: super::Tie::Spouse,
+                nights: 1,
+                said: false,
+                kin: 1,
+                stayed: Some(super::Stayed::Camp),
+            }
+        )]
+    );
     assert!(brains.minds[&husband].search.is_none(), "nowhere to go to");
 }
 

@@ -33,7 +33,7 @@ use crate::{Body, BodyId, Event, Intention, Place, World};
 
 /// What a close one is to the mind that remembers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Tie {
+pub enum Tie {
     /// Its spouse.
     Spouse,
     /// Its child.
@@ -94,16 +94,50 @@ pub(super) struct Search {
     seen: Option<Sight>,
 }
 
+/// Why the first kin to notice an absence did not go: a measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stayed {
+    /// The last place it knew the absent at is the camp itself.
+    Camp,
+    /// Under the content's `search.from_years`.
+    Young,
+    /// Already on a search.
+    Searching,
+    /// It holds a goal.
+    Goal,
+    /// Its day is a move to a new home.
+    Moving,
+}
+
 /// A step of a search, told as [`News::Search`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchStep {
     /// The absence was noticed at the fire (told once an absence, by the
     /// first kin by rank).
-    Noticed,
+    Noticed {
+        /// What the absent is to the one who noticed.
+        tie: Tie,
+        /// The nights since it last saw the absent.
+        nights: u32,
+        /// Whether the absent had said where it was going.
+        said: bool,
+        /// How many kin at this fire noticed the same absent.
+        kin: u32,
+        /// With nobody gone: why the first kin did not go.
+        stayed: Option<Stayed>,
+    },
     /// It set off to the place said or last seen, this far, in tiles.
     Begun {
         /// The straight distance.
         tiles: u32,
+        /// What the absent is to the searcher.
+        tie: Tie,
+        /// The nights since it last saw the absent.
+        nights: u32,
+        /// Whether it goes to a place the absent said (else: last seen).
+        said: bool,
+        /// The place it goes to.
+        to: Pos,
     },
     /// It saw the absent alive.
     FoundAlive,
@@ -310,6 +344,10 @@ impl Brains {
     /// nights is noticed: one kin goes (its spouse first, then a parent,
     /// then a child; grown, holding no goal, not moving today), leaving
     /// the group of its day; the others know it went.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fire read in order: who sits, who is missed, who goes"
+    )]
     pub(super) fn fire_absent(
         &mut self,
         world: &World,
@@ -340,14 +378,24 @@ impl Brains {
             }
             for (who, mut by) in missed {
                 by.sort_unstable();
+                // The measure of the notice, as its first kin holds it.
+                let first = self.minds.get(&by[0].1).and_then(|m| m.kin.get(&who));
+                let noticed = self.news.len();
                 self.news.push(News::Search {
                     body: by[0].1,
                     who,
-                    step: SearchStep::Noticed,
+                    step: SearchStep::Noticed {
+                        tie: by[0].0,
+                        nights: first.map_or(0, |seen| day.saturating_sub(seen.day)),
+                        said: first.is_some_and(|seen| seen.going.is_some()),
+                        kin: u32::try_from(by.len()).unwrap_or(u32::MAX),
+                        stayed: None,
+                    },
                     at: now,
                 });
                 let mut gone = false;
-                for (_, p) in by {
+                let mut why = None;
+                for (tie, p) in by {
                     let (Some(body), Some(mind)) = (world.body(p), self.minds.get_mut(&p)) else {
                         continue;
                     };
@@ -356,14 +404,26 @@ impl Brains {
                     };
                     seen.settled = true;
                     let to = seen.going.unwrap_or(seen.at);
+                    let (said, nights) = (seen.going.is_some(), day.saturating_sub(seen.day));
                     let plan = mind.plan.filter(|plan| plan.day == day && !plan.done);
-                    if gone
-                        || world.age_milli(body) < grown
-                        || mind.search.is_some()
-                        || mind.goal.is_some()
-                        || plan.is_some_and(|plan| plan.moving)
-                        || within(to, *camp, HOME_TILES)
-                    {
+                    if gone {
+                        continue;
+                    }
+                    let stays = if world.age_milli(body) < grown {
+                        Some(Stayed::Young)
+                    } else if mind.search.is_some() {
+                        Some(Stayed::Searching)
+                    } else if mind.goal.is_some() {
+                        Some(Stayed::Goal)
+                    } else if plan.is_some_and(|plan| plan.moving) {
+                        Some(Stayed::Moving)
+                    } else if within(to, *camp, HOME_TILES) {
+                        Some(Stayed::Camp)
+                    } else {
+                        None
+                    };
+                    if stays.is_some() {
+                        why = why.or(stays);
                         continue;
                     }
                     gone = true;
@@ -392,9 +452,21 @@ impl Brains {
                         who,
                         step: SearchStep::Begun {
                             tiles: tiles(body.pos(), to),
+                            tie,
+                            nights,
+                            said,
+                            to,
                         },
                         at: now,
                     });
+                }
+                if !gone
+                    && let Some(News::Search {
+                        step: SearchStep::Noticed { stayed, .. },
+                        ..
+                    }) = self.news.get_mut(noticed)
+                {
+                    *stayed = why;
                 }
             }
         }

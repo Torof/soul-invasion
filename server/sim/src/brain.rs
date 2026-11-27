@@ -107,7 +107,7 @@ mod wake_tests;
 pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
 pub use learning::{BeliefHeld, Forgot, LearnStep, Learner, TrialEnd};
 pub use problems::{Problem, ProblemAim, ProblemStep};
-pub use search::SearchStep;
+pub use search::{SearchStep, Stayed, Tie};
 
 /// Thirst from which a body goes to drink: half a game day without
 /// water (thirst rises 100 points a day), so it drinks before the night

@@ -3191,8 +3191,8 @@ pub fn run_watched(
         learning_probe.tick(&world, &brains);
         // --- end of learning causes ---
         // --- the search for an absent kin (27 November 2026) ---
-        search_probe.news(&world, &batch);
-        search_probe.tick(&world);
+        search_probe.news(&world, &brains, &batch);
+        search_probe.tick(&world, &brains);
         // --- end of the search for an absent kin ---
         // Who held what from whom this dawn (D55): the sentence of a
         // trial told names those who believed it.
