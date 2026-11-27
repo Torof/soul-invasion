@@ -503,6 +503,7 @@ mod tests {
             search: true,
             continents: None,
             helpers: 0,
+            journal: None,
         };
         let report = run_with(&settings, &content).expect("the run runs");
         let probe = &report.conception;

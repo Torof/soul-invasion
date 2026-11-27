@@ -53,6 +53,7 @@ pub mod learning;
 // --- the search for an absent kin (27 November 2026): its own module ---
 pub mod search;
 // --- end of the search for an absent kin ---
+pub mod journal;
 pub mod json;
 pub mod land_food;
 pub mod lands;
@@ -247,6 +248,13 @@ pub struct Settings {
     /// The pages are the same whatever the number; only the wall changes,
     /// so it is told with the timing, never with the settings.
     pub helpers: u32,
+    /// The journal (27 November 2026, `--journal FILE`): every news of
+    /// the brains and the world's events that tell of things and lives,
+    /// one JSON line each, in a file of its own beside the report. `None`,
+    /// the default: nothing is written and the run is as it was. The
+    /// pages are the same either way; its seconds are told in its last
+    /// line, never with the settings.
+    pub journal: Option<PathBuf>,
 }
 
 /// How a camp's people are born at the start.
@@ -326,6 +334,7 @@ impl Default for Settings {
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
             helpers: 1,
+            journal: None,
         }
     }
 }
@@ -2781,6 +2790,7 @@ pub fn run_watched(
     let ticks_per_day = calendar.ticks_per_day();
     // Every line of a person's page kept, or only those its page shows.
     let every_line = settings.days <= FULL_LINES_DAYS;
+    let mut journal = journal::Journal::open(settings.journal.as_deref())?;
     for _ in 0..ticks {
         events.clear();
         // The homes the minds hold, told before each dawn (D49, amended
@@ -3157,6 +3167,7 @@ pub fn run_watched(
         // The trials (D50): what the brains tried, judged and copied, in
         // the chronicle, on the person's page and in the counters.
         let batch = brains.news();
+        journal.write(tick, day, &events, &batch);
         // --- the food carried home (25 November 2026) ---
         carried.thoughts((&world, &brains, content), &decisions, &batch);
         // --- end of the food carried home ---
@@ -7017,6 +7028,7 @@ mod tests {
             continents: None,
             lands: None,
             helpers: 1,
+            journal: None,
         }
     }
 

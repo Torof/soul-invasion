@@ -739,6 +739,7 @@ mod tests {
             search: true,
             continents: None,
             helpers: 0,
+            journal: None,
         };
         let mut content = content().clone();
         content.needs.reserve_kj = 60_000;
