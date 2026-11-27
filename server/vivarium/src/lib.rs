@@ -50,6 +50,9 @@ pub mod illness;
 // --- learning causes (27 November 2026): their own module ---
 pub mod learning;
 // --- end of learning causes ---
+// --- the search for an absent kin (27 November 2026): its own module ---
+pub mod search;
+// --- end of the search for an absent kin ---
 pub mod json;
 pub mod land_food;
 pub mod lands;
@@ -223,6 +226,11 @@ pub struct Settings {
     /// the run that believes without acting (`--learning-believe-only`),
     /// the content's `learning.acting` replaced by none.
     pub learning_act: bool,
+    /// The search for an absent kin (D56, amended 27 November 2026):
+    /// false is the control run without it (`--no-search`), the content's
+    /// `search` section replaced by none: behaviour bit for bit the run's
+    /// before the change.
+    pub search: bool,
     /// Where the vivarium's continent is kept between runs
     /// ([`continents`]): `None` for no cache (`--no-continent-cache`),
     /// the continent born at every run. The patch worlds never use it.
@@ -314,6 +322,7 @@ impl Default for Settings {
             passages: true,
             learning: true,
             learning_act: true,
+            search: true,
             continents: Some(continents::default_dir()),
             lands: Some(lands::default_dir()),
             helpers: 1,
@@ -2078,6 +2087,8 @@ pub struct Report {
     pub illness: illness::IllnessProbe,
     /// Learning causes, believe without acting (D59).
     pub learning: learning::LearningProbe,
+    /// The searches for absent kin (D56, amended 27 November 2026).
+    pub search: search::SearchProbe,
     /// The goals held, in the order set (D56, amended 24 November 2026).
     pub goals: Vec<GoalRow>,
     /// The fire's counts by tribe and year (D55).
@@ -2301,6 +2312,7 @@ pub fn run_watched(
         || !settings.passages
         || !settings.learning
         || !settings.learning_act
+        || !settings.search
     {
         let mut own = content.clone();
         if settings.fed {
@@ -2356,6 +2368,9 @@ pub fn run_watched(
             && let Some(learning) = own.needs.learning.as_mut()
         {
             learning.acting = None;
+        }
+        if !settings.search {
+            own.needs.search = None;
         }
         if !settings.moves {
             own.needs.moving = Moving::default();
@@ -2707,6 +2722,7 @@ pub fn run_watched(
     let mut problems_probe = problems::ProblemsProbe::new(content);
     let mut illness_probe = illness::IllnessProbe::new(content);
     let mut learning_probe = learning::LearningProbe::new(content);
+    let mut search_probe = search::SearchProbe::new(content);
     let days_per_age_year = u64::from(calendar.days_per_age_year().max(1));
     let ticks_per_age_year = calendar.ticks_per_day() * days_per_age_year;
     let mut goals: Vec<GoalRow> = Vec::new();
@@ -3174,6 +3190,10 @@ pub fn run_watched(
         learning_probe.news(&brains, &batch);
         learning_probe.tick(&world, &brains);
         // --- end of learning causes ---
+        // --- the search for an absent kin (27 November 2026) ---
+        search_probe.news(&world, &brains, &batch);
+        search_probe.tick(&world, &brains);
+        // --- end of the search for an absent kin ---
         // Who held what from whom this dawn (D55): the sentence of a
         // trial told names those who believed it.
         let mut believed: BTreeMap<(RecordId, BodyId), Vec<BodyId>> = BTreeMap::new();
@@ -3484,7 +3504,8 @@ pub fn run_watched(
                 | News::Drew { .. }
                 | News::ToolTaken { .. }
                 | News::Problem { .. }
-                | News::Learning { .. } => continue,
+                | News::Learning { .. }
+                | News::Search { .. } => continue,
                 News::Copied {
                     body,
                     from,
@@ -3756,6 +3777,7 @@ pub fn run_watched(
     // --- learning causes (27 November 2026) ---
     let learning_s = std::time::Duration::from_nanos(brains.learning_nanos()).as_secs_f64();
     learning_probe.seconds = learning_s;
+    search_probe.seconds = std::time::Duration::from_nanos(brains.search_nanos()).as_secs_f64();
     // --- end of learning causes ---
     let placed_ahead = placer.as_ref().map_or(0, sim::ahead::Placer::placed);
     drop(placer);
@@ -3834,6 +3856,7 @@ pub fn run_watched(
         problems: problems_probe,
         illness: illness_probe,
         learning: learning_probe,
+        search: search_probe,
         goals,
         fire: tally.fire,
         seasons: tally.seasons,
@@ -3986,6 +4009,7 @@ fn thought(intention: &Intention, why: Why) -> String {
         Why::Home => "nothing pressing",
         Why::Gather => "by day, short of a store",
         Why::Hands => "by day, something for its hands here",
+        Why::Search => "a close one absent from the fire",
     };
     let act = match intention {
         Intention::MoveTo { target, .. } => format!("walks to ({}, {})", target.x, target.y),
@@ -6988,6 +7012,7 @@ mod tests {
             passages: true,
             learning: true,
             learning_act: true,
+            search: true,
             continents: None,
             lands: None,
             helpers: 1,

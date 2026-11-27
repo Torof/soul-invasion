@@ -530,6 +530,62 @@ pub struct Needs {
     /// Absent: nothing is learnt, bit for bit as before.
     #[serde(default, deserialize_with = "present")]
     pub learning: Option<Learning>,
+    /// The search for an absent kin (D56, amended 27 November 2026): a
+    /// close one not seen at the fire for `after_nights` nights is
+    /// noticed, and one of its kin goes to the last place it knew it to
+    /// be. Absent: nobody notices, bit for bit as before.
+    #[serde(default, deserialize_with = "present")]
+    pub search: Option<Search>,
+}
+
+/// The search for an absent kin (D56, amended 27 November 2026; the
+/// project lead: "people notice that someone is absent from the fire,
+/// and go and search the last place they knew her to be"). At the dawn's
+/// fire a spouse, a parent or a child not seen for `after_nights` nights
+/// is noticed; one kin, grown, goes to the place the absent said it was
+/// going to, or the last place it saw it. Every value is a D30
+/// placeholder, named and explained in `content/needs.ron`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Search {
+    /// The nights a kin is not seen before its absence is noticed.
+    pub after_nights: u32,
+    /// The age from which one goes searching, in years.
+    pub from_years: u32,
+    /// The longest absence a mind keeps of a close one come back, in
+    /// nights: out no longer than that, it is not missed.
+    pub usual_max_nights: u32,
+    /// The seasons after which that longest absence is forgotten.
+    pub usual_seasons: u32,
+    /// The seasons a mind knows where a close one lives, at another
+    /// hearth, without hearing of it again.
+    pub lives_seasons: u32,
+    /// What a searcher tells of its findings at a fire, at most.
+    pub told_per_fire: u32,
+    /// The findings a searcher keeps to tell, the last ones.
+    pub findings_kept: u32,
+}
+
+impl Search {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            after_nights: 2,
+            from_years: 16,
+            usual_max_nights: 16,
+            usual_seasons: 4,
+            lives_seasons: 4,
+            told_per_fire: 2,
+            findings_kept: 4,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if self.after_nights == 0 {
+            return Err(ContentError::Needs("search: after_nights at least 1"));
+        }
+        Ok(())
+    }
 }
 
 /// A section read as present when written, without RON's `Some(…)`.
@@ -3374,6 +3430,9 @@ impl Needs {
         }
         if let Some(learning) = &self.learning {
             learning.validate()?;
+        }
+        if let Some(search) = &self.search {
+            search.validate()?;
         }
         self.hands.validate()
     }

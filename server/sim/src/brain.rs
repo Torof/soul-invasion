@@ -99,11 +99,15 @@ mod handwork;
 mod learning;
 mod pooling;
 mod problems;
+mod search;
+#[cfg(test)]
+mod search_tests;
 #[cfg(test)]
 mod wake_tests;
 pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
 pub use learning::{BeliefHeld, Forgot, LearnStep, Learner, TrialEnd};
 pub use problems::{Problem, ProblemAim, ProblemStep};
+pub use search::{Quiet, SearchStep, Stayed, Tie};
 
 /// Thirst from which a body goes to drink: half a game day without
 /// water (thirst rises 100 points a day), so it drinks before the night
@@ -224,6 +228,9 @@ pub enum Why {
     Gather,
     /// Day: something its hands may do here (D57).
     Hands,
+    /// It looks for a close one absent from the fire, or carries home
+    /// the infant it found (D56, amended 27 November 2026).
+    Search,
 }
 
 /// A thought: what a body was asked, and why.
@@ -265,6 +272,10 @@ enum Doing {
     /// On its way to a young one seen hungry, or to its hearth's reserve
     /// for it, to feed it (D58, the audit of wakes, step 5).
     ToFeed(BodyId),
+    /// Walking to where it looks for an absent kin, to an infant seen
+    /// lying alone, or to the woman it gives it to (D56, amended 27
+    /// November 2026).
+    Search,
 }
 
 /// What a mind watches without a thought (D56, the audit of wakes, step
@@ -2104,6 +2115,18 @@ pub enum News {
         /// The tick.
         at: u64,
     },
+    /// A step of `body`'s search for its absent kin `who` (D56, amended
+    /// 27 November 2026).
+    Search {
+        /// Who noticed, or searches.
+        body: BodyId,
+        /// The absent.
+        who: BodyId,
+        /// What happened.
+        step: SearchStep,
+        /// The tick.
+        at: u64,
+    },
     /// `body` copied `way` from its camp-mate `from`.
     Copied {
         /// Who.
@@ -2386,6 +2409,13 @@ pub struct Mind {
     problems: Vec<Problem>,
     /// Its episodes and beliefs, and what it perceived for them (D59).
     learner: Learner,
+    /// Where and when it last saw each close one it sat with at a fire
+    /// (D56, amended 27 November 2026); empty without the search.
+    kin: BTreeMap<BodyId, search::KinSeen>,
+    /// Its search for an absent kin, if it is on one.
+    search: Option<search::Search>,
+    /// What its searches found, to tell at its next fire.
+    findings: Vec<search::Finding>,
 }
 
 /// A confidence moved by the four rules of temperance (D50 amended,
@@ -2596,6 +2626,9 @@ impl Mind {
             handwork: Handwork::default(),
             problems: Vec::new(),
             learner: Learner::default(),
+            kin: BTreeMap::new(),
+            search: None,
+            findings: Vec::new(),
         }
     }
 
@@ -4383,6 +4416,13 @@ pub struct Brains {
     carried: BTreeMap<BodyId, Vec<BodyId>>,
     /// The wall time the learning took (D59), in nanoseconds: a measure.
     learning_nanos: u64,
+    /// The corpse of each body dead, known as its own by who sees it
+    /// (D56, amended 27 November 2026); empty without the search.
+    corpses: BTreeMap<BodyId, ItemId>,
+    /// The minds on a search.
+    searching: BTreeSet<BodyId>,
+    /// The wall time the search took, in nanoseconds: a measure.
+    search_nanos: u64,
 }
 
 /// A group's return, told at the next fire (D56, PR 1 ter): its caller,
@@ -4716,6 +4756,9 @@ impl Brains {
             reserves: pooling::Reserves::default(),
             carried: BTreeMap::new(),
             learning_nanos: 0,
+            corpses: BTreeMap::new(),
+            searching: BTreeSet::new(),
+            search_nanos: 0,
         }
     }
 
@@ -4929,6 +4972,8 @@ impl Brains {
         self.count_gathers(events, world, rules);
         self.live_problems(events, world, rules);
         self.learn_events(events, world, rules);
+        self.search_events(events, rules);
+        self.watch_searches(world, rules);
         let now = world.tick().0;
         self.bearers.left = cold_chunks_at(world, now);
         let chunks = world.map().chunks_wide() as usize * world.map().chunks_high() as usize;
@@ -5550,6 +5595,7 @@ impl Brains {
             return;
         }
         self.away_surprise(world, rules, &circles);
+        let sat = rules.needs.search.is_some().then(|| circles.clone());
         let dawn = u32::try_from(today(world)).unwrap_or(u32::MAX);
         let day = u32::try_from(today(world).saturating_sub(1)).unwrap_or(u32::MAX);
         let now = world.tick().0;
@@ -5604,6 +5650,9 @@ impl Brains {
             .collect();
         for id in calling {
             self.go_alone(world, rules, id);
+        }
+        if let Some(circles) = sat {
+            self.fire_absent(world, rules, &circles);
         }
         self.age_heard(world, rules);
     }
@@ -8183,6 +8232,12 @@ fn decide(
     let can_carry = body.food_room_g(&rules.movement) > 0;
     let night = world.is_night(rules);
     let now = world.tick().0;
+    // The close ones it sees, and the infant it carries home (D56,
+    // amended 27 November 2026).
+    if !asleep {
+        search::see_kin(world, rules, here, mind);
+        search::homeward(world, here, mind);
+    }
     // Away from its camp, once a day, it chooses: home, stay or go on
     // (amended 25 November 2026).
     if !asleep {
@@ -8439,6 +8494,11 @@ fn decide(
             );
         }
     }
+    // Its search for an absent kin (D56, amended 27 November 2026).
+    if let Turn::Decide(decision) = search::turn(world, rules, (id, body, here), mind, night, news)
+    {
+        return decision;
+    }
     // A calm thought its hands reach is a free moment for its things to
     // think about (D50, amended 26 November 2026): read only when not
     // empty.
@@ -8544,7 +8604,7 @@ fn decide(
     // unless stopped short or exhausted (below, and the world).
     let lies_out = (mind.ways.sleep_out || mind.on_trip(day))
         && (!rules.needs.trips.on() || beyond_choice(world, rules, body, (here, camp)));
-    if home || (night && (lies_out || mind.goal.is_some())) {
+    if home || (night && (lies_out || mind.goal.is_some() || search::halts_at_night(mind))) {
         mind.doing = Doing::Nothing;
         if night && !c.asleep {
             return decision(Intention::Sleep { body: id }, Why::Night);
@@ -10874,7 +10934,7 @@ fn trip_turn(
     if !away {
         mind.trip_from = None;
     }
-    if mind.out.is_some_and(|(d, _)| d == day) || mind.goal.is_some() {
+    if mind.out.is_some_and(|(d, _)| d == day) || mind.goal.is_some() || search::searching(mind) {
         mind.turn_at = None;
         return;
     }

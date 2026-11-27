@@ -64,6 +64,7 @@ clock, the only field no seed decides.
 | `meta.settings.passages` | The passages remembered and told (D53, amended 26 November 2026); `false`: the control run, `--no-passages`, nobody keeps, tells or walks through a passage | boolean |
 | `meta.settings.learning` | Learning causes, believe without acting (D59, 27 November 2026); `false`: the control run, `--no-learning`, the content's `learning` section replaced by none and the problems it marks (`ill_gut`, `ill_chest`) taken out: behaviour bit for bit the run's before the change | boolean |
 | `meta.settings.learning_act` | Learning causes, acting (D59, amended 27 November 2026); `false`: `--learning-believe-only`, the content's `learning.acting` replaced by none: beliefs come to, told and taken, no lever, no weight on moves, no trial | boolean |
+| `meta.settings.search` | The search for an absent kin (D56, amended 27 November 2026); `false`: the control run, `--no-search`, the content's `search` section replaced by none: behaviour bit for bit the run's before the change | boolean |
 | `meta.settings.old_illness` | The control run of illness as episodes (`--old-illness`, D49, amended 26 November 2026): the old rule, a background death by age alone, the content's `illness` section replaced by none; a run without the key is of the old rule when its content had no such section | bool |
 | `meta.settings.content` | The content directory given, its last component; `null` when found from the working directory | string |
 | `meta.map_tiles` | The world's size | `[width, height]` tiles |
@@ -89,6 +90,7 @@ clock, the only field no seed decides.
 | `meta.timing.land_checked` | Chunks of land, then of trees and bearers, the run held before taking the kept files and found the same as theirs: the check that lets a file written by another build be read (D51 amended 25 November 2026) | `[count, count]` |
 | `meta.timing.land_prepared_s` | Seconds on the wall the run spent preparing the whole land, then its trees and plants, on all cores, when no whole file was kept; 0 when it read them | `[seconds, seconds]` |
 | `meta.timing.learning_s` | Seconds on the wall the brains spent in their learning (D59): the ailments' marks, the episodes and beliefs, the tales of beliefs at dawn; 0 without it | seconds |
+| `meta.timing.search_s` | Seconds on the wall the brains spent in the search for absent kin (D56): the dead noted, the searchers' watch each tick, the fire's noticing and telling; the searcher's own turn in its thought is counted with the thoughts; 0 without it | seconds |
 | `meta.memory.written` | Records written to the common memory over the run (D55) | count |
 | `meta.memory.freed` | Records freed, their last access dropped | count |
 | `meta.memory.held` | Records held at the end, those of `records` | count |
@@ -668,6 +670,54 @@ clock, the only field no seed decides.
 | `learning.acting.seasons[].gut_ills` | Gut ills lived in the season (own marks) | count |
 | `learning.acting.seasons[].person_days` | The living counted each day of the season, summed | body-days |
 | `learning.acting.seasons[].gut_per_10k_person_days` | `gut_ills` per ten thousand `person_days`, rounded down | rate |
+| `search.on` | The search for an absent kin (D56, amended 27 November 2026), its own block, last: whether the content holds a `search` section (`content/needs.ron`); `false`, and no other key, without it (or under `--no-search`) | boolean |
+| `search.absences_noticed` | Close ones (spouse, parent, child) noticed absent at a dawn's fire, not seen for `search.after_nights` nights: once an absence | count |
+| `search.searches_begun` | Of them, those a kin set off to search (the others: the last place known was the camp itself, or no kin grown and free) | count |
+| `search.search_tiles_mean` | The straight distance from the searcher to the place it set off to (said, or last seen), its mean, rounded down | tiles |
+| `search.found_alive` | Searches ended by seeing the absent alive | count |
+| `search.found_dead` | Searches where the absent's body, or its infant lying alone, was seen | count |
+| `search.not_found` | Searches ended with nothing seen: standing at the place, or stopped short of it | count |
+| `search.not_found_stopped_short` | Of them, stopped short of the place (water, rock, no way) | count |
+| `search.infants_taken` | Infants lying alone taken up by a searcher | count |
+| `search.infants_brought_home` | Of them, carried to the searcher's camp | count |
+| `search.infants_given_to_a_woman` | Of them, given there by a man to a grown woman | count |
+| `search.infants_survived_a_season` | Infants brought home still alive a season (a quarter of `meta.days_per_year`) later | count |
+| `search.infants_died_within_a_season` | Infants brought home dead before that | count |
+| `search.infants_season_not_over` | Infants brought home alive when the run ended less than a season later | count |
+| `search.searches_told_by_a_child` | Of `searches_begun`, those a grown one who is no kin of the absent's began on a child's word at the fire | count |
+| `search.heard_alive` | Times a kin heard at a fire that a searcher found its close one alive | count |
+| `search.not_noticed.within_usual_absence` | Close ones away `search.after_nights` nights or more and not missed, by cause, once an absence and a kin: out no longer than the longest absence that kin knows it came back from | count |
+| `search.not_noticed.known_to_live_elsewhere` | The same: known by that kin to live at another hearth (said at a shared fire, said when found, told by who found it) | count |
+| `search.not_noticed.seen_at_camp` | The same: seen from the fire, at the camp | count |
+| `search.not_noticed.told_dead` | Kin who heard at a fire that a searcher found their close one dead: they wait for it no more | count |
+| `search.records[].day` | One record an absence noticed, or not noticed for a cause of `not_noticed` (27 November 2026, a measure for the audit of useless searches): the day of the fire (from 0) | day |
+| `search.records[].absent.id` | The absent's body | id |
+| `search.records[].absent.age_years` | Its age at the probe's last daily look (null: never looked at) | years |
+| `search.records[].absent.sex` | Its sex | `female`, `male` |
+| `search.records[].kin.id` | The kin who went; with no search, the first kin who noticed (spouse, then parent, then child) | id |
+| `search.records[].kin.age_years` | Its age, as the absent's | years |
+| `search.records[].kin.sex` | Its sex | `female`, `male` |
+| `search.records[].absent_is_kin_s` | What the absent is to that kin; with `told_by_child`, to the child; null when `told_dead` | `spouse`, `child`, `parent` |
+| `search.records[].noticed` | Whether the absence was noticed; `false`: a record of `not_noticed`, its search fields null | boolean |
+| `search.records[].not_noticed_because` | Not noticed, the cause: `within_usual_absence`, `known_to_live_elsewhere`, `seen_at_camp`, `told_dead`; null when noticed | name |
+| `search.records[].told_by_child` | The child who told the fire, when the searcher (`kin`) is a grown one who is no kin of the absent's; null otherwise | id |
+| `search.records[].noticers` | The kin at that fire who noticed the same absent that dawn | count |
+| `search.records[].nights_since_seen` | The nights since that kin last saw the absent | nights |
+| `search.records[].absent_alive` | Whether the absent was alive then: the vivarium's knowledge, no body's | boolean |
+| `search.records[].same_hearth` | Whether the absent's home and the kin's were then the same camp (within the brains' `HOME_TILES`); the vivarium reads both minds, a dead absent's home is the last the probe saw; null when unknown | boolean |
+| `search.records[].homes_apart_tiles` | The distance between the two homes then, on the longer axis | tiles |
+| `search.records[].other_hearth_days` | With another hearth: the days since the later of the two took its home (the probe looks once a day); null with the same hearth | days |
+| `search.records[].said_where` | Whether the absent had said, at the last fire the two shared, where it was going | boolean |
+| `search.records[].search_began` | Whether a kin set off | boolean |
+| `search.records[].why_not` | With no search, why the first kin with a reason stayed: `last_known_place_is_the_camp`, `too_young`, `already_searching`, `holds_a_goal`, `moving_home`, `a_grown_kin_at_the_fire_knows` (noticed by children alone, a grown kin present did not miss the absent and said why); null with a search | name |
+| `search.records[].went_to` | With a search, what it went to | `place_said`, `last_seen` |
+| `search.records[].to` | That place | `[x, y]` |
+| `search.records[].to_tiles` | The distance from where the searcher set off to that place, on the longer axis | tiles |
+| `search.records[].walked_tiles` | The tiles the searcher walked from setting off to the result (to the end of the run when none) | tiles |
+| `search.records[].result` | How the search ended: `found_alive`, `found_dead`, `not_found` (standing at the place), `stopped_short`; null with no search, or one not ended | name |
+| `search.records[].result_day` | The day of the result | day |
+| `search.records[].found_where` | Found alive, where the absent stood: `at_searcher_camp`, `at_another_camp` (its own home, another hearth), `sleeping_out` (asleep away from both), `awake_out` | name |
+| `search.records[].found_tiles_from_kin_camp` | Found alive: its distance then from the searcher's home | tiles |
 
 ## Beside the data: the lab's series file
 

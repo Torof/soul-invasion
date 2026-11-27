@@ -1263,4 +1263,35 @@
             ],
         ),
     ),
+    // The search for an absent kin (D56, amended 27 November 2026): at the
+    // dawn's fire a spouse, a parent or a child not seen for `after_nights`
+    // nights is noticed absent, and one kin goes to the place it said it
+    // was going to, or the last place it saw it. D30 placeholders:
+    //   after_nights: 2 — two nights away from the fire are noticed (one
+    //                   night out is common: the project lead, 27 November);
+    //   from_years:  16 — one goes searching from this age;
+    //   usual_max_nights: 16 — "she often stays out long": a mind keeps of
+    //                   each close one the longest absence it came back
+    //                   from, this many nights at most; out no longer than
+    //                   that, it is not missed (never before after_nights);
+    //   usual_seasons:  4 — that longest absence is forgotten four seasons
+    //                   after it was lived, unless one as long came since;
+    //   lives_seasons:  4 — "she lives there": a close one known to live
+    //                   at another hearth (said at a shared fire, said when
+    //                   found, told by who found it) is not missed for four
+    //                   seasons, unless it sits at one's own fire again;
+    //   told_per_fire:  2 — a searcher tells two of its findings a fire at
+    //                   most ("found alive there, she lives there", "found
+    //                   dead there"); her kin who hear it take it;
+    //   findings_kept:  4 — the findings it keeps to tell, the last ones.
+    // The section absent: nobody notices, nobody goes.
+    search: (
+        after_nights: 2,
+        from_years: 16,
+        usual_max_nights: 16,
+        usual_seasons: 4,
+        lives_seasons: 4,
+        told_per_fire: 2,
+        findings_kept: 4,
+    ),
 )
