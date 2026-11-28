@@ -167,6 +167,17 @@ fn fine_layers(world: &Planet, w: usize, h: usize, lon0: i64) -> (Layer, Layer) 
     }
     let right = |i: usize| (i / fw) * fw + (i % fw + 1) % fw;
     let down = |i: usize| (i + fw).min(fw * fh - 1);
+    let left = |i: usize| (i / fw) * fw + (i % fw + fw - 1) % fw;
+    let up = |i: usize| if i >= fw { i - fw } else { i };
+    // The slopes lit from the north-west (28 November 2026), so a range
+    // reads as a volume: a thousand metres of rise across two samples
+    // lightens or darkens by a quarter, half as much under the sea.
+    let lit = |i: usize| {
+        let e = |j: usize| i64::from(surface[j].0);
+        let rise = (e(right(i)) - e(left(i))) + (e(down(i)) - e(up(i)));
+        let strength = if surface[i].0 > 0 { 4 } else { 8 };
+        1000 + (rise / strength).clamp(-350, 350)
+    };
     let (mut relief, mut crust) = (Layer::new(w, h), Layer::new(w, h));
     for y in 0..h {
         for x in 0..w {
@@ -183,6 +194,8 @@ fn fine_layers(world: &Planet, w: usize, h: usize, lon0: i64) -> (Layer, Layer) 
                 } else if e <= 0 && continental {
                     col = mix(col, [150, 190, 210], 350);
                 }
+                let light = lit(i);
+                col = col.map(|v| (i64::from(v) * light / 1000).clamp(0, 255) as u8);
                 if land != surface[right(i)].2 || land != surface[down(i)].2 {
                     col = [25, 25, 25];
                 }
@@ -754,6 +767,27 @@ pub fn step_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         before = Some((here, rift));
     }
     l.write(dir, &name("rifts"));
+    // Data for the readout at this step, on a grid four times coarser: a
+    // letter per cell for its plate (upper case on land) and its height in
+    // hundreds of metres, as in the planet's own data.
+    let (gw, gh) = (w / 4, hgt / 4);
+    let mut cells = String::with_capacity(gw * gh);
+    let mut heights = String::with_capacity(gw * gh * 2);
+    for y in 0..gh {
+        for x in 0..gw {
+            let c = cell[(4 * y + 2) * w + 4 * x + 2];
+            let e = i64::from(world.elevation[c]);
+            let k = (world.plate[c] % 26) + b'a';
+            cells.push(char::from(if e > 0 { k.to_ascii_uppercase() } else { k }));
+            let h = (e.div_euclid(100) + 110).clamp(0, 200) as u32;
+            heights.push(char::from_u32(0xa1 + h).expect("a Latin character"));
+        }
+    }
+    let key = format!("h{}-{t:02}", world.seed);
+    let js = format!(
+        "window.DONNEES=window.DONNEES||{{}};window.DONNEES[\"{key}\"]={{w:{gw},h:{gh},plaques:\"{cells}\",alt:\"{heights}\"}};\n"
+    );
+    std::fs::write(dir.join(format!("{key}-donnees.js")), js).expect("the data");
 }
 
 /// A grid of the zoom's values read at the continent view's pixels,

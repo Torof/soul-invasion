@@ -38,6 +38,16 @@
     border-top: 1px solid #4a2f47; }
   #temps input[type=range] { flex: 1; }
   #temps .quand { font-size: 15px; font-weight: 600; min-width: 270px; }
+  .toutes-faites { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 0 10px; }
+  .toutes-faites .aide { width: 100%; color: var(--pale); font-size: 12px; }
+  .toutes-faites button { padding: 5px 9px; }
+  .echelle { margin: 6px 0 2px 22px; }
+  .echelle .barre { height: 14px; border: 1px solid #0008; border-radius: 3px; }
+  .echelle .marques { position: relative; height: 15px; font-size: 10.5px; color: var(--pale); }
+  .echelle .marques span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+  .echelle .marques span:first-child { transform: none; }
+  .echelle .marques span:last-child { transform: translateX(-100%); }
+  .echelle .unite { font-size: 11.5px; color: var(--pale); margin-top: 2px; }
   #globe { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
   details.params { font-size: 12px; margin-top: 8px; border: 1px solid var(--bord); border-radius: 6px; padding: 5px 8px; }
   details.params summary { cursor: pointer; color: var(--pale); }
@@ -184,23 +194,27 @@ const L_FRONTIERES_P = [["#eb2323", "fosse, arc continental"], ["#ff961e", "arc 
 const VUES = {
   planete: {
     graines: PAGE.graines, taille: [2048, 1024],
+    vues: [["Relief seul", ["relief"]], ["Relief et frontières", ["relief", "frontieres"]],
+      ["Plaques", ["relief", "plaques", "frontieres", "mouvement"]],
+      ["Âge des fonds", ["relief", "fond", "frontieres"]],
+      ["Histoire de la croûte", ["relief", "age", "marges"]],
+      ["Montagnes", ["relief", "montagnes"]], ["Sédiments", ["relief", "sediments"]]],
     couches: [
       { id: "relief", nom: "Relief et profondeur de la mer", on: true, op: 1,
-        leg: [["#5c8c54", "plaine"], ["#b8a068", "colline"], ["#968c88", "montagne"],
-              ["#80b2d6", "plateau continental"], ["#16306a", "océan profond"], ["#191919", "côte"], ["#b0a47c", "cuvette sous le niveau de la mer, sans lien avec l'océan : terre (un lac peut-être)"]] },
+        leg: [["#191919", "côte"], ["#b0a47c", "cuvette sous le niveau de la mer, sans lien avec l'océan : terre (un lac peut-être)"]], echelle: true },
       { id: "plaques", nom: "Plaques (une couleur chacune)", on: false, op: 0.4, leg: [] },
       { id: "croute", nom: "Croûte continentale", on: false, op: 0.6,
         leg: [["#f0c86e", "continent (même noyé)"], ["#784614", "bord de la croûte"]] },
-      { id: "frontieres", nom: "Frontières des plaques, par type", on: true, op: 1,
+      { id: "frontieres", nom: "Frontières des plaques, par type", on: true, op: 0.75,
         leg: L_FRONTIERES_P, trait: true },
       { id: "mouvement", nom: "Mouvement des plaques", on: false, op: 1,
         leg: [["#ffffff", "flèche : sens ; longueur ∝ vitesse (50 mm/an ≈ 1 100 km)"]], trait: true },
       { id: "anciennes", nom: "Vieilles sutures et rifts avortés", on: false, op: 1,
         leg: [["#963cd2", "vieille suture"], ["#f57814", "rift avorté"],
               ["#787878", "vieille faille"]], trait: true },
-      { id: "points-chauds", nom: "Points chauds et leurs chaînes", on: true, op: 1,
+      { id: "points-chauds", nom: "Points chauds et leurs chaînes", on: false, op: 1,
         leg: [["#ffffff", "le panache"], ["#fff078", "îles jeunes"], ["#965a28", "vieilles (200 Ma)"]] },
-      { id: "grille", nom: "Grille tous les 10°", on: true, op: 1,
+      { id: "grille", nom: "Grille tous les 10°", on: false, op: 0.6,
         leg: [["#3ce6ff", "40° et 50° (nord et sud)"], ["#ffffff", "équateur, méridien 0"]], trait: true },
       { id: "fragments", nom: "Histoire : morceau d'origine", on: false, op: 0.7,
         leg: [["#e67878", "un morceau du supercontinent (une couleur chacun)"], ["#96735a", "terrane"], ["#969650", "arc d'îles"], ["#1e1e1e", "limite entre morceaux"]] },
@@ -219,22 +233,25 @@ const VUES = {
   },
   histoire: {
     graines: PAGE.graines, taille: [1024, 512],
+    vues: [["Relief seul", ["relief"]], ["Relief et frontières", ["relief", "frontieres"]],
+      ["Plaques", ["relief", "plaques", "frontieres", "mouvement"]],
+      ["Rifts et manteau", ["relief", "rifts", "manteau", "frontieres"]],
+      ["Âge des fonds", ["relief", "fond", "frontieres"]], ["Sédiments", ["relief", "sediments"]]],
     couches: [
       { id: "relief", nom: "Relief et profondeur de la mer", on: true, op: 1,
-        leg: [["#5c8c54", "plaine"], ["#b8a068", "colline"], ["#968c88", "montagne"],
-              ["#80b2d6", "plateau continental"], ["#16306a", "océan profond"], ["#191919", "côte"], ["#b0a47c", "cuvette sous le niveau de la mer, sans lien avec l'océan : terre (un lac peut-être)"]] },
-      { id: "rifts", nom: "Rifts : fossés en cours et fossés abandonnés, sur les ceintures faibles de la croûte", on: true, op: 1,
+        leg: [["#191919", "côte"], ["#b0a47c", "cuvette sous le niveau de la mer, sans lien avec l'océan : terre (un lac peut-être)"]], echelle: true },
+      { id: "rifts", nom: "Rifts : fossés en cours et fossés abandonnés, sur les ceintures faibles de la croûte", on: false, op: 1,
         leg: [["#ff2800", "fossé en cours (la croûte s'étire et s'amincit)"], ["#78461e", "fossé abandonné (rift avorté)"], ["#963cd2", "ceinture de croûte plus jeune et plus faible entre deux vieux noyaux (plus foncé vers son axe)"]], trait: true },
       { id: "plaques", nom: "Plaques (une couleur chacune)", on: false, op: 0.4, leg: [] },
       { id: "croute", nom: "Croûte continentale", on: false, op: 0.6,
         leg: [["#f0c86e", "continent (même noyé)"], ["#784614", "bord de la croûte"]] },
-      { id: "frontieres", nom: "Frontières des plaques, par type", on: true, op: 1,
+      { id: "frontieres", nom: "Frontières des plaques, par type", on: true, op: 0.75,
         leg: L_FRONTIERES_P, trait: true },
       { id: "mouvement", nom: "Mouvement des plaques", on: false, op: 1,
         leg: [["#ffffff", "flèche : sens ; longueur ∝ vitesse"]], trait: true },
-      { id: "manteau", nom: "Manteau : sa chaleur, les panaches", on: true, op: 0.7,
+      { id: "manteau", nom: "Manteau : sa chaleur, les panaches", on: false, op: 0.7,
         leg: [["#ff5a28", "chaud (sous un grand continent)"], ["#2878ff", "froid (où les plaques plongent)"], ["#fff078", "panache (point chaud)"]] },
-      { id: "grille", nom: "Grille tous les 10°", on: true, op: 1,
+      { id: "grille", nom: "Grille tous les 10°", on: false, op: 0.6,
         leg: [["#3ce6ff", "40° et 50° (nord et sud)"], ["#ffffff", "équateur, méridien 0"]], trait: true },
       { id: "fond", nom: "Âge du fond océanique à cette étape", on: false, op: 0.9,
         leg: [["#c81e28", "dorsale (0 Ma)"], ["#f58c28", "20 Ma"], ["#f5e150", "50 Ma"], ["#6ec86e", "90 Ma"], ["#468cdc", "140 Ma"], ["#7846aa", "200 Ma et plus"]] },
@@ -243,6 +260,22 @@ const VUES = {
     ],
   },
 };
+
+// The heights' colours, the same as the maps' (`examples/planet.rs`, `hypsometric`).
+const ECHELLE = [[-8000, [6, 12, 40]], [-6000, [12, 26, 70]], [-4500, [22, 48, 104]], [-3000, [34, 74, 138]],
+  [-1500, [56, 108, 170]], [-200, [96, 152, 200]], [-1, [150, 196, 224]], [0, [70, 120, 70]], [200, [110, 155, 85]],
+  [500, [165, 180, 110]], [1000, [200, 180, 115]], [1500, [185, 145, 90]], [2000, [160, 110, 75]],
+  [3000, [140, 105, 95]], [4000, [175, 165, 165]], [5500, [248, 248, 248]]];
+function echelleHtml() {
+  // Each height takes the same room: the plains would else be a hair.
+  const n = ECHELLE.length;
+  const stops = ECHELLE.map(([, c], k) => `rgb(${c.join(",")}) ${(k / (n - 1) * 100).toFixed(1)}%`).join(", ");
+  const marques = [-8000, -4500, -1500, 0, 1000, 3000, 5500].map(m => {
+    const k = ECHELLE.findIndex(e => e[0] === m);
+    return `<span style="left:${(k / (n - 1) * 100).toFixed(1)}%">${m === 0 ? "0" : (m > 0 ? "+" : "−") + Math.abs(m).toLocaleString("fr-FR")}</span>`;
+  }).join("");
+  return `<div class="echelle"><div class="barre" style="background:linear-gradient(to right, ${stops})"></div><div class="marques">${marques}</div><div class="unite">mètres · la mer en bleu, la terre du vert au blanc · les pentes sont éclairées depuis le nord-ouest</div></div>`;
+}
 
 // What `tools/page.py` writes: the version, the seeds, the texts.
 const TEXTES = PAGE.textes;
@@ -311,6 +344,24 @@ function construire() {
   // Panel.
   const panneau = document.getElementById("couches");
   panneau.innerHTML = "";
+  const toutes = document.createElement("div");
+  toutes.className = "toutes-faites";
+  toutes.innerHTML = `<div class="aide">Une vue toute faite :</div>`;
+  for (const [nom, ids] of v.vues || []) {
+    const b = document.createElement("button");
+    b.textContent = nom;
+    const montre = v.couches.filter(c => choixDe(etat.vue, c).on).map(c => c.id);
+    b.classList.toggle("actif", montre.length === ids.length && ids.every(i => montre.includes(i)));
+    b.addEventListener("click", () => {
+      for (const c of v.couches) choixDe(etat.vue, c).on = ids.includes(c.id);
+      const haut = document.querySelector('.page[data-page="couches"]').scrollTop;
+      construire();
+      document.querySelector('.page[data-page="couches"]').scrollTop = haut;
+    });
+    toutes.appendChild(b);
+  }
+  toutes.insertAdjacentHTML("beforeend", `<div class="aide">ou choisis les couches une à une :</div>`);
+  panneau.appendChild(toutes);
   for (const c of v.couches) {
     const ch = choixDe(etat.vue, c);
     const d = document.createElement("div");
@@ -319,7 +370,7 @@ function construire() {
     d.innerHTML = `<div class="tete"><input type="checkbox" id="${idc}"${ch.on ? " checked" : ""}>
       <label for="${idc}">${c.nom}</label>
       <input type="range" min="0" max="100" value="${Math.round(ch.op * 100)}" title="Opacité"></div>
-      <div class="legende">${c.leg.map(([col, t]) =>
+      ${c.echelle ? echelleHtml() : ""}<div class="legende">${c.leg.map(([col, t]) =>
         `<span><i class="${c.trait ? "trait" : ""}" style="background:${col}"></i>${t}</span>`).join("")}</div>`;
     const box = d.querySelector("input[type=checkbox]");
     const range = d.querySelector("input[type=range]");
@@ -373,7 +424,21 @@ function appliquer() {
   demanderGlobe(true);
 }
 
+// The heights and plates of the step shown, loaded when first needed.
+function cleEtape() {
+  return `h${etat.graine}-${String(etat.etape).padStart(2, "0")}`;
+}
+function chargerEtape() {
+  const cle = cleEtape();
+  if (window.DONNEES[cle] || document.getElementById("d-" + cle)) return;
+  const s = document.createElement("script");
+  s.id = "d-" + cle;
+  s.src = `couches/${cle}-donnees.js`;
+  document.head.appendChild(s);
+}
+
 function montrerEtape() {
+  chargerEtape();
   toile.querySelectorAll("img").forEach(img => { img.src = fichier("histoire", etat.graine, img.dataset.id); });
   document.getElementById("etape").value = etat.etape;
   const ago = (ETAPES - etat.etape) * PAS;
@@ -878,7 +943,17 @@ function lire(e) {
     const d = window.DONNEES["p" + etat.graine];
     let lon = (d ? d.lon0 / 10 : 0) + ix / w * 360 - 180;
     lon = ((lon % 360) + 540) % 360 - 180;
-    lecture.textContent = `${deg(90 - iy / h * 180, "N", "S")}, ${deg(lon, "E", "O")}`;
+    let t = `${deg(90 - iy / h * 180, "N", "S")}, ${deg(lon, "E", "O")}`;
+    const pas = window.DONNEES[cleEtape()];
+    if (pas) {
+      const k = Math.floor(iy / h * pas.h) * pas.w + Math.floor(ix / w * pas.w);
+      const c = pas.plaques[k];
+      const alt = (pas.alt.charCodeAt(k) - 0xa1 - 110) * 100 + 50;
+      const nb = n => Math.abs(n).toLocaleString("fr-FR");
+      t += c >= "A" && c <= "Z" ? ` · terre, ≈ ${nb(Math.max(alt, 0))} m` : ` · mer, ≈ ${nb(alt)} m de fond`;
+      t += ` · plaque n° ${c.toLowerCase().charCodeAt(0) - 96}`;
+    }
+    lecture.textContent = t;
     return;
   }
   if (etat.vue === "planete") {

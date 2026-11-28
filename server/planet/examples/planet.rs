@@ -605,21 +605,30 @@ fn mix(a: Rgb, b: Rgb, t: i64) -> Rgb {
 
 /// A colour for a height, m: sea blues, then greens, ochres, greys, snow.
 fn hypsometric(e: i64) -> Rgb {
-    const SEA: [(i64, Rgb); 5] = [
-        (-7000, [10, 22, 60]),
+    // One scale for every map (28 November 2026): from the trenches'
+    // night blue to the shelves' pale blue, then from the low plains'
+    // deep green through the hills' ochre and the ranges' brown to the
+    // summits' white. The page's legend (`tools/carte.html`, `ECHELLE`)
+    // repeats it.
+    const SEA: [(i64, Rgb); 7] = [
+        (-8000, [6, 12, 40]),
+        (-6000, [12, 26, 70]),
         (-4500, [22, 48, 104]),
-        (-2500, [36, 78, 140]),
-        (-200, [76, 132, 188]),
-        (0, [128, 178, 214]),
+        (-3000, [34, 74, 138]),
+        (-1500, [56, 108, 170]),
+        (-200, [96, 152, 200]),
+        (0, [150, 196, 224]),
     ];
-    const LAND: [(i64, Rgb); 7] = [
-        (0, [92, 140, 84]),
-        (150, [120, 162, 96]),
-        (500, [170, 178, 112]),
-        (1000, [184, 160, 104]),
-        (1800, [156, 122, 88]),
-        (2800, [150, 140, 136]),
-        (4200, [245, 245, 245]),
+    const LAND: [(i64, Rgb); 9] = [
+        (0, [70, 120, 70]),
+        (200, [110, 155, 85]),
+        (500, [165, 180, 110]),
+        (1000, [200, 180, 115]),
+        (1500, [185, 145, 90]),
+        (2000, [160, 110, 75]),
+        (3000, [140, 105, 95]),
+        (4000, [175, 165, 165]),
+        (5500, [248, 248, 248]),
     ];
     let table: &[(i64, Rgb)] = if e <= 0 { &SEA } else { &LAND };
     if e <= table[0].0 {
