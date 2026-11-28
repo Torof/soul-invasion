@@ -1011,6 +1011,20 @@
     //                       belongs to a chain that relieved a problem
     //                       the body lived, and only a kept deed is done
     //                       again for its product's sake.
+    // What a body remembers of a deed that did not give what was told (28
+    // November 2026):
+    // amiss_kept:      32 — the things (this tree, this piece) on which a
+    //                       deed done for what it gives did not give it
+    //                       into its hands ("told bark, here it gave no
+    //                       bark"), the oldest going when one more comes;
+    //                       the deed is not done again on that thing while
+    //                       remembered, elsewhere it may be (0: none
+    //                       remembered).
+    // Free hands (28 November 2026): a gesture other than a taking up
+    // needs the arms free of all but its own things; the rest is laid at
+    // its feet, a thing a tick, and taken up again afterwards.
+    // laid_kept:       32 — the things laid so that a body remembers, with
+    //                       where, the oldest going when one more comes.
     // What a body sees before it tries (the project lead, 25 November
     // 2026: "on ne coupe pas avec une baie"); it may still be wrong:
     // edge_seen:        3 — a thing with at least this edge looks like it
@@ -1027,6 +1041,8 @@
         loose_g_per_litre: 500,
         failures_kept: 16,
         seen_kept: 32,
+        amiss_kept: 32,
+        laid_kept: 32,
         edge_seen: 3,
         supple_seen: 5,
         // A standing tree in parts (D57, amended 27 November 2026): a

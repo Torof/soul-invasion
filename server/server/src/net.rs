@@ -3717,7 +3717,12 @@ pub fn refusal_view(act: sim::ItemAct, reason: sim::Refusal) -> (ItemAct, Refusa
         // Only the brains gather (D45): no player is told "nothing ripe"
         // yet.
         // Nor "sated" (lot 3): the protocol does not tell it yet.
-        sim::Refusal::Unknown | sim::Refusal::NothingRipe | sim::Refusal::Sated => Refusal::Unknown,
+        // Nor "hands full" (D57, 28 November 2026): only the brains make
+        // gestures of the hands, and the protocol has no word for it yet.
+        sim::Refusal::Unknown
+        | sim::Refusal::NothingRipe
+        | sim::Refusal::Sated
+        | sim::Refusal::HandsFull => Refusal::Unknown,
         sim::Refusal::OutOfReach => Refusal::OutOfReach,
         sim::Refusal::NotCarried => Refusal::NotCarried,
         sim::Refusal::TooHeavy => Refusal::TooHeavy,

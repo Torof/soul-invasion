@@ -3515,6 +3515,12 @@ pub fn run_watched(
                 | News::Drew { .. }
                 | News::DeedSeen { .. }
                 | News::DeedKept { .. }
+                | News::NotAsTold { .. }
+                | News::Laid { .. }
+                | News::LaidBack { .. }
+                | News::LaidLeft { .. }
+                | News::LaidLost { .. }
+                | News::LaidLetBe { .. }
                 | News::Skipped { .. }
                 | News::ToolTaken { .. }
                 | News::Problem { .. }

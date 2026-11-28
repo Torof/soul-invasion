@@ -1213,7 +1213,9 @@ fn migrate_v18_to_v19(data: String) -> String {
 /// 27 November 2026): an item may lie `within` a hollow thing carried by
 /// the same body, and a put-in under way names what it puts `into`. A
 /// world saved before has nothing put in anything, which is what the
-/// fields read as when absent: the data is the same. A body that carried
+/// fields read as when absent: the data is the same. Since 28 November
+/// 2026 an item may also lie `within` a hollow laid on its own tile: the
+/// same field, no new version. A body that carried
 /// food beyond its arms beside a hollow holds it all in its arms again,
 /// and takes no more till they have room.
 fn migrate_v20_to_v21(data: String) -> String {

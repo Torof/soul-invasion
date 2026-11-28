@@ -23,12 +23,14 @@
 //! is read only when a problem is lived and at those free moments, and
 //! only when not empty; nothing scans it by tick. A body may also begin
 //! there and then, where it lives the problem, if it is free. The gesture is drawn as in any trial of the hands, nothing
-//! weighed toward an answer. The trial is judged by the problem: kept as
-//! soon as a gathering stopped full finds the body carrying more than its
-//! arms alone, like "what served is kept"; given up when
-//! `gives_up_seasons` passed with the problem lived again and nothing
-//! moved; unjudged, as [`handwork::end_untried`], when nothing new was
-//! tried, or when the problem never came back. It is told at the fire
+//! weighed toward an answer. The trial ends as soon as a gathering
+//! stopped full finds the body carrying more than its arms alone, or
+//! when `gives_up_seasons` passed, and has one verdict (amended 28
+//! November 2026): kept if and only if a chain of its deeds served the
+//! problem ("what served is kept"); else given up when the problem was
+//! lived again and nothing moved; unjudged, as
+//! [`handwork::end_untried`], when nothing new was tried, or when the
+//! problem never came back. It is told at the fire
 //! with its problem, and only a listener who carries the same problem has
 //! a reason to try it.
 
@@ -437,17 +439,23 @@ fn told_with(memory: &Store, mind: &Mind, kind: u8) -> Vec<(super::Deed, u32)> {
         .collect()
 }
 
-/// `mind`'s trial from a problem judged by it (D50, amended 26 November
-/// 2026): `moved`, the limit moved. Unjudged when nothing new was tried
-/// ([`handwork::end_untried`]); else kept when the limit moved and its
-/// hands learnt something, given up otherwise, the will taught either
-/// way and the judgement held for the fire with its problem. The news.
+/// `mind`'s trial from a problem ended (D50, amended 26 and 28 November
+/// 2026). Unjudged when nothing new was tried
+/// ([`handwork::end_untried`]). Else by the one verdict of a trial of the
+/// hands: kept if and only if a chain of its deeds served the problem it
+/// lived ([`handwork::keep_what_served`]), at whichever ending: the
+/// gathering stopped beyond its arms, its time out with the problem back
+/// or never back. Kept, its will learns a success and the tale told is a
+/// success with its problem. Not kept and `judged` (the problem came
+/// back unmoved in its time), it is given up: its will learns a failure,
+/// told with its problem. Not kept and never judged by its problem, it
+/// lapses: nothing told, its will as it was. The news.
 fn judge(
     rules: &Content,
     (id, day, now): (BodyId, u64, u64),
     mind: &mut Mind,
     trial: &Trial,
-    moved: bool,
+    judged: bool,
 ) -> Vec<News> {
     let Some(kind) = trial.problem.map(|a| a.kind) else {
         return Vec::new();
@@ -463,12 +471,20 @@ fn judge(
             },
         ];
     }
-    // Kept, only the deeds of which something came that served stay
-    // known (D57, amended 27 November 2026).
-    if moved {
-        handwork::keep_what_served(rules, mind, true);
+    let kept = handwork::keep_what_served(rules, mind);
+    mind.handwork.drop_aim();
+    mind.trial = None;
+    if !kept && !judged {
+        return vec![
+            News::Untried { body: id, at: now },
+            News::Problem {
+                body: id,
+                kind,
+                step: ProblemStep::Lapsed,
+                at: now,
+            },
+        ];
     }
-    let kept = moved && mind.ways.hands != trial.before.hands;
     mind.judged = Some(Judged {
         way: Way::Hands,
         after: mind.ways,
@@ -482,11 +498,7 @@ fn judge(
     mind.learn_will(rules, kept);
     if kept {
         mind.changed_day = Some(day);
-    } else {
-        handwork::leave_not_kept(rules, mind, trial);
     }
-    mind.handwork.drop_aim();
-    mind.trial = None;
     vec![
         News::Tried {
             body: id,
@@ -510,41 +522,12 @@ fn judge(
     ]
 }
 
-/// `mind`'s trial from a problem, its time out and the problem never back
-/// to judge it (D50, amended 26 November 2026): ended unjudged, its ways
-/// as before, nothing told, its will as it was. The news.
-pub(super) fn lapse(
-    rules: &Content,
-    mind: &mut Mind,
-    trial: &Trial,
-    (id, now): (BodyId, u64),
-) -> Vec<News> {
-    let kind = trial.problem.map_or(0, |a| a.kind);
-    let step = if handwork::untried(mind, trial) {
-        ProblemStep::Untried
-    } else {
-        ProblemStep::Lapsed
-    };
-    handwork::leave_not_kept(rules, mind, trial);
-    mind.handwork.drop_aim();
-    mind.trial = None;
-    vec![
-        News::Untried { body: id, at: now },
-        News::Problem {
-            body: id,
-            kind,
-            step,
-            at: now,
-        },
-    ]
-}
-
 /// At nightfall on `day` (a cycle of `per_year` days): a trial from a
-/// problem whose time is out ends, given up when the problem came back
-/// unmoved in it ([`judge`]), else unjudged ([`lapse`]), its news in
-/// `news` and `true` then: nothing else changes that night, as after any
-/// trial ended; any other trial under way is due, returned, when its days
-/// are over.
+/// problem whose time is out ends ([`judge`]): kept when a chain of it
+/// served, else given up when the problem came back unmoved in it, else
+/// lapsed unjudged; its news in `news` and `true` then: nothing else
+/// changes that night, as after any trial ended; any other trial under
+/// way is due, returned, when its days are over.
 pub(super) fn nightfall(
     rules: &Content,
     (id, day, now, per_year): (BodyId, u64, u64, u32),
@@ -556,10 +539,8 @@ pub(super) fn nightfall(
     };
     if let Some(aim) = trial.problem {
         let over = day >= aim.until;
-        if over && aim.returns > 0 {
-            news.extend(judge(rules, (id, day, now), mind, &trial, false));
-        } else if over {
-            news.extend(lapse(rules, mind, &trial, (id, now)));
+        if over {
+            news.extend(judge(rules, (id, day, now), mind, &trial, aim.returns > 0));
         }
         return (None, over);
     }
@@ -1181,5 +1162,54 @@ mod tests {
         assert!(mind.trial.is_none() && mind.judged.is_none());
         assert!(mind.ways.hands.is_empty(), "its ways as before");
         assert_eq!(steps(&news), [ProblemStep::Lapsed]);
+    }
+
+    #[test]
+    fn a_trial_from_a_problem_whose_chain_served_is_kept_at_whichever_ending() {
+        // One verdict (28 November 2026): a trial of the hands is kept
+        // if and only if a chain of it served its lived problem. Before,
+        // a trial whose time ran out was given up or lapsed even when
+        // its hollow had carried food beyond its arms, its will lowered,
+        // the tale told a failure, and the chain kept all the same as no
+        // trial of its own.
+        let put = put_berries(&rules_of());
+        for returns in [0, 3] {
+            let (rules, mut world, mut brains, id) = valley();
+            willing(&mut brains, id, 100);
+            flint_here(&mut world, id);
+            arms_full(&mut world, &rules, id);
+            stopped(&mut world, &rules, &mut brains, id);
+            for _ in 0..returns {
+                stopped(&mut world, &rules, &mut brains, id);
+            }
+            let until = brains.minds[&id].trial.unwrap().problem.unwrap().until;
+            let mind = brains.minds.get_mut(&id).unwrap();
+            mind.handwork.gestured = true;
+            mind.handwork.see(put, 32);
+            mind.handwork.served.push(put.with);
+            let mut taught = mind.clone();
+            taught.learn_will(&rules, true);
+            let _ = brains.news();
+            let news = night(&world, &mut brains, &rules, id, until);
+            let mind = &brains.minds[&id];
+            assert!(mind.trial.is_none());
+            assert!(mind.ways.hands.contains(put), "returns {returns}");
+            assert_eq!(mind.handwork.kept, [put], "its own");
+            assert!(mind.judged.is_some_and(|j| j.kept && j.problem == Some(0)));
+            assert_eq!(
+                (mind.will, mind.will_rest, mind.will_failures),
+                (taught.will, taught.will_rest, taught.will_failures),
+                "a success learnt"
+            );
+            assert_eq!(steps(&news), [ProblemStep::Kept], "returns {returns}");
+            assert!(
+                news.iter()
+                    .any(|n| matches!(n, News::Tried { kept: true, .. }))
+            );
+        }
+    }
+
+    fn rules_of() -> Content {
+        valley().0
     }
 }

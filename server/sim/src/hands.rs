@@ -367,6 +367,9 @@ impl World {
         if dx * dx + dy * dy > GATHER_REACH_MM * GATHER_REACH_MM {
             return refuse(events, Refusal::OutOfReach);
         }
+        if !self.hands_free(index, Gesture::Cut, &[with], events) {
+            return;
+        }
         let body = &mut self.bodies[index];
         if body.held != Some(with) {
             body.carried.retain(|i| *i != with);
@@ -415,6 +418,9 @@ impl World {
                 reason: Refusal::NotCarried,
             });
         }
+        if !self.hands_free(index, Gesture::Fold, &[item], events) {
+            return;
+        }
         let until = Tick(self.tick.0 + self.gesture_ticks(rules));
         self.begin(
             index,
@@ -451,6 +457,9 @@ impl World {
         };
         if !self.carries(index, item) || !self.carries(index, into) {
             return refuse(events, Refusal::NotCarried);
+        }
+        if !self.hands_free(index, Gesture::PutIn, &[item, into], events) {
+            return;
         }
         let until = Tick(self.tick.0 + self.gesture_ticks(rules));
         self.begin(
@@ -507,6 +516,9 @@ impl World {
         };
         if !self.carries(index, item) || !self.carries(index, with) {
             return refuse(events, Refusal::NotCarried);
+        }
+        if !self.hands_free(index, Gesture::Strike, &[item, with], events) {
+            return;
         }
         let until = Tick(self.tick.0 + self.gesture_ticks(rules));
         self.begin(
@@ -604,8 +616,12 @@ impl World {
         if !self.carries(index, item) {
             return refuse(events, Refusal::NotCarried);
         }
-        let until = Tick(self.tick.0 + self.gesture_ticks(rules));
         let into = self.item(item).and_then(|i| i.within);
+        let things: Vec<ItemId> = std::iter::once(item).chain(into).collect();
+        if !self.hands_free(index, Gesture::TakeOut, &things, events) {
+            return;
+        }
+        let until = Tick(self.tick.0 + self.gesture_ticks(rules));
         self.begin(
             index,
             Making {
@@ -756,11 +772,138 @@ impl World {
         Some(put)
     }
 
+    /// The first thing `id` carries that is in the way of a gesture on
+    /// `things` (D57, amended 28 November 2026, the project lead: "with
+    /// full arms the hands are not free; one cannot do an action"): a
+    /// gesture of the hands other than a taking up needs the arms free of
+    /// everything but its own things, the tool, the thing worked, the
+    /// hollow put into or taken from, with what they hold. A thing lying
+    /// in a hollow that is in the way is named by its hollow: the two are
+    /// laid down as one. `None` when its hands are free for it.
+    #[must_use]
+    pub fn in_the_way(&self, id: BodyId, things: &[ItemId]) -> Option<ItemId> {
+        let body = self.body(id)?;
+        body.inventory().find_map(|item| {
+            let top = self
+                .item(item)
+                .and_then(|i| i.within)
+                .filter(|h| body.has(*h))
+                .unwrap_or(item);
+            (!things.contains(&top) && !things.contains(&item)).then_some(top)
+        })
+    }
+
+    /// Whether the hands of the body at `index` are free for `gesture`
+    /// on `things`; refused in `events` when not.
+    fn hands_free(
+        &self,
+        index: usize,
+        gesture: Gesture,
+        things: &[ItemId],
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let id = self.bodies[index].id;
+        let free = self.in_the_way(id, things).is_none();
+        if !free {
+            events.push(Event::GestureRefused {
+                body: id,
+                gesture,
+                reason: Refusal::HandsFull,
+            });
+        }
+        free
+    }
+
+    /// A test's body lays at its feet all it carries but `keep` (and the
+    /// hollow each lies in), and takes up those of `keep` that lie at its
+    /// feet: its hands free for a gesture on them.
+    #[cfg(test)]
+    pub(crate) fn lay_all_but(&mut self, id: BodyId, keep: &[ItemId], rules: &Content) {
+        // The hollow a thing kept lies in is kept with it.
+        let keep: Vec<ItemId> = keep
+            .iter()
+            .flat_map(|i| std::iter::once(*i).chain(self.item(*i).and_then(|t| t.within)))
+            .collect();
+        for _ in 0..256 {
+            let Some(rest) = self.in_the_way(id, &keep) else {
+                break;
+            };
+            self.queue(crate::Intention::Drop {
+                body: id,
+                item: rest,
+            });
+            self.advance(1, rules, &mut Vec::new());
+        }
+        for &item in &keep {
+            if self.item(item).is_some_and(|i| i.pos().is_some()) {
+                self.queue(crate::Intention::PickUp { body: id, item });
+                self.advance(1, rules, &mut Vec::new());
+            }
+        }
+    }
+
+    /// The things lying in the hollow `hollow` that lies on the ground at
+    /// `pos` (D57, amended 28 November 2026): laid down with it.
+    pub(crate) fn inside_on_ground(&self, hollow: ItemId, pos: Pos) -> Vec<ItemId> {
+        if self.item(hollow).is_none_or(|h| h.hollow_ml == 0) {
+            return Vec::new();
+        }
+        let mut inside: Vec<ItemId> = self
+            .laid_in(pos.chunk())
+            .filter(|i| i.within == Some(hollow) && i.place == Place::Ground { pos })
+            .map(|i| i.id)
+            .collect();
+        inside.sort_unstable();
+        inside
+    }
+
+    /// The things `inside` a hollow lying at `pos` go on the body at
+    /// `index` with it, still in it: the caller takes the hollow itself
+    /// up and weighs the load.
+    pub(crate) fn take_inside(
+        &mut self,
+        index: usize,
+        (inside, pos): (&[ItemId], Pos),
+        events: &mut Vec<Event>,
+    ) {
+        let body = self.bodies[index].id;
+        for &thing in inside {
+            if let Some(taken) = self.items.get_mut(&thing) {
+                taken.place = Place::Carried { body };
+                self.lift(thing, pos.chunk());
+                self.bodies[index].carried.push(thing);
+                events.push(Event::ItemRemoved {
+                    item: thing,
+                    at: pos,
+                    version: self.chunk_version(pos.chunk()),
+                });
+            }
+        }
+    }
+
+    /// What the hollow `hollow` carried by the body at `index` holds is
+    /// laid at its feet with it, still in it (D57, amended 28 November
+    /// 2026): the caller lays the hollow itself and weighs the load.
+    pub(crate) fn set_down_inside(
+        &mut self,
+        index: usize,
+        hollow: ItemId,
+        events: &mut Vec<Event>,
+    ) {
+        self.fall(index, hollow, true, events);
+    }
+
     /// What the hollow `hollow` carried by the body at `index` held falls
     /// at its feet (D57, amended 27 November 2026): the hollow is let go
     /// or torn, and nothing holds by itself. The caller weighs the load
     /// again.
     pub(crate) fn spill(&mut self, index: usize, hollow: ItemId, events: &mut Vec<Event>) {
+        self.fall(index, hollow, false, events);
+    }
+
+    /// What `hollow` holds goes to the ground at the feet of the body at
+    /// `index`: still in it (`held`), or out of it.
+    fn fall(&mut self, index: usize, hollow: ItemId, held: bool, events: &mut Vec<Event>) {
         let at = self.bodies[index].pos();
         let inside: Vec<ItemId> = self.bodies[index]
             .inventory()
@@ -771,7 +914,9 @@ impl World {
             let Some(fallen) = self.items.get_mut(&item) else {
                 continue;
             };
-            fallen.within = None;
+            if !held {
+                fallen.within = None;
+            }
             fallen.place = Place::Ground { pos: at };
             let (material, mass_g) = (fallen.material.clone(), fallen.mass_g);
             self.lay(item, at.chunk());
@@ -1374,6 +1519,7 @@ mod tests {
         let (mut world, id, chunk, tree) = by_a(rules, species);
         let grams = rules.material(tool).unwrap().mass_g();
         let with = picked(&mut world, rules, id, tool, grams);
+        world.lay_all_but(id, &[with], rules);
         world.queue(Intention::Cut {
             part: Part::Trunk,
             body: id,
@@ -1425,6 +1571,7 @@ mod tests {
             let (mut world, id, ..) = by_a_birch(&rules);
             let bark = picked(&mut world, &rules, id, stiff, 400);
             let load = body(&world, id).load_g();
+            world.lay_all_but(id, &[bark], &rules);
             world.queue(Intention::Fold {
                 body: id,
                 item: bark,
@@ -1450,6 +1597,7 @@ mod tests {
         rules.needs.starving_per_day = 0;
         let (mut world, id, ..) = by_a_birch(&rules);
         let leaf = picked(&mut world, &rules, id, "butterbur_leaf", 50);
+        world.lay_all_but(id, &[leaf], &rules);
         world.queue(Intention::Fold {
             body: id,
             item: leaf,
@@ -1505,11 +1653,13 @@ mod tests {
         let rules = rules();
         let (mut world, id, ..) = by_a_birch(&rules);
         let bark = picked(&mut world, &rules, id, "birch_bark", 200);
+        world.lay_all_but(id, &[bark], &rules);
         world.queue(Intention::Fold {
             body: id,
             item: bark,
         });
         gesture_ends(&mut world, &rules, id).expect("folded");
+        world.lay_all_but(id, &[bark], &rules);
         world.queue(Intention::Fold {
             body: id,
             item: bark,
@@ -1532,6 +1682,7 @@ mod tests {
         picked(&mut world, &rules, id, "berries", 500);
         let flint = picked(&mut world, &rules, id, "flint", 400);
         assert_ne!(body(&world, id).held(), Some(flint));
+        world.lay_all_but(id, &[flint], &rules);
         world.queue(Intention::Cut {
             part: Part::Trunk,
             body: id,
@@ -1549,6 +1700,7 @@ mod tests {
         // Ten game minutes: ten ticks of this day.
         let arms = body(&world, id).arms_g(&rules.movement);
         assert_eq!(arms, 1000);
+        world.lay_all_but(id, &[bark], &rules);
         world.queue(Intention::Fold {
             body: id,
             item: bark,
@@ -1570,6 +1722,7 @@ mod tests {
         let rules = rules();
         let (mut world, id, chunk, tree) = by_a_birch(&rules);
         let pebble = picked(&mut world, &rules, id, "pebble", 600);
+        world.lay_all_but(id, &[pebble], &rules);
         world.queue(Intention::Cut {
             part: Part::Trunk,
             body: id,
@@ -1578,6 +1731,7 @@ mod tests {
             tree,
         });
         assert_eq!(gesture_ends(&mut world, &rules, id), None);
+        world.lay_all_but(id, &[pebble], &rules);
         world.queue(Intention::Fold {
             body: id,
             item: pebble,
@@ -1585,6 +1739,7 @@ mod tests {
         assert_eq!(gesture_ends(&mut world, &rules, id), None);
         assert_eq!(world.item(pebble).unwrap().material(), "pebble");
         // A walk ends a gesture with nothing.
+        world.lay_all_but(id, &[pebble], &rules);
         world.queue(Intention::Fold {
             body: id,
             item: pebble,
@@ -1633,6 +1788,7 @@ mod tests {
         rules.needs.starving_per_day = 0;
         let (mut world, id, ..) = by_a_birch(&rules);
         let bark = picked(&mut world, &rules, id, "birch_bark", 200);
+        world.lay_all_but(id, &[bark], &rules);
         world.queue(Intention::Fold {
             body: id,
             item: bark,
@@ -1641,6 +1797,7 @@ mod tests {
         assert_eq!(world.hollow_room_g(bark, &rules), 2370);
         // What it holds falls at the body's feet when it tears.
         let berries = picked(&mut world, &rules, id, "berries", 600);
+        world.lay_all_but(id, &[berries, bark], &rules);
         world.queue(Intention::PutIn {
             body: id,
             item: berries,
@@ -1669,6 +1826,7 @@ mod tests {
         let pebble = picked(&mut world, &rules, id, "pebble", 300);
         assert_eq!(put(&mut world, &rules, id, (pebble, bark)), Some(pebble));
         assert_eq!(world.hollow_room_g(bark, &rules), room - 300);
+        world.lay_all_but(id, &[pebble], &rules);
         world.queue(Intention::TakeOut {
             body: id,
             item: pebble,
@@ -1681,6 +1839,7 @@ mod tests {
         );
         assert_eq!(world.hollow_room_g(bark, &rules), room);
         // What lies in nothing is taken out of nothing.
+        world.lay_all_but(id, &[pebble], &rules);
         world.queue(Intention::TakeOut {
             body: id,
             item: pebble,
@@ -1693,6 +1852,7 @@ mod tests {
         let rules = rules();
         let (mut world, id, ..) = by_a_birch(&rules);
         let strike = |world: &mut World, item, with| {
+            world.lay_all_but(id, &[item, with], &rules);
             world.queue(Intention::Strike {
                 body: id,
                 item,
@@ -1738,6 +1898,7 @@ mod tests {
     /// Folds a birch bark of 200 g on the body: the hollow.
     fn hollow(world: &mut World, rules: &Content, id: BodyId) -> ItemId {
         let bark = picked(world, rules, id, "birch_bark", 200);
+        world.lay_all_but(id, &[bark], rules);
         world.queue(Intention::Fold {
             body: id,
             item: bark,
@@ -1752,6 +1913,7 @@ mod tests {
         id: BodyId,
         (item, into): (ItemId, ItemId),
     ) -> Option<ItemId> {
+        world.lay_all_but(id, &[item, into], rules);
         world.queue(Intention::PutIn {
             body: id,
             item,
@@ -1833,6 +1995,8 @@ mod tests {
         // frees no arm, the arms holding loose food alone.
         let bark = hollow(&mut world, &rules, id);
         assert_eq!(put(&mut world, &rules, id, (flint, bark)), Some(flint));
+        // Its berries, laid at its feet for the gesture, taken up again.
+        world.lay_all_but(id, &[berries, flint], &rules);
         assert_eq!(world.hollow_room_g(bark, &rules), 2070);
         assert_eq!(body(&world, id).stowed_g(), 0);
         assert_eq!(body(&world, id).food_room_g(&rules.movement), 500);
@@ -1842,6 +2006,7 @@ mod tests {
         assert_eq!(put(&mut world, &rules, id, (log, bark)), None);
         assert_eq!(put(&mut world, &rules, id, (bark, bark)), None);
         let leaf = picked(&mut world, &rules, id, "butterbur_leaf", 50);
+        world.lay_all_but(id, &[leaf], &rules);
         world.queue(Intention::Fold {
             body: id,
             item: leaf,
@@ -1851,7 +2016,10 @@ mod tests {
     }
 
     #[test]
-    fn a_hollow_let_go_spills_what_it_held_and_a_thing_taken_in_hand_is_out_of_it() {
+    fn a_hollow_laid_down_keeps_what_it_holds_and_a_thing_taken_in_hand_is_out_of_it() {
+        // D57, amended 28 November 2026 (free hands): a thing laid at
+        // one's feet is set down, not thrown. Before, what a hollow held
+        // fell out of it when it was let go.
         let rules = rules();
         let (mut world, id, ..) = by_a_birch(&rules);
         let bark = hollow(&mut world, &rules, id);
@@ -1868,7 +2036,7 @@ mod tests {
         world.advance(1, &rules, &mut events);
         assert_eq!(world.item(nuts).unwrap().within(), None);
         assert_eq!(body(&world, id).stowed_g(), 800);
-        // The hollow dropped, what it held lies on the ground with it.
+        // The hollow laid down, what it holds lies on the ground in it.
         world.queue(Intention::Drop {
             body: id,
             item: bark,
@@ -1877,10 +2045,105 @@ mod tests {
         let here = body(&world, id).pos();
         assert_eq!(world.item(bark).unwrap().pos(), Some(here));
         assert_eq!(world.item(berries).unwrap().pos(), Some(here));
-        assert_eq!(world.item(berries).unwrap().within(), None);
+        assert_eq!(world.item(berries).unwrap().within(), Some(bark));
         let b = body(&world, id);
         assert_eq!((b.food_g(), b.stowed_g()), (100, 0));
         assert!(b.has(nuts) && !b.has(berries));
+        // Taken up again, it comes with what it holds: one thing to take.
+        world.queue(Intention::PickUp {
+            body: id,
+            item: bark,
+        });
+        world.advance(1, &rules, &mut events);
+        let b = body(&world, id);
+        assert!(b.has(bark) && b.has(berries));
+        assert_eq!(world.item(berries).unwrap().within(), Some(bark));
+        assert_eq!((b.food_g(), b.stowed_g()), (900, 800));
+        // A thing taken from a hollow lying on the ground is out of it.
+        world.queue(Intention::Drop {
+            body: id,
+            item: bark,
+        });
+        world.advance(1, &rules, &mut events);
+        world.queue(Intention::Drop {
+            body: id,
+            item: nuts,
+        });
+        world.advance(1, &rules, &mut events);
+        world.queue(Intention::PickUp {
+            body: id,
+            item: berries,
+        });
+        world.advance(1, &rules, &mut events);
+        assert!(body(&world, id).has(berries) && !body(&world, id).has(bark));
+        assert_eq!(world.item(berries).unwrap().within(), None);
+    }
+
+    #[test]
+    fn a_gesture_of_the_hands_is_refused_to_arms_that_hold_anything_else() {
+        // D57, amended 28 November 2026, the project lead: "with full
+        // arms the hands are not free; one cannot do an action."
+        let rules = rules();
+        let (mut world, id, chunk, tree) = by_a_birch(&rules);
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        let nuts = picked(&mut world, &rules, id, "hazelnuts", 448);
+        let refused = |world: &mut World, intention: Intention| {
+            let mut events = Vec::new();
+            world.queue(intention);
+            world.advance(1, &rules, &mut events);
+            events.iter().any(|e| {
+                matches!(
+                    e,
+                    Event::GestureRefused {
+                        reason: Refusal::HandsFull,
+                        ..
+                    }
+                )
+            })
+        };
+        let cut = Intention::Cut {
+            body: id,
+            with: flint,
+            chunk,
+            tree,
+            part: Part::Trunk,
+        };
+        assert!(refused(&mut world, cut.clone()), "nuts in its arms");
+        assert!(body(&world, id).making().is_none());
+        assert_eq!(world.in_the_way(id, &[flint]), Some(nuts));
+        // The nuts laid at its feet, its hands are free: it cuts.
+        world.lay_all_but(id, &[flint], &rules);
+        assert_eq!(world.in_the_way(id, &[flint]), None);
+        assert!(!refused(&mut world, cut));
+        let bark = gesture_ends(&mut world, &rules, id).expect("bark");
+        // A fold of the bark with the flint in its arms: refused; a
+        // taking up is made with loaded arms.
+        assert!(refused(
+            &mut world,
+            Intention::Fold {
+                body: id,
+                item: bark
+            }
+        ));
+        world.queue(Intention::PickUp {
+            body: id,
+            item: nuts,
+        });
+        world.advance(1, &rules, &mut Vec::new());
+        assert!(body(&world, id).has(nuts) && body(&world, id).has(flint));
+        // The hollow put into and what it holds are things of a put-in:
+        // a thing lying in the hollow is not in the way, a thing in a
+        // hollow that is in the way is laid down with its hollow.
+        world.lay_all_but(id, &[bark], &rules);
+        world.queue(Intention::Fold {
+            body: id,
+            item: bark,
+        });
+        gesture_ends(&mut world, &rules, id).expect("folded");
+        assert_eq!(put(&mut world, &rules, id, (nuts, bark)), Some(nuts));
+        let berries = picked(&mut world, &rules, id, "berries", 100);
+        assert_eq!(world.in_the_way(id, &[berries, bark]), None);
+        assert_eq!(world.in_the_way(id, &[berries]), Some(bark));
     }
 
     #[test]
@@ -1964,6 +2227,7 @@ mod tests {
         (id, with): (BodyId, ItemId),
         (chunk, tree, part): (ChunkPos, TreeKey, Part),
     ) -> (Option<String>, Vec<Event>) {
+        world.lay_all_but(id, &[with], rules);
         world.queue(Intention::Cut {
             body: id,
             with,
@@ -2212,6 +2476,7 @@ mod tests {
         assert_eq!(added, 2);
         // A cut of it finds no tree: refused, and nothing comes.
         let mut events = Vec::new();
+        world.lay_all_but(id, &[flint], &rules);
         world.queue(Intention::Cut {
             body: id,
             with: flint,

@@ -9,7 +9,9 @@
         the gestures of the hands by kind: in a trial of the hands or not,
         with something coming of them, leading to food put in a hollow or
         to nothing; the deeds seen and kept, the bark lifted, the trees
-        felled; the people who worked most; what the kept trials did
+        felled; the things laid at the feet to free the hands and what
+        became of them; the deeds "not as told"; the trials kept by their
+        one verdict; the people who worked most; what the kept trials did
         afterwards
 
 The story leaves out the news of every evening (told, heard, company)
@@ -134,8 +136,12 @@ def gestures(path, top):
     """The work of the hands: what belonged to a trial, what led to food."""
     wanted = (
         '"gestured"', "tree_fell", "bark_lifted", "Trying {", "way: Hands", "Untried", '"carry"',
-        "step: Began", "work_stopped", "DeedSeen", "DeedKept",
+        "step: Began", "work_stopped", "DeedSeen", "DeedKept", "NotAsTold", "Laid",
     )
+    # Free hands and "not as told" (28 November 2026): the things laid at
+    # the feet for a gesture and what became of them; the deeds done for
+    # what they give on a thing that did not give it.
+    laid, amiss = Counter(), Counter()
     lifted, seen, kept_own, kept_left = [0], Counter(), Counter(), Counter()
     spans = defaultdict(list)  # body -> [start, end, from a problem, kept, on a tale]
     done, days, felled, short_cut = [], set(), Counter(), [0]
@@ -154,6 +160,15 @@ def gestures(path, top):
                 lifted[0] += 1
             elif what["type"] == "work_stopped":
                 food.add(what["gives"])
+        elif what.startswith("NotAsTold"):
+            amiss[body] += 1
+        elif what.startswith("Laid"):
+            name = what.split(" ", 1)[0]
+            if name == "LaidBack" and "late: true" in what:
+                laid["LaidBack, late"] += 1
+            if name == "LaidLost":
+                name = "LaidLost, gone" if "by: None" in what else "LaidLost, by another"
+            laid[name] += 1
         elif what.startswith("DeedSeen"):
             seen[body] += 1
         elif what.startswith("DeedKept"):
@@ -259,6 +274,16 @@ def gestures(path, top):
         f"left by a trial not kept {sum(kept_left.values())} by {len(kept_left)} people)"
     )
     print(f"bark pieces lifted: {lifted[0]}; trees felled: {sum(felled.values())} by {len(felled)} people")
+    print(
+        f"free hands: {laid['Laid']} things laid at the feet for a gesture, "
+        f"{laid['LaidBack']} taken up again ({laid['LaidBack, late']} after going out of the hands' sight), "
+        f"{laid['LaidLeft']} left behind, {laid['LaidLost, by another']} taken by another, "
+        f"{laid['LaidLost, gone']} gone where they lay, {laid['LaidLetBe']} let be"
+    )
+    print(
+        f"not as told (a deed done for what it gives, on a thing that did not give it): "
+        f"{sum(amiss.values())} by {len(amiss)} people"
+    )
     print(f"\npeople with a gesture: {len(people)}; person-journées seen in the events: {len(days)}")
     trials = [s for body in spans for s in spans[body]]
     lengths = sorted((s[1] - s[0]) for s in trials if s[1] is not None)

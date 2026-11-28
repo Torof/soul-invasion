@@ -220,6 +220,37 @@ pub struct HandsProbe {
     pub deeds_kept_left: u32,
     /// Pieces of bark lifted off trunks (D57, amended 28 November 2026).
     pub barks_lifted: u32,
+    /// The trials of the hands ended judged, by their one verdict (D50
+    /// and D57, amended 28 November 2026): (kept, not kept).
+    pub trials_judged: (u32, u32),
+    /// The deeds done for what they give on a thing that did not give it
+    /// into the hands, remembered of that thing (D57, amended 28
+    /// November 2026).
+    pub not_as_told: u32,
+    /// Free hands (D57, amended 28 November 2026): the things laid at
+    /// the feet for a gesture.
+    pub free_hands: FreeHands,
+}
+
+/// What became of the things laid at the feet to free the hands for a
+/// gesture (D57, amended 28 November 2026).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FreeHands {
+    /// Things laid down.
+    pub laid: u32,
+    /// Taken up again.
+    pub taken_back: u32,
+    /// Of them, after the body had gone beyond its hands' sight of them.
+    pub taken_back_late: u32,
+    /// Left behind: the body went beyond its hands' sight of them.
+    pub left: u32,
+    /// Taken by another body.
+    pub taken_by_another: u32,
+    /// Gone where they lay: eaten, spoiled, torn.
+    pub gone: u32,
+    /// Let be: not wanted any more, or not carried with what was
+    /// preferred.
+    pub let_be: u32,
 }
 
 /// A gesture ended, as the round's figures need it.
@@ -353,9 +384,31 @@ impl HandsProbe {
                     self.trying.remove(body);
                 }
             }
-            News::Tried { body, .. } | News::Untried { body, .. } => {
+            News::Tried {
+                body, way, kept, ..
+            } => {
+                self.trying.remove(body);
+                if *way == Way::Hands {
+                    if *kept {
+                        self.trials_judged.0 += 1;
+                    } else {
+                        self.trials_judged.1 += 1;
+                    }
+                }
+            }
+            News::Untried { body, .. } => {
                 self.trying.remove(body);
             }
+            News::NotAsTold { .. } => self.not_as_told += 1,
+            News::Laid { .. } => self.free_hands.laid += 1,
+            News::LaidBack { late, .. } => {
+                self.free_hands.taken_back += 1;
+                self.free_hands.taken_back_late += u32::from(*late);
+            }
+            News::LaidLeft { .. } => self.free_hands.left += 1,
+            News::LaidLost { by: Some(_), .. } => self.free_hands.taken_by_another += 1,
+            News::LaidLost { by: None, .. } => self.free_hands.gone += 1,
+            News::LaidLetBe { .. } => self.free_hands.let_be += 1,
             News::DeedSeen { .. } => self.deeds_seen += 1,
             News::DeedKept { own: true, .. } => self.deeds_kept_own += 1,
             News::DeedKept { own: false, .. } => self.deeds_kept_left += 1,
@@ -405,6 +458,18 @@ impl HandsProbe {
             "deeds_kept_own": self.deeds_kept_own,
             "barks_lifted": self.barks_lifted,
             "trees_felled": self.felled.len(),
+            "trials_kept": self.trials_judged.0,
+            "trials_not_kept": self.trials_judged.1,
+            "not_as_told": self.not_as_told,
+            "free_hands": {
+                "laid": self.free_hands.laid,
+                "taken_back": self.free_hands.taken_back,
+                "taken_back_late": self.free_hands.taken_back_late,
+                "left": self.free_hands.left,
+                "taken_by_another": self.free_hands.taken_by_another,
+                "gone": self.free_hands.gone,
+                "let_be": self.free_hands.let_be,
+            },
         })
     }
 
@@ -1463,6 +1528,17 @@ mod tests {
         probe.deeds_seen = 3;
         probe.deeds_kept_own = 2;
         probe.deeds_kept_left = 1;
+        probe.trials_judged = (2, 5);
+        probe.not_as_told = 7;
+        probe.free_hands = FreeHands {
+            laid: 9,
+            taken_back: 6,
+            taken_back_late: 1,
+            left: 2,
+            taken_by_another: 1,
+            gone: 1,
+            let_be: 1,
+        };
         assert_eq!(
             probe.json(&[], 4, 1)["work"],
             json!({
@@ -1473,6 +1549,18 @@ mod tests {
                 "deeds_kept_own": 2,
                 "barks_lifted": 1,
                 "trees_felled": 0,
+                "trials_kept": 2,
+                "trials_not_kept": 5,
+                "not_as_told": 7,
+                "free_hands": {
+                    "laid": 9,
+                    "taken_back": 6,
+                    "taken_back_late": 1,
+                    "left": 2,
+                    "taken_by_another": 1,
+                    "gone": 1,
+                    "let_be": 1,
+                },
             })
         );
     }

@@ -1481,6 +1481,17 @@ pub struct Hands {
     /// 2026: seen is not kept): the oldest goes when one more comes.
     #[serde(default = "Hands::default_seen_kept")]
     pub seen_kept: u32,
+    /// The things on which a deed done for what it gives did not give it
+    /// into its hands that a body remembers, at most (D57, amended 28
+    /// November 2026: "told bark, here it gave no bark"): the oldest goes
+    /// when one more comes. 0: none remembered.
+    #[serde(default = "Hands::default_amiss_kept")]
+    pub amiss_kept: u32,
+    /// The things it laid at its feet to free its hands that a body
+    /// remembers, at most (D57, amended 28 November 2026): the oldest
+    /// goes when one more comes.
+    #[serde(default = "Hands::default_laid_kept")]
+    pub laid_kept: u32,
     /// What a body sees (the project lead, 25 November 2026: "on ne coupe
     /// pas avec une baie"): the edge from which a thing looks like it
     /// could cut.
@@ -1702,6 +1713,8 @@ impl Hands {
             loose_g_per_litre: Self::default_loose_g_per_litre(),
             failures_kept: Self::default_failures_kept(),
             seen_kept: Self::default_seen_kept(),
+            amiss_kept: Self::default_amiss_kept(),
+            laid_kept: Self::default_laid_kept(),
             edge_seen: Self::default_edge_seen(),
             supple_seen: Self::default_supple_seen(),
             trees: None,
@@ -1721,6 +1734,14 @@ impl Hands {
     }
 
     fn default_seen_kept() -> u32 {
+        32
+    }
+
+    fn default_amiss_kept() -> u32 {
+        32
+    }
+
+    fn default_laid_kept() -> u32 {
         32
     }
 
@@ -1757,9 +1778,11 @@ impl Hands {
             || !(1..=2000).contains(&self.loose_g_per_litre)
             || self.failures_kept > 64
             || self.seen_kept > 64
+            || self.amiss_kept > 64
+            || self.laid_kept > 64
         {
             return Err(ContentError::Needs(
-                "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000, failures_kept and seen_kept at most 64",
+                "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000, failures_kept, seen_kept, amiss_kept and laid_kept at most 64",
             ));
         }
         if let Some(trees) = &self.trees {

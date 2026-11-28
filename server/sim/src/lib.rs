@@ -929,6 +929,10 @@ pub enum Refusal {
     /// The body can eat no more today: its reserve is full, or it ate
     /// the day's ceiling.
     Sated,
+    /// Its arms hold other things than those of the gesture (D57, amended
+    /// 28 November 2026, the project lead: "with full arms the hands are
+    /// not free; one cannot do an action").
+    HandsFull,
 }
 
 /// What a body that stopped for good short of its target sees barring
@@ -4120,11 +4124,19 @@ impl World {
                 continue;
             };
             match item.place {
-                Place::Ground { pos } => events.push(Event::ItemRemoved {
-                    item: id,
-                    at: pos,
-                    version: self.chunk_version(pos.chunk()),
-                }),
+                Place::Ground { pos } => {
+                    // What lay in it lies on the ground, in nothing.
+                    for thing in self.inside_on_ground(id, pos) {
+                        if let Some(thing) = self.items.get_mut(&thing) {
+                            thing.within = None;
+                        }
+                    }
+                    events.push(Event::ItemRemoved {
+                        item: id,
+                        at: pos,
+                        version: self.chunk_version(pos.chunk()),
+                    });
+                }
                 Place::Carried { body } => {
                     if let Some(index) = self.index_of(body) {
                         // A hollow torn lets fall what it held (D57,
@@ -4332,7 +4344,18 @@ impl World {
             }
             Err(reason) => return Self::refuse(events, id, ItemAct::PickUp, item, reason),
         };
-        let mass = self.item_or_kept(item).map_or(0, Item::mass_g);
+        // A hollow lying with things in it is taken up with them (D57,
+        // amended 28 November 2026): one thing to take, as heavy as all
+        // of it.
+        let inside = self.inside_on_ground(item, pos);
+        let within_g = inside
+            .iter()
+            .filter_map(|i| self.item(*i))
+            .fold(0_u32, |sum, i| sum.saturating_add(i.mass_g));
+        let mass = self
+            .item_or_kept(item)
+            .map_or(0, Item::mass_g)
+            .saturating_add(within_g);
         let food = self
             .item_or_kept(item)
             .and_then(|i| rules.material(&i.material))
@@ -4385,8 +4408,11 @@ impl World {
         } else {
             if let Some(taken) = self.items.get_mut(&item) {
                 taken.place = Place::Carried { body: id };
+                // Taken out of the hollow it lay in, if any.
+                taken.within = None;
                 self.lift(item, pos.chunk());
             }
+            self.take_inside(index, (&inside, pos), events);
             false
         };
         let body = &mut self.bodies[index];
@@ -4421,9 +4447,10 @@ impl World {
             return Self::refuse(events, id, ItemAct::Drop, item, reason);
         }
         self.wake(index, events);
-        // What a hollow held falls with it (D57, amended 27 November
-        // 2026).
-        self.spill(index, item, events);
+        // What a hollow holds is laid down with it, still in it (D57,
+        // amended 28 November 2026: a thing laid at one's feet is set
+        // down, not thrown; before, what it held fell out of it).
+        self.set_down_inside(index, item, events);
         let at = self.bodies[index].pos();
         let was_held = self.bodies[index].held == Some(item);
         self.bodies[index].let_go(item);

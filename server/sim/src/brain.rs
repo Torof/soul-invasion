@@ -1002,7 +1002,7 @@ fn judge_due(
     if kept {
         mind.changed_day = Some(day);
     } else {
-        handwork::leave_not_kept(rules, mind, trial);
+        handwork::leave_not_kept(mind, trial);
     }
     mind.trial = None;
     mind.judged = Some(judged);
@@ -1893,6 +1893,71 @@ pub enum News {
         deed: Deed,
         /// Kept as its own kept trial; else left by a trial not kept.
         own: bool,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` did `deed` for what it gives on a thing that did not give
+    /// it into its hands (D57, amended 28 November 2026: "told bark,
+    /// here it gave no bark"): remembered of that thing.
+    NotAsTold {
+        /// Who.
+        body: BodyId,
+        /// The deed.
+        deed: Deed,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` laid `item` at its feet to free its hands for a gesture
+    /// (D57, amended 28 November 2026).
+    Laid {
+        /// Who.
+        body: BodyId,
+        /// The thing laid.
+        item: ItemId,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` took up again `item` it had laid at its feet; `late`:
+    /// after it had gone beyond its hands' sight of it.
+    LaidBack {
+        /// Who.
+        body: BodyId,
+        /// The thing.
+        item: ItemId,
+        /// It had left it behind meanwhile.
+        late: bool,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` went beyond its hands' sight of `item` it had laid at its
+    /// feet: left behind, as any thing lying.
+    LaidLeft {
+        /// Who.
+        body: BodyId,
+        /// The thing.
+        item: ItemId,
+        /// The tick.
+        at: u64,
+    },
+    /// `item` that `body` had laid at its feet lies there no more: taken
+    /// by another (`by`), or eaten, spoiled or torn.
+    LaidLost {
+        /// Who laid it.
+        body: BodyId,
+        /// The thing.
+        item: ItemId,
+        /// Who carries it now, if anyone.
+        by: Option<BodyId>,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` let `item` it had laid at its feet be: it does not want it
+    /// any more, or could not carry it with what it preferred.
+    LaidLetBe {
+        /// Who.
+        body: BodyId,
+        /// The thing.
+        item: ItemId,
         /// The tick.
         at: u64,
     },
@@ -7026,14 +7091,15 @@ impl Brains {
                 mind.calling = None;
                 if let Some(t) = mind.trial.take() {
                     // Ended unjudged: no lesson, no credit moved. A
-                    // trial of the hands ends as one not kept (amended
-                    // 28 November 2026): what served stays, and what it
-                    // was after is dropped. Before, the deeds heard
-                    // stayed its aim with no trial, done again without
-                    // end, and a hollow that had served was lost.
-                    handwork::leave_not_kept(rules, mind, &t);
-                    if t.way == Way::Hands {
-                        mind.handwork.drop_aim();
+                    // trial of the hands ends by its one verdict
+                    // (amended 28 November 2026): kept if a chain of it
+                    // served, a success learnt and told; else unjudged,
+                    // and what it was after is dropped. Before, the
+                    // deeds heard stayed its aim with no trial, done
+                    // again without end, and a hollow that had served
+                    // was lost.
+                    if let Some(news) = handwork::cut_short(rules, (id, today, now), mind, &t) {
+                        self.news.push(news);
                     }
                 }
                 let before = mind.ways;
@@ -7059,7 +7125,9 @@ impl Brains {
             } else if child {
                 // A child takes its mother's home, as every nightfall.
                 mind.ways.home = to;
-            } else if let Some((_, news)) = go_to_live(id, mind, now) {
+            } else if let Some((_, news)) =
+                go_to_live(rules, id, mind, (today, now), &mut self.news)
+            {
                 self.news.push(news);
             }
             if let Some(news) = set_goal(world, rules, id, mind, to) {
@@ -7230,7 +7298,8 @@ impl Brains {
             return;
         };
         let now = world.tick().0;
-        if let Some((to, tried)) = go_to_live(id, mind, now) {
+        if let Some((to, tried)) = go_to_live(rules, id, mind, (today(world), now), &mut self.news)
+        {
             self.news.push(tried);
             if let Some(news) = set_goal(world, rules, id, mind, to) {
                 self.news.push(news);
@@ -11716,8 +11785,19 @@ fn believe_caller(
 /// `id` goes to live at the home it called (D56, amended 24 November
 /// 2026): its home trial begins. The home, and the news of the trial, if
 /// it held a call.
-fn go_to_live(id: BodyId, mind: &mut Mind, now: u64) -> Option<(Pos, News)> {
+fn go_to_live(
+    rules: &Content,
+    id: BodyId,
+    mind: &mut Mind,
+    (day, now): (u64, u64),
+    news: &mut Vec<News>,
+) -> Option<(Pos, News)> {
     let c = mind.calling.take()?;
+    // A trial under way is cut short by the one that begins (amended 28
+    // November 2026): one of the hands ends by its one verdict.
+    if let Some(t) = mind.trial.take() {
+        news.extend(handwork::cut_short(rules, (id, day, now), mind, &t));
+    }
     let mut trial = c.trial;
     trial.before = mind.ways;
     mind.ways.home = c.to;
