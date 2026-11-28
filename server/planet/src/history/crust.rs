@@ -29,11 +29,11 @@ pub(super) struct Rock {
     pub(super) cool: i16,
     /// How far stretching has lowered it in all, m.
     pub(super) sunk: i16,
-    /// A continent's shore at a passive margin: how far the old floor
-    /// beside it has bent down under its own weight, m
-    /// (`trenches::margins_give_way`). The shore keeps it: silt that
-    /// builds the shore out takes it along.
-    pub(super) sag: i16,
+    /// A continent's shore at a passive margin: how hard the floor beside
+    /// it was pushed on it at the last step, per mille of what the
+    /// margin's section holds (`trenches::margins_give_way`; 0: no
+    /// margin, or not pushed). Written anew at each step.
+    pub(super) pressed: i16,
     /// The sediment lying on it, m of thickness (version 16): what
     /// erosion took from higher ground and laid here. On a continent its
     /// lift is in `high` already; on the ocean floor it raises the bed

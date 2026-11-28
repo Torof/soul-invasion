@@ -529,8 +529,10 @@ fn the_supercontinent_is_ringed_by_trenches_and_the_plates_move_from_the_start()
 }
 
 #[test]
-fn an_old_passive_margin_bends_step_after_step_then_gives_way() {
+fn a_quiet_old_passive_margin_holds() {
     use history::What;
+    // (Version 17. Until then the floor bent by the clock and gave way
+    // at step 20 of this scene.)
     // A continent alone on its plate with the old floor around it, two
     // ocean plates beyond, the forces free (the bench's `margin`).
     let sphere = Sphere::new();
@@ -563,27 +565,16 @@ fn an_old_passive_margin_bends_step_after_step_then_gives_way() {
         ..Settings::default()
     };
     let h = history::run_scene(1, &settings, &sphere, &scene);
-    let born: Vec<(usize, history::Event)> = h
-        .journal
-        .iter()
-        .enumerate()
-        .flat_map(|(t, events)| events.iter().map(move |&e| (t, e)))
-        .filter(|(_, e)| e.what == What::BornOfTrench)
-        .collect();
-    let &(t, first) = born.first().expect("a trench is born");
-    // Not at once: the floor is at its heaviest and takes a hundred
-    // million years to bend that far.
-    assert!(t >= 15, "the margin gave way at step {t}");
-    // Before, no floor sinks along the continent; after, the floor that
-    // left is a plate, and it sinks.
+    // Nothing pushes the floor on its continent: no trench is born in
+    // 150 My, and no floor sinks along the continent.
+    assert!(
+        h.journal
+            .iter()
+            .flatten()
+            .all(|e| e.what != What::BornOfTrench)
+    );
     let trench = Kind::Trench as u8 + 1;
-    let sinking = |t: usize| (0..CELLS).filter(|&c| h.kind[t][c] == trench).count();
-    assert_eq!(sinking(t - 1), 0);
-    assert!(h.plate[t].contains(&first.plate));
-    assert!(!h.plate[t - 1].contains(&first.plate));
-    assert!(sinking(t) > 0);
-    // The tear runs on along the margin.
-    assert!(sinking((t + 3).min(h.last())) > 2 * sinking(t));
+    assert!((0..CELLS).all(|c| h.kind[h.last()][c] != trench));
 }
 
 #[test]

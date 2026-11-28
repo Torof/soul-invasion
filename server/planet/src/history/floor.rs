@@ -132,7 +132,7 @@ pub(super) fn holes_and_gaps(world: &mut World) {
         high: 0,
         cool: 0,
         sunk: 0,
-        sag: 0,
+        pressed: 0,
         silt: 0,
         laid: NEVER,
         why: [0; CAUSES],

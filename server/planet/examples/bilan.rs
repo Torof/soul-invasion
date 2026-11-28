@@ -1382,26 +1382,35 @@ fn real(world: &Planet, settings: &Settings) -> Vec<(&'static str, Vec<i64>)> {
         along,
     ));
     // Trenches born at a passive margin, and plates welded, by quarter.
-    let mut born = vec![0_i64; 4];
-    let mut welded = vec![0_i64; 4];
-    for t in 1..=last {
-        let q = ((t - 1) * 4 / last).min(3);
-        born[q] += h.journal[t]
-            .iter()
-            .filter(|e| e.what == What::BornOfTrench)
-            .count() as i64;
-        welded[q] += h.journal[t]
-            .iter()
-            .filter(|e| e.what == What::EndedWelded)
-            .count() as i64;
-    }
+    let by_quarter = |whats: &[What]| -> Vec<i64> {
+        let mut n = vec![0_i64; 4];
+        for t in 1..=last {
+            n[((t - 1) * 4 / last).min(3)] += h.journal[t]
+                .iter()
+                .filter(|e| whats.contains(&e.what))
+                .count() as i64;
+        }
+        n
+    };
     rows.push((
         "trenches born at a passive margin, in each quarter of the history",
-        born,
+        by_quarter(&[What::BornOfTrench]),
     ));
     rows.push((
         "plates made one by a stopped collision, in each quarter of the history",
-        welded,
+        by_quarter(&[What::EndedWelded]),
+    ));
+    rows.push((
+        "plates born of a rift, in each quarter of the history",
+        by_quarter(&[What::BornOfRift]),
+    ));
+    rows.push((
+        "plates born cut off from their plate, in each quarter of the history",
+        by_quarter(&[What::BornCutOff]),
+    ));
+    rows.push((
+        "plates ended otherwise (a crumb, enclosed, no cell left), in each quarter of the history",
+        by_quarter(&[What::EndedCrumb, What::EndedEnclosed, What::EndedNoCell]),
     ));
     rows.push((
         "plates at steps 0, 1/4, 1/2, 3/4 and today",

@@ -44,11 +44,12 @@
 //!    a continent is accreted to its plate.
 //!    **A trench is a state** (version 14), not only a motion: where a
 //!    slab hangs it pulls by its weight however slowly the plates close,
-//!    and is lost only where they part. **And a trench is born**: the old
-//!    floor of a passive margin bends under its own weight step after
-//!    step, faster where it is pressed on its continent; bent far enough
-//!    it gives way, that floor is a plate of its own and begins to sink
-//!    (`trenches::margins_give_way`). An ocean that opened can close.
+//!    and is lost only where they part. **And a trench is born, for a
+//!    cause** (version 17): a passive margin gives way where the plates
+//!    push its floor on its continent harder than the margin's section
+//!    holds, two steps running; that floor is then a plate of its own
+//!    and begins to sink (`trenches::margins_give_way`). A quiet margin
+//!    holds however old it is. An ocean that opened can close.
 //! 6. **The break-up only opens.** Plates whose continents touch and have
 //!    not parted move as one while the forces press them together: a
 //!    boundary inside a continent exists only once it opens.

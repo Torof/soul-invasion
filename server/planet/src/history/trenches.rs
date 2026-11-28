@@ -22,31 +22,68 @@ pub(super) const ARC_KM: u32 = 340;
 pub(super) const DOCK_M: i64 = 500;
 pub(super) const ARC_ISLAND_M: i16 = 200;
 
-/// A passive margin's floor bends down under its own weight (version 14):
-/// by this much, m per million years, for a floor as heavy as a slab at
-/// full pull ([`slab_weight`]: nothing while the floor is too young to
-/// sink), when nothing presses it on its continent or pulls it off.
-pub(super) const SAG_M_MY: i64 = 10;
-/// Bent this far, m, the floor gives way: it tears from its continent
-/// and begins to sink under it.
-pub(super) const SAG_BREAK_M: i64 = 1_500;
+/// A margin gives way once the push across it has been more than its
+/// section holds for this step and the one before (`Rock::pressed`): a
+/// push of one step breaks nothing. Forced initiation takes some 100 to
+/// 150 km of convergence before the slab sinks by itself (Gurnis, Hall
+/// and Lavier 2004), a few million years at the plates' speeds: a step.
+/// The measure is kept per mille of the hold, up to this.
+pub(super) const PRESSED_MOST: i64 = 30_000;
 
-/// Step 11 (the margins). A trench is born (version 14). The floor of a
-/// passive margin is the oldest of its ocean: cold, heavier than the
-/// mantle under it, held up only by the plate it is part of. It bends
-/// down a little more at each step: the faster the heavier it is
-/// (older), faster where the floor pushes its continent along (the
-/// margin is pressed), slower or not at all where the continent drags
-/// its floor behind it (the margin is pulled). The push is read from the
-/// forces: what the mantle's drag on the continent takes to move it as
-/// it moves, less what the forces on the continent itself give, is what
-/// its floor gives it through the margin; a margin pressed as hard as a
-/// full slab pulls bends twice as fast. Bent far enough it gives way:
-/// the floor of that ocean, as far as it is one plate with the
-/// continent, is a plate of its own from then on, and a slab hangs
-/// where it gave way. Nothing else is decided here: the slab pulls like
-/// any slab, the floor sinks under the continent like any floor, and
-/// the tear runs on along the margin as the floor moves (`forces::look`).
+/// No ocean: the cell is not ocean floor.
+const NO_OCEAN: u32 = u32::MAX;
+
+/// A shore cell of a passive margin and the ocean it faces: the way
+/// from that floor to the shore, the oldest floor there, what the
+/// shore's section holds.
+struct Shore {
+    q: usize,
+    ocean: u32,
+    normal: V3,
+    age: i64,
+    holds: i64,
+}
+
+/// How far a force of the step before is looked for when its cell is no
+/// longer its plate's (the plates have turned since), cells.
+const EDGE_REACH: usize = 3;
+
+/// Step 11 (the margins). A trench is born, for a cause (version 17; a
+/// timer until then: the floor bent 10 m a My under its own weight and
+/// gave way at 1,500 m, so every margin of one age gave way together,
+/// and again at once ever after). An old passive margin does not give
+/// way by itself: its floor is heavy, but the plate it is part of is
+/// strong, and grows stronger with age (Cloetingh, Wortel and Vlaar
+/// 1989; Mueller and Phillips 1991; Stern 2004: no known case in 66
+/// My). Two things begin a trench there (Stern 2004; Stern and Gerya
+/// 2018; Crameri et al. 2020):
+///
+/// 1. **The plates push it** (induced initiation). The floor of an
+///    ocean and the rest of its plate are two sides joined along the
+///    margin. Each side would turn as the forces on it alone turn it,
+///    against the mantle's drag (as `forces::parting` reads the two
+///    sides of a rift's line); where they would close on each other,
+///    the force that crosses the margin for them to go on as one is that
+///    speed times the drag they share. The margin's section holds as a
+///    plate's section holds a rift's tension (`rifts::holds`, the same
+///    [`Settings::crust_holds`]): each shore cell as the weaker of its
+///    crust and of the floor beside it (the floor by the square root of
+///    its age: a young margin is weak, an old one strong). Where the
+///    push is more than the section holds, at this step and the one
+///    before, the margin gives way.
+/// 2. **A neighbouring trench runs on along it** (lateral propagation).
+///    Where a slab of this same floor already hangs a cell away (the
+///    floor sinks under another plate there), its weight tears the floor
+///    off its own continent's shore next to it, unless the two sides
+///    would part there (the rule of `forces::look` for a trench that
+///    goes on).
+///
+/// Either way the floor must be heavy enough to sink ([`slab_weight`]).
+/// Then, as before: the floor of that ocean, as far as it is one plate
+/// with the continent, is a plate of its own, and a slab hangs where it
+/// gave way; the slab pulls like any slab, the floor sinks under the
+/// continent like any floor, and the tear runs on along the margin as
+/// the floor moves (`forces::look`).
 pub(super) fn margins_give_way(world: &mut World) {
     let s = world.s;
     let sphere = world.sphere;
@@ -57,103 +94,171 @@ pub(super) fn margins_give_way(world: &mut World) {
     let plate = &mut world.plate;
     let rock = &mut world.rock;
     let hung = &mut world.hung;
+    let heat = &world.heat;
     let (t, now_my) = (world.step.t, world.step.now_my);
     paint(&*land, top, &mut *plate, &mut *rock);
+    // Each ocean: the floor of one plate in one piece.
+    let mut ocean = vec![NO_OCEAN; CELLS];
+    let mut oceans: Vec<u8> = Vec::new();
+    for c0 in 0..CELLS {
+        if rock[c0].class != OCEAN || ocean[c0] != NO_OCEAN {
+            continue;
+        }
+        let id = oceans.len() as u32;
+        oceans.push(plate[c0]);
+        ocean[c0] = id;
+        let mut stack = vec![c0];
+        while let Some(c) = stack.pop() {
+            for &(m, _) in &sphere.links[c] {
+                let m = m as usize;
+                if ocean[m] == NO_OCEAN && rock[m].class == OCEAN && plate[m] == plate[c] {
+                    ocean[m] = id;
+                    stack.push(m);
+                }
+            }
+        }
+    }
     // The margins: a continent's shore with floor of its own plate
-    // beside it; the way from the floor to the shore, the oldest floor
-    // there.
+    // beside it; for each ocean it faces, the way from that floor to
+    // the shore, the oldest floor there and what the shore's section
+    // holds.
     let shore = |r: &Rock| r.class == CONTINENT || r.class == TERRANE && r.margins & ACCRETED != 0;
-    let mut margin: Vec<(usize, V3, i64)> = Vec::new();
-    let mut shores = [0_i64; MAXP];
+    let mut margin: Vec<Shore> = Vec::new();
     for q in 0..CELLS {
         if top[q] == NO_BIT || !shore(&rock[q]) {
             continue;
         }
         let x = sphere.centre[q];
-        let mut from = [0_i64; 3];
-        let mut age = 0;
-        for &(m, _) in &sphere.links[q] {
-            let m = m as usize;
-            if plate[m] == plate[q] && rock[m].class == OCEAN {
+        let mut faced: Vec<u32> = sphere.links[q]
+            .iter()
+            .map(|&(m, _)| m as usize)
+            .filter(|&m| plate[m] == plate[q] && rock[m].class == OCEAN)
+            .map(|m| ocean[m])
+            .collect();
+        faced.sort_unstable();
+        faced.dedup();
+        for o in faced {
+            let mut from = [0_i64; 3];
+            let mut age = 0;
+            let mut floor_holds = 0;
+            for &(m, _) in &sphere.links[q] {
+                let m = m as usize;
+                if ocean[m] != o {
+                    continue;
+                }
                 from = add(from, sub(x, sphere.centre[m]));
                 age = age.max(i64::from(rock[m].born_my.saturating_sub(now_my)));
+                floor_holds = floor_holds.max(holds(heat[m], &rock[m], now_my, s.slab_age_my));
+            }
+            margin.push(Shore {
+                q,
+                ocean: o,
+                normal: normalize(tangent(x, from)),
+                age,
+                holds: floor_holds.min(holds(heat[q], &rock[q], now_my, s.slab_age_my)),
+            });
+        }
+    }
+    // The measure is the step's: a shore that is no margin now keeps none.
+    let before: Vec<i16> = land.cells.iter().map(|c| c.rock.pressed).collect();
+    for c in &mut land.cells {
+        c.rock.pressed = 0;
+    }
+    let mut gave: Vec<usize> = Vec::new();
+    if !margin.is_empty() {
+        // The forces on each side, as torques, and the drag on it: an
+        // ocean's floor on one side, the rest of its plate on the other.
+        let (cell_tq, edge_tq) = torques(
+            sphere,
+            s,
+            &*rock,
+            heat,
+            Edges {
+                slab: &edges_last.0,
+                suction: &edges_last.1,
+                ridge: &edges_last.2,
+                piles: &[],
+                bridges: &[],
+            },
+        );
+        let mut whole_tq = vec![[0_i64; 3]; MAXP];
+        let mut whole_drag = [0_i64; MAXP];
+        let mut floor_tq = vec![[0_i64; 3]; oceans.len()];
+        let mut floor_drag = vec![0_i64; oceans.len()];
+        for c in 0..CELLS {
+            let p = plate[c] as usize;
+            whole_tq[p] = add(whole_tq[p], cell_tq[c]);
+            if rock[c].class == OCEAN {
+                whole_drag[p] += 1000;
+                floor_drag[ocean[c] as usize] += 1000;
+            } else {
+                whole_drag[p] += 1000 + s.continent_drag;
             }
         }
-        if from != [0; 3] {
-            margin.push((q, normalize(tangent(x, from)), age));
-            shores[plate[q] as usize] += 1;
-        }
-    }
-    if margin.is_empty() {
-        return;
-    }
-    // What each plate's floor gives its crust through the margin, as a
-    // torque: the drag on the crust moving as it moves, less the forces
-    // on the crust itself.
-    let (cell_tq, edge_tq) = torques(
-        sphere,
-        s,
-        &*rock,
-        &world.heat,
-        Edges {
-            slab: &edges_last.0,
-            suction: &edges_last.1,
-            ridge: &edges_last.2,
-            piles: &[],
-            bridges: &[],
-        },
-    );
-    let mut own = vec![[0_i64; 3]; MAXP];
-    let mut drag = [0_i64; MAXP];
-    for c in 0..CELLS {
-        if rock[c].class != OCEAN {
-            let p = plate[c] as usize;
-            own[p] = add(own[p], cell_tq[c]);
-            drag[p] += 1000 + s.continent_drag;
-        }
-    }
-    for &(c, p, torque) in &edge_tq {
-        // A force at a plate's edge acts on the crust it finds there
-        // (the edges are those of the step before: where the plate has
-        // left the cell, the force is the floor's).
-        let c = c as usize;
-        let on_crust = if plate[c] == p {
-            rock[c].class != OCEAN
-        } else {
-            sphere.links[c]
-                .iter()
-                .find(|&&(m, _)| plate[m as usize] == p)
-                .is_some_and(|&(m, _)| rock[m as usize].class != OCEAN)
-        };
-        if on_crust {
-            own[p as usize] = add(own[p as usize], torque);
-        }
-    }
-    let v0 = s.mantle_drag_mm * 1000;
-    let given: Vec<V3> = (0..MAXP)
-        .map(|p| {
-            let w = world.omega[p];
-            let harder = if v0 > 0 { v0 + norm(w) } else { 1 };
-            sub(w.map(|v| v * drag[p] / 1000 * harder / v0.max(1)), own[p])
-        })
-        .collect();
-    // The floor bends, and gives way where it is bent far enough.
-    let full = s.slab_pull * 1000;
-    let mut gave: Vec<usize> = Vec::new();
-    for &(q, normal, age) in &margin {
-        let p = plate[q] as usize;
-        let push = dot(cross(given[p], sphere.centre[q]), normal) / shores[p];
-        let weight = slab_weight(age, s.slab_age_my);
-        let more = SAG_M_MY * s.step_my * weight / 1000 * (full + push).max(0) / full.max(1);
-        let r = &mut land.cells[top[q] as usize].rock;
-        r.sag = (i64::from(r.sag) + more).min(SAG_BREAK_M) as i16;
-        if more > 0 && i64::from(r.sag) >= SAG_BREAK_M {
-            gave.extend(
-                sphere.links[q]
+        for &(c, p, torque) in &edge_tq {
+            whole_tq[p as usize] = add(whole_tq[p as usize], torque);
+            // A force at a plate's edge acts on what it finds there of
+            // its plate (the edges are those of the step before: the
+            // plate may have left the cell).
+            let mut ring = vec![c as usize];
+            let mut found = None;
+            for _ in 0..=EDGE_REACH {
+                found = ring.iter().copied().filter(|&m| plate[m] == p).min();
+                if found.is_some() {
+                    break;
+                }
+                let mut next: Vec<usize> = ring
                     .iter()
-                    .map(|&(m, _)| m as usize)
-                    .filter(|&m| plate[m] as usize == p && rock[m].class == OCEAN),
-            );
+                    .flat_map(|&m| sphere.links[m].iter().map(|&(n, _)| n as usize))
+                    .collect();
+                next.sort_unstable();
+                next.dedup();
+                ring = next;
+            }
+            if let Some(m) = found
+                && rock[m].class == OCEAN
+            {
+                let o = ocean[m] as usize;
+                floor_tq[o] = add(floor_tq[o], torque);
+            }
+        }
+        let speeds = (s.mantle_drag_mm * 1000, s.speed_mm.1 * 1000);
+        let turn_of = |tq: V3, drag: i64| {
+            let w = tq.map(|v| v * 1000 / drag.max(1));
+            let u = norm(w);
+            if u > 0 {
+                w.map(|v| v * dragged(u, speeds.0).min(speeds.1) / u)
+            } else {
+                w
+            }
+        };
+        // What each ocean's margin holds along its whole section.
+        let mut section = vec![0_i64; oceans.len()];
+        for m in &margin {
+            section[m.ocean as usize] += m.holds;
+        }
+        for m in &margin {
+            let o = m.ocean as usize;
+            let p = oceans[o] as usize;
+            let rest_drag = whole_drag[p] - floor_drag[o];
+            let x = sphere.centre[m.q];
+            let floor_turn = turn_of(floor_tq[o], floor_drag[o]);
+            let rest_turn = turn_of(sub(whole_tq[p], floor_tq[o]), rest_drag);
+            let closing = dot(sub(cross(floor_turn, x), cross(rest_turn, x)), m.normal);
+            let shared = (i128::from(floor_drag[o]) * i128::from(rest_drag)
+                / i128::from((floor_drag[o] + rest_drag).max(1))) as i64;
+            let push = tension(closing, shared, section[o], s.crust_holds).min(PRESSED_MOST);
+            let i = top[m.q] as usize;
+            let r = &mut land.cells[i].rock;
+            r.pressed = r.pressed.max(push as i16);
+            if push >= 1000 && before[i] >= 1000 && slab_weight(m.age, s.slab_age_my) > 0 {
+                gave.extend(
+                    sphere.links[m.q]
+                        .iter()
+                        .map(|&(n, _)| n as usize)
+                        .filter(|&n| ocean[n] == m.ocean),
+                );
+            }
         }
     }
     // Where it has given way, its floor is a plate of its own.
@@ -447,7 +552,7 @@ pub(super) fn draw_floor(world: &mut World) {
                 r.high = ARC_ISLAND_M;
                 r.cool = 0;
                 r.sunk = 0;
-                r.sag = 0;
+                r.pressed = 0;
                 r.why = [0; CAUSES];
                 *made += area(q);
                 // The floor there is crust now.

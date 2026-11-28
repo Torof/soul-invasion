@@ -16,7 +16,7 @@
 //! still: an active margin, its arc), `arcs` (two ocean plates driven at
 //! each other: island arcs), `carried` (a continent carried 20 steps by
 //! its plate: a rigid piece), `margin` (a continent with old floor on
-//! its plate: the floor bends, gives way, a trench is born). To add one, write a function like these
+//! its plate, nothing pushing it: the margin holds). To add one, write a function like these
 //! and name it in `SCENES`.
 //!
 //! A scene runs on the planet's whole grid (its cell count is a
@@ -75,7 +75,7 @@ const SCENES: [(&str, &str, Write); 6] = [
     ),
     (
         "margin",
-        "a continent with old floor on its plate, the forces free",
+        "a continent with old floor on its plate, the forces free: the margin holds",
         margin,
     ),
 ];
@@ -125,10 +125,10 @@ fn plain(steps: usize) -> Settings {
 }
 
 /// One continent of 3,000 km across on its plate, three ocean plates
-/// around it, and the forces free: the lid warms the mantle under it, a
-/// trough begins and grows cell by cell, the plate is cut once it has
-/// crossed, and the ocean opens from where the trough is oldest (32
-/// steps: the pull is weak here, the whole takes 150 My).
+/// around it, and the forces free: the lid warms the mantle under it,
+/// but that alone pulls less than the plate's section holds, and no
+/// trench comes to pull (its margins, unpushed, hold): nothing tears in
+/// 160 My. Rifts are seen in the worlds, where slabs pull from step 0.
 fn rift(sphere: &Sphere) -> Written {
     Written {
         settings: plain(32),
@@ -221,11 +221,10 @@ fn carried(sphere: &Sphere) -> Written {
 }
 
 /// A continent of 2,800 km across alone on its plate with the old floor
-/// around it, two ocean plates beyond, and the forces free: the floor at
-/// its passive margin bends under its own weight step after step, gives
-/// way (the plates' count goes up by one: the floor is a plate of its
-/// own), and the trench runs on along the margin as that floor begins to
-/// sink.
+/// around it, two ocean plates beyond, and the forces free: nothing
+/// pushes the floor on its continent, and the margin holds for the 150
+/// My of the scene (version 17; until then the floor bent by the clock
+/// and gave way at step 20).
 fn margin(sphere: &Sphere) -> Written {
     Written {
         settings: plain(30),
