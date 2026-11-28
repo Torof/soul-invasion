@@ -64,8 +64,12 @@ pub const LIP: u8 = 128;
 /// thousandth of a km³): what wore is laid somewhere, all of it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Budget {
-    /// Worn off the continents: their relief, and their piles' roots.
+    /// Worn off the continents: crust taken off their top, and sediment
+    /// that lay on them taken up again.
     pub worn: i64,
+    /// Of it, crust (version 18: the rest was sediment already; nothing
+    /// is worn that is neither).
+    pub crust: i64,
     /// Laid on a continent's dry ground (a hollow that fills, a plain).
     pub on_land: i64,
     /// Laid on a continent's crust under the sea (a shelf, an inland sea).
@@ -563,7 +567,7 @@ pub(super) fn write(world: &mut World) {
     out_margins.push(rock.iter().map(|r| r.margins).collect::<Vec<u8>>());
     out_orogeny.push(rock.iter().map(|r| r.orogeny).collect::<Vec<u16>>());
     out_thick.push(rock.iter().map(|r| r.thick).collect::<Vec<u16>>());
-    out_high.push(rock.iter().map(|r| r.high).collect::<Vec<i16>>());
+    out_high.push(rock.iter().map(Rock::high).collect::<Vec<i16>>());
     out_silt.push(rock.iter().map(|r| r.silt).collect::<Vec<u16>>());
     out_laid.push(
         rock.iter()

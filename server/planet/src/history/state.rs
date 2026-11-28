@@ -6,7 +6,6 @@ use super::*;
 
 /// The planet while its history runs.
 pub(crate) struct World<'a> {
-    pub(super) seed: u64,
     pub(super) s: &'a Settings,
     pub(super) sphere: &'a Sphere,
     // The supercontinent's shape, kept for the record.
@@ -28,6 +27,11 @@ pub(crate) struct World<'a> {
     /// The cells under which a slab of ocean floor hangs in the mantle:
     /// the trenches as they stood at the last step (`forces::look`).
     pub(super) hung: Vec<bool>,
+    /// Under a collision's front, the plate whose slab still hangs
+    /// there and the pull it has left, ‰ (`forces::look`,
+    /// [`CRUST_FLOATS_KM2`]); for a trench, its plate and its weight.
+    pub(super) slab_of: Vec<u8>,
+    pub(super) slab_left: Vec<i16>,
     pub(super) hotspots: Vec<V3>,
     pub(super) plumes: Vec<V3>,
     pub(super) spent: Vec<bool>,
@@ -72,7 +76,6 @@ pub(crate) struct World<'a> {
     /// The tension across each plate's most pulled line at the last step,
     /// ‰ of what its section holds (a trough begins where it has lasted).
     pub(super) pulled: [i64; MAXP],
-    pub(super) arc_steps: u8,
     /// The sea's level at the last step it was read, m above the datum
     /// (`wear::level`), and the cells of the grid it reaches.
     pub(super) sea: i64,
@@ -291,6 +294,8 @@ impl Step {
                 ridge: Vec::new(),
                 front: Vec::new(),
                 hung: Vec::new(),
+                slab_of: Vec::new(),
+                slab_left: Vec::new(),
             },
             margin_of: Vec::new(),
             piles: Vec::new(),

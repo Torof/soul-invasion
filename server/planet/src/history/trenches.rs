@@ -5,22 +5,30 @@
 
 use super::*;
 
-/// Share of an arc's riding edge that becomes arc crust, per mille.
-pub(super) const ARC_SHARE: u64 = 200;
-
-/// An arc builds volcanoes on the plate riding over a sinking floor:
-/// toward this height, m, at their line ([`ARC_LINE_KM`] from the coast,
-/// this half-width) and on the coast range, by [`ARC_RATE`] ‰ of what is
-/// missing each step, as far as [`ARC_KM`].
-pub(super) const ARC_TOP_M: i64 = 2_200;
-pub(super) const ARC_COAST_M: i64 = 700;
-pub(super) const ARC_RATE: i64 = 100;
+/// An arc is crust added over a sinking floor (version 18; until then
+/// a continent's arc was a height aimed at, 2,200 m, with no crust
+/// under it, and an island arc was born whole, 25 km thick, on one cell
+/// in five drawn by lot). Each km² of floor swallowed adds this many m
+/// of crust times a km² to the plate riding over it: the Earth's arcs
+/// add some 3 km³ of crust a year (Stern and Scholl 2010; 30 to 130
+/// km³ a km of arc and a My, Reymer and Schubert 1984, Jicha and
+/// Jagoutz 2015) for some 3 km² of floor swallowed a year (Bird 2003).
+/// Under a continent it is added around the arc's line, where the slab
+/// is deep enough to melt the mantle above it ([`ARC_LINE_KM`] from the
+/// edge, this half-width, no farther than [`ARC_KM`]); the height
+/// follows from the crust ([`Rock::high`]), and wear takes it back.
+/// Under an ocean's riding edge it thickens the floor itself, which
+/// rises under the sea as any crust floats.
+pub(super) const ARC_ADD_M: i64 = 1_000;
 pub(super) const ARC_LINE_KM: (i64, i64) = (180, 150);
 pub(super) const ARC_KM: u32 = 340;
-/// A terrane docking raises the crust it meets, m; an island arc is born
-/// this high; a plume lifts the continent over it, m a step.
-pub(super) const DOCK_M: i64 = 500;
-pub(super) const ARC_ISLAND_M: i16 = 200;
+/// A floor an arc has thickened to this, tenths of a km, is crust that
+/// sinks no more (too light: Cloos 1993, 15 to 18 km for an arc or an
+/// ocean plateau): an island arc's crust from then on, carried and
+/// docked as a terrane is, and growing still while a floor sinks under
+/// it. It is the thickness at which a rift's stretched crust gives way
+/// to an ocean ([`BREAK_THICK`]).
+pub(super) const ARC_CRUST_THICK: u16 = BREAK_THICK;
 
 /// A margin gives way once the push across it has been more than its
 /// section holds for this step and the one before (`Rock::pressed`): a
@@ -368,6 +376,7 @@ pub(super) fn sink_and_dock(world: &mut World) {
     let (weight, floor) = (world.step.weight, world.step.floor);
     let key = move |p: u8, class: u8| precedence(&weight, &floor, p, class);
     let ride = |p: u8| (-floor[p as usize], -i64::from(p));
+    let mut fed: Vec<(usize, i64)> = Vec::new();
     // The ocean floor under a continent: a bit of floor whose
     // place a piece of another plate covers has sunk under it (an
     // active margin); a terrane carried onto a floor that rides
@@ -396,10 +405,12 @@ pub(super) fn sink_and_dock(world: &mut World) {
         }
         c.rock.margins |= ACTIVE;
         c.rock.orogeny = now_my;
+        fed.push((j, i64::from(sphere.area_km2[q])));
         if c.event != Margin::Suture as u8 {
             c.event = Margin::Active as u8;
         }
     }
+    arcs_grow(sphere, land, fed);
     // Accretion: the whole terrane or arc joins the plate it met,
     // followed through its own lattice.
     for &(i0, pw) in &*accrete {
@@ -420,7 +431,6 @@ pub(super) fn sink_and_dock(world: &mut World) {
             }
             c.plate = pw;
             c.switch = SWITCH_DOCK;
-            c.rock.rise(DOCK_M, BY_DOCK);
             c.rock.margins |= ACCRETED;
             c.rock.orogeny = now_my;
             km2 += i64::from(c.area);
@@ -442,14 +452,61 @@ pub(super) fn sink_and_dock(world: &mut World) {
         }
     }
 }
+/// The crust the arcs add in a step ([`ARC_ADD_M`]). `fed`: the cells
+/// of crust a bit of floor sank under, and that floor's km². What a
+/// cell was fed goes to the crust of its piece around the arc's line
+/// behind it, by its place across that line; on a piece too small to
+/// hold a line (an island arc) to the cell itself.
+fn arcs_grow(sphere: &Sphere, land: &mut Land, mut fed: Vec<(usize, i64)>) {
+    fed.sort_unstable();
+    fed.dedup_by(|b, a| {
+        let same = a.0 == b.0;
+        if same {
+            a.1 += b.1;
+        }
+        same
+    });
+    let sources: Vec<usize> = fed.iter().map(|f| f.0).collect();
+    let (d, origin) = land.spread_from(sphere, &sources, ARC_KM);
+    let share: Vec<i64> = (0..land.cells.len())
+        .map(|i| {
+            if d[i] == u32::MAX || land.cells[i].dead {
+                0
+            } else {
+                bump(i64::from(d[i]) - ARC_LINE_KM.0, ARC_LINE_KM.1) * i64::from(land.cells[i].area)
+            }
+        })
+        .collect();
+    let mut all = vec![0_i64; fed.len()];
+    for i in 0..land.cells.len() {
+        if origin[i] != u32::MAX {
+            all[origin[i] as usize] += share[i];
+        }
+    }
+    for i in 0..land.cells.len() {
+        if origin[i] == u32::MAX {
+            continue;
+        }
+        let k = origin[i] as usize;
+        let km2 = i64::from(land.cells[i].area).max(1);
+        let vol = fed[k].1 * ARC_ADD_M;
+        let add = if all[k] > 0 {
+            vol * share[i] / all[k] / km2
+        } else if i == fed[k].0 {
+            vol / km2
+        } else {
+            0
+        };
+        land.cells[i].rock.thicken(add, BY_ARC);
+    }
+}
 /// Step 5 (the view). The grid's view of the crust; each cell of open
 /// ocean shows its winning bit of floor, the older sinks under the
 /// younger, and the riding edge grows an island arc.
 pub(super) fn draw_floor(world: &mut World) {
     let journal = &mut world.journal;
-    let seed = world.seed;
     let sphere = world.sphere;
-    let arc_steps = world.arc_steps;
+    let (grain, rough) = (&world.grain, &world.rough);
     let land = &mut world.land;
     let bits = &mut world.bits;
     let disp = &mut world.disp;
@@ -516,7 +573,7 @@ pub(super) fn draw_floor(world: &mut World) {
             })
             .expect("the winner's bit");
         let mut r = bits[iw as usize].rock;
-        let mut over_ocean = false;
+        let mut over_ocean = 0_u16;
         for &j in &here {
             if j == iw {
                 continue;
@@ -525,13 +582,18 @@ pub(super) fn draw_floor(world: &mut World) {
                 spare[q].push(j);
             } else {
                 dead[j as usize] = true;
-                over_ocean = true;
+                over_ocean += 1;
             }
         }
         plate[q] = pw;
-        if over_ocean {
-            r.arc = r.arc.saturating_add(1);
-            if r.arc >= arc_steps && hash(&[seed, P_ARC, u64::from(r.home)]) % 1000 < ARC_SHARE {
+        if over_ocean > 0 {
+            // The floor swallowed here (a bit a cell) feeds an arc: the
+            // riding floor thickens, and is an arc's crust once it is
+            // too thick to sink.
+            r.thick = r
+                .thick
+                .saturating_add(over_ocean * (ARC_ADD_M / 100) as u16);
+            if r.thick >= ARC_CRUST_THICK {
                 let sinking = here
                     .iter()
                     .map(|&j| bits[j as usize].plate)
@@ -543,16 +605,22 @@ pub(super) fn draw_floor(world: &mut World) {
                     x,
                     area(q),
                 ));
+                // It stands where the thickened floor stood, on the
+                // heat of the floor it is made of.
+                let bed = floor_bed(
+                    i64::from(r.born_my.saturating_sub(now_my)),
+                    i64::from(r.silt),
+                    r.thick,
+                    i64::from(rough[q]),
+                );
                 r.class = TERRANE;
                 r.piece = ARC_BASE + pw;
                 r.born_my = now_my;
                 r.margins |= ACTIVE;
                 r.orogeny = now_my;
-                r.thick = TERRANE_THICK;
-                r.high = ARC_ISLAND_M;
-                r.cool = 0;
-                r.sunk = 0;
+                r.fine = 0;
                 r.pressed = 0;
+                r.stand_at(bed - i64::from(grain[r.home as usize]));
                 r.why = [0; CAUSES];
                 *made += area(q);
                 // The floor there is crust now.

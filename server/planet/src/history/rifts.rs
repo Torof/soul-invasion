@@ -70,7 +70,9 @@ pub(super) const CELL_KM: i64 = 92;
 /// at the line. Thinned crust floats lower: at the line it sinks by
 /// [`STRETCH_M`] while it stretches, and as much again as it cools,
 /// [`COOLING`] ‰ of what is left each step (together what the crust's
-/// own buoyancy, [`ISOSTASY_M`], gives for the 20 km it has lost). The
+/// own buoyancy, [`ISOSTASY_M`], gives for the 20 km it has lost: since
+/// version 18 the thinning itself lowers it, [`Rock::thinned`], and
+/// half of that is held up by its heat at first). The
 /// trough's flanks rise meanwhile, up to [`SHOULDER_M`] (the shoulders
 /// of a rift valley), and sink back as they cool.
 pub(super) const STRETCH_KM: u32 = 230;
@@ -390,8 +392,7 @@ fn stretch(sphere: &Sphere, land: &mut Land, sources: &[(usize, i64)], record: u
         let flank = 4 * reach * (1000 - reach) / 1000;
         let up = SHOULDER_M * flank / 1000 * more / BREAK_M;
         if up > 0 {
-            r.rise(up, BY_STRETCH);
-            r.cool = lift(r.cool, up);
+            r.heat(up, BY_STRETCH);
         }
         let was = i64::from(r.thick);
         let thin =
@@ -399,14 +400,8 @@ fn stretch(sphere: &Sphere, land: &mut Land, sources: &[(usize, i64)], record: u
         if thin <= 0 {
             continue;
         }
-        r.thick = (was - thin) as u16;
-        // Its sediment stretches with it.
-        r.silt = (i64::from(r.silt) * (was - thin) / was) as u16;
         c.area = (i64::from(c.area) * was / (was - thin)) as u32;
-        let drop = thin * STRETCH_M / (whole - least_thick);
-        r.rise(-drop, BY_STRETCH);
-        r.cool = lift(r.cool, drop);
-        r.sunk = lift(r.sunk, drop);
+        r.thinned(thin, was);
     }
 }
 
@@ -1032,14 +1027,17 @@ pub(super) fn margins_sink(world: &mut World) {
             if d[i] == u32::MAX {
                 continue;
             }
-            let r = &mut c.rock;
+            // The crust beside the tear is stretched crust: thinned
+            // as a trough's is at that distance from its line, if it
+            // is not yet (its volume kept: it stands for a wider one).
+            let (whole, least) = (i64::from(CONTINENT_THICK), i64::from(BREAK_THICK));
             let reach = bump(i64::from(d[i]), i64::from(STRETCH_KM));
-            let due = STRETCH_M * reach / 1000 * reach / 1000;
-            let more = due - i64::from(r.sunk);
-            if more > 0 {
-                r.rise(-more, BY_STRETCH);
-                r.cool = lift(r.cool, more);
-                r.sunk = lift(r.sunk, more);
+            let due = least + (whole - least) * (1000 - reach * reach / 1000) / 1000;
+            let was = i64::from(c.rock.thick);
+            let thin = was.min(whole) - due;
+            if thin > 0 && !c.dead {
+                c.area = (i64::from(c.area) * was / (was - thin)) as u32;
+                c.rock.thinned(thin, was);
             }
         }
     }
@@ -1054,15 +1052,13 @@ mod tests {
             class,
             piece: 0,
             margins: 0,
-            arc: 0,
             rift: 0,
             born_my: age,
             orogeny: NEVER,
             home: 0,
             thick,
-            high: 0,
-            cool: 0,
-            sunk: 0,
+            fine: 0,
+            warm: 0,
             pressed: 0,
             silt: 0,
             laid: NEVER,

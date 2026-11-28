@@ -17,6 +17,18 @@ pub(super) const INERTIA: i64 = 400;
 /// pulls by its weight, and is lost only where the plates part this fast.
 pub(super) const FORCE_LEAST_UM: i64 = 2_000;
 
+/// The section of a continent's crust, km² (its thickness times the
+/// length of it gone under, for each km of front), whose buoyancy holds
+/// a slab of full weight: crust of 2.8 in a mantle of 3.3 (the
+/// densities of [`ISOSTASY_M`]) floats with 500 kg a m³; a section of
+/// 14,000 km² of it on a slab dipping 45° pushes back 4.9 × 10¹³ N for
+/// each m of trench, the pull of an old slab (Turcotte and Schubert,
+/// *Geodynamics*, 6.21). That is 400 km of a whole crust, 700 km of a
+/// margin stretched to 20 km: what the Earth's collisions swallowed
+/// before their slabs broke off (India's thinned margin, some 10 to 25
+/// My after the first contact; van Hunen and Allen 2011).
+pub(super) const CRUST_FLOATS_KM2: i64 = 14_000;
+
 /// How hard a slab of this age, millions of years, pulls, per mille of
 /// the pull at `full_my`: the floor's weight in the mantle. A floor
 /// younger than [`SLAB_YOUNG_MY`] is too light to pull.
@@ -516,6 +528,9 @@ pub(super) struct Look {
     pub(super) front: Vec<Front>,
     /// The cells of floor that sink now: a slab hangs under each.
     pub(super) hung: Vec<bool>,
+    /// Whose slab hangs under each of them, and how hard it pulls, ‰.
+    pub(super) slab_of: Vec<u8>,
+    pub(super) slab_left: Vec<i16>,
 }
 
 /// `hung`: the cells under which a slab hung at the step before (version
@@ -523,6 +538,19 @@ pub(super) struct Look {
 /// hung a cell away (the trench moved, or the tear runs on along the
 /// boundary), the floor goes on sinking and its slab pulls by its weight
 /// however slowly the plates close; the slab is lost where they part.
+///
+/// **A slab does not let go when the continents meet** (version 18;
+/// until then the pull ended with the last cell of floor, so nothing
+/// pressed two continents on once they touched, and two collisions in
+/// three lasted one step). The slab hangs from the edge of the continent
+/// that followed its floor down, and goes on pulling that plate under
+/// the other one. What ends it is the crust itself: a continent's crust
+/// is light, and each km of it dragged down floats against the slab
+/// ([`CRUST_FLOATS_KM2`]). The pull left is the slab's weight less the
+/// buoyancy of the crust dragged under since the continents met; when
+/// nothing is left the slab has broken off (Davies and von Blanckenburg
+/// 1995), and only the other forces on the two plates press them on,
+/// against their pile.
 pub(super) fn look(
     sphere: &Sphere,
     plate: &[u8],
@@ -530,10 +558,12 @@ pub(super) fn look(
     rock: &mut [Rock],
     omega: &[V3],
     event: &[u8],
-    hung: &[bool],
-    (now_my, full_my): (u16, i64),
+    (hung, slab_of, slab_left): (&[bool], &[u8], &[i16]),
+    (now_my, full_my, step_my): (u16, i64, i64),
 ) -> Look {
     let mut hangs = vec![false; CELLS];
+    let mut hangs_of = vec![NONE; CELLS];
+    let mut left = vec![0_i16; CELLS];
     let floor = floor_born(plate, rock);
     let mut kind = vec![0_u8; CELLS];
     let mut margin = vec![Margin::Inland as u8; CELLS];
@@ -610,7 +640,28 @@ pub(super) fn look(
                 // plate riding over it toward the trench.
                 let age = i64::from(rock[c].born_my.saturating_sub(now_my));
                 let weight = slab_weight(age, full_my);
+                hangs_of[c] = mine;
+                left[c] = weight as i16;
                 if weight > 0 {
+                    slab.push((c, mine, normal, weight));
+                    suction.push((c, other, normal.map(|v| -v), weight));
+                }
+            }
+            if mine_cont && theirs_cont && closing > -FORCE_LEAST_UM {
+                // The slab of this plate that hung here, or a cell
+                // away, still hangs from this continent's edge: less the
+                // crust it drags under in this step.
+                let had = std::iter::once(c)
+                    .chain(sphere.links[c].iter().map(|&(n, _)| n as usize))
+                    .filter(|&n| hung[n] && slab_of[n] == mine)
+                    .map(|n| i64::from(slab_left[n]))
+                    .max();
+                let under = closing.max(0) * step_my / 1000 * i64::from(rock[c].thick) / 10;
+                let weight = had.map_or(0, |w| w - 1000 * under / CRUST_FLOATS_KM2);
+                if weight > 0 {
+                    hangs[c] = true;
+                    hangs_of[c] = mine;
+                    left[c] = weight as i16;
                     slab.push((c, mine, normal, weight));
                     suction.push((c, other, normal.map(|v| -v), weight));
                 }
@@ -647,6 +698,8 @@ pub(super) fn look(
         ridge,
         front,
         hung: hangs,
+        slab_of: hangs_of,
+        slab_left: left,
     }
 }
 
@@ -695,10 +748,12 @@ pub(super) fn look_at(world: &mut World) {
         &mut *rock,
         &*omega,
         &*event,
-        &world.hung,
-        (now_my, s.slab_age_my),
+        (&world.hung, &world.slab_of, &world.slab_left),
+        (now_my, s.slab_age_my, s.step_my),
     );
     world.hung.clone_from(&seen.hung);
+    world.slab_of.clone_from(&seen.slab_of);
+    world.slab_left.clone_from(&seen.slab_left);
     // Each cell of crust's margin: what the view saw where it draws
     // it; a cell the view does not draw has its piece's margin there.
     *margin_of = vec![u8::MAX; land.cells.len()];

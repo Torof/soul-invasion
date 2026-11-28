@@ -402,16 +402,21 @@ impl Planet {
                 let (d, src) = near[c];
                 if d != u32::MAX {
                     let d = i64::from(d);
-                    e += match edge[src as usize].expect("a source is an edge").kind {
-                        Kind::IslandArc => 3_800 * bump(d - 140, 90) / 1000,
-                        Kind::Trench => -2_600 * bump(d, 90) / 1000,
-                        _ => 0,
-                    };
+                    // (An island arc is no longer drawn on the map: it is
+                    // crust the history adds, version 18.)
+                    if edge[src as usize].expect("a source is an edge").kind == Kind::Trench {
+                        e -= 2_600 * bump(d, 90) / 1000;
+                    }
                 }
                 if let Some((d, age)) = lava[c] {
                     e += 3_800 * bump(d, 130) / 1000 * (TRACK_MYR - age).max(0) / TRACK_MYR;
                 }
-                history::floor_bed(i64::from(h.age[t][c]), i64::from(h.silt_at[t][c]), e)
+                history::floor_bed(
+                    i64::from(h.age[t][c]),
+                    i64::from(h.silt_at[t][c]),
+                    h.thick_at[t][c],
+                    e,
+                )
             })
             .collect();
         // The sea is the history's: the level at which the planet's

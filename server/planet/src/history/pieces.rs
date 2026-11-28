@@ -604,13 +604,41 @@ impl Land {
                 under: c.under,
                 margins: c.rock.margins,
                 thick: c.rock.thick,
-                high: c.rock.high,
+                high: c.rock.high(),
                 silt: c.rock.silt,
                 home: c.rock.home,
                 area_km2: c.area,
                 why: c.rock.why,
                 rank: precedence(&weight, floor, c.plate, c.rock.class),
             });
+        }
+        out
+    }
+
+    /// The crust of other pieces lying against the cell of crust `i`:
+    /// their cells at its place and around it (a docked terrane, a
+    /// welded continent, the other side of a collision's front).
+    pub(super) fn beside(&self, sphere: &Sphere, i: usize) -> Vec<usize> {
+        let c = &self.cells[i];
+        let around = c.cell as usize;
+        let mut out = Vec::new();
+        for &frame in &self.near[around] {
+            if frame == c.frame {
+                continue;
+            }
+            for m in
+                std::iter::once(around).chain(sphere.links[around].iter().map(|l| l.0 as usize))
+            {
+                let at = sphere.cell_of(normalize(apply(
+                    &self.back[frame as usize],
+                    sphere.centre[m],
+                )));
+                if let Some(k) = self.get(frame, at as u32)
+                    && !out.contains(&k)
+                {
+                    out.push(k);
+                }
+            }
         }
         out
     }

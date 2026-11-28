@@ -132,9 +132,6 @@ pub(super) fn meet(world: &mut World) {
         if above.plate != me.plate {
             let up = &mut land.cells[j];
             if me.rock.class == TERRANE && me.rock.margins & ACCRETED == 0 {
-                if up.rock.margins & ACCRETED == 0 {
-                    up.rock.rise(DOCK_M, BY_DOCK);
-                }
                 up.rock.margins |= ACCRETED;
                 up.rock.orogeny = now_my;
                 accrete.push((i, above.plate));
@@ -160,24 +157,9 @@ pub(super) fn meet(world: &mut World) {
         // at the same place and around it.
         let mut near = vec![j];
         let mut seen = std::collections::HashSet::from([j]);
-        let around = above.cell as usize;
-        for &frame in &land.near[around] {
-            if frame == above.frame {
-                continue;
-            }
-            for m in
-                std::iter::once(around).chain(sphere.links[around].iter().map(|l| l.0 as usize))
-            {
-                let at = sphere.cell_of(normalize(apply(
-                    &land.back[frame as usize],
-                    sphere.centre[m],
-                )));
-                if let Some(k) = land.get(frame, at as u32)
-                    && fits(k)
-                    && seen.insert(k)
-                {
-                    near.push(k);
-                }
+        for k in land.beside(sphere, j) {
+            if fits(k) && seen.insert(k) {
+                near.push(k);
             }
         }
         let mut ring = 0..near.len();
@@ -197,10 +179,10 @@ pub(super) fn meet(world: &mut World) {
             .min_by_key(|&k| (land.cells[k].rock.thick, k != j, land.cells[k].id))
             .unwrap_or(j);
         // (The sediment on it is crust like the rest once piled.)
-        let vol = (i64::from(me.rock.thick) + i64::from(me.rock.silt) / 100) * i64::from(me.area);
+        let vol = (me.rock.crust_m() + i64::from(me.rock.silt)) * i64::from(me.area);
         let full = i64::from(land.cells[to].area).max(1);
         let up = &mut land.cells[to].rock;
-        up.thick = (i64::from(up.thick) + vol / full).min(i64::from(u16::MAX)) as u16;
+        up.thicken(vol / full, BY_DOCK);
         if above.plate != me.plate {
             up.orogeny = now_my;
         }

@@ -109,21 +109,12 @@ pub struct Settings {
     /// force is far too weak to move a plate, and nothing else sorts
     /// continents by latitude.
     pub pole_flight: i64,
-    /// Steps of subduction under an ocean's edge before its island arc
-    /// rises (a third of its cells becomes arc crust).
-    pub arc_steps: i64,
     /// Terranes waiting in the ocean to be accreted.
     pub terranes: (i64, i64),
     /// A terrane's length, cells of ~100 km.
     pub terrane_cells: (i64, i64),
     /// Hotspots: plumes rise where the mantle is hottest.
     pub hotspots: (i64, i64),
-    /// A range loses this much of its thickness above a plain continent
-    /// each step, per mille (its silt builds the coasts out). 25: a
-    /// range is worn from the top and floats back up as it lightens, so
-    /// its root lasts some six times longer than its relief alone
-    /// would: it halves in about 140 My (100 until version 14: 33 My).
-    pub mountain_wear: i64,
 }
 
 impl Default for Settings {
@@ -153,11 +144,9 @@ impl Default for Settings {
             ridge_push: 300,
             continent_drag: 800,
             pole_flight: 0,
-            arc_steps: 4,
             terranes: (18, 28),
             terrane_cells: (1, 5),
             hotspots: (14, 20),
-            mountain_wear: 25,
         }
     }
 }

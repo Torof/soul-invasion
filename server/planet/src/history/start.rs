@@ -38,8 +38,8 @@ pub(super) const OCEAN_START_KM_MY: i64 = 25;
 /// km, and lies as low as that thinning gives once cooled (a seventh
 /// thinner: 750 m). An old mountain belt had a root this much thicker
 /// than a continent when its building ended (as thick again), of which
-/// the model's own wear ([`Settings::mountain_wear`]) has left what its
-/// age says: 3 km under a belt 500 My old, nothing under one of 1,000.
+/// the model's own wear ([`wear::worn_to`]) has left what its age says:
+/// 2.5 km under a belt 100 My old, 0.5 km under one of 500.
 pub(super) const OLD_RIFT_THICK: u16 = 300;
 pub(super) const OLD_ROOT: i64 = 350;
 
@@ -178,11 +178,11 @@ pub(crate) fn begin<'a>(
             let belt = i64::from(mosaic.belt[c]);
             (match mosaic.kind[c] {
                 Some(OldKind::Suture) => {
-                    let mut root = OLD_ROOT * 1_000_000;
-                    for _ in 0..i64::from(mosaic.worked_my[c]) / s.step_my.max(1) {
-                        root = root * (1000 - s.mountain_wear) / 1000;
-                    }
-                    whole + root / 1_000_000 * belt / 1000
+                    // What the model's own wear leaves of the root's
+                    // height after its age.
+                    let was = OLD_ROOT * ISOSTASY_M / 10;
+                    let left = wear::worn_to(was, i64::from(mosaic.worked_my[c]));
+                    whole + left * 10 / ISOSTASY_M * belt / 1000
                 }
                 Some(OldKind::FailedRift) => {
                     whole - (whole - i64::from(OLD_RIFT_THICK)) * belt / 1000
@@ -191,7 +191,6 @@ pub(crate) fn begin<'a>(
             }) as u16
         })
         .collect();
-    let thinned = |c: usize| (whole - i64::from(thick0[c])).max(0) * ISOSTASY_M / 10;
 
     // Records at the start.
     let mut rock: Vec<Rock> = (0..CELLS)
@@ -212,15 +211,13 @@ pub(crate) fn begin<'a>(
                     class: CONTINENT,
                     piece: plate[c],
                     margins,
-                    arc: 0,
                     rift: 0,
                     born_my: (total_my + i64::from(mosaic.age_my[c])) as u16,
                     orogeny,
                     home: c as u32,
                     thick: thick0[c],
-                    high: lift(0, PLATFORM_M - thinned(c)),
-                    cool: 0,
-                    sunk: lift(0, thinned(c)),
+                    fine: 0,
+                    warm: 0,
                     pressed: 0,
                     silt: 0,
                     laid: NEVER,
@@ -233,15 +230,13 @@ pub(crate) fn begin<'a>(
                     class: OCEAN,
                     piece: NONE,
                     margins: 0,
-                    arc: 0,
                     rift: 0,
                     born_my: (total_my + age) as u16,
                     orogeny: NEVER,
                     home: c as u32,
                     thick: OCEAN_THICK,
-                    high: 0,
-                    cool: 0,
-                    sunk: 0,
+                    fine: 0,
+                    warm: 0,
                     pressed: 0,
                     silt: 0,
                     laid: NEVER,
@@ -369,7 +364,6 @@ pub(crate) fn begin<'a>(
     let troughs: Vec<Trough> = Vec::new();
     let edges_last: (Vec<Spot>, Vec<Spot>, Vec<Spot>) = (Vec::new(), Vec::new(), Vec::new());
     let record_of = vec![[usize::MAX; MAXP]; MAXP];
-    let arc_steps = s.arc_steps.clamp(1, 250) as u8;
     // The crust (version 10). The continents are rigid pieces: every
     // cell of continental crust lives in its piece's own lattice, placed
     // on the planet by the piece's turn, and is never resampled. The
@@ -445,8 +439,8 @@ pub(crate) fn begin<'a>(
         &mut rock.clone(),
         &first.omega,
         &vec![Margin::Inland as u8; CELLS],
-        &hung,
-        (total_my as u16, s.slab_age_my),
+        (&hung, &vec![NONE; CELLS], &vec![0; CELLS]),
+        (total_my as u16, s.slab_age_my, s.step_my),
     );
     let first = drive(
         sphere,
@@ -489,7 +483,6 @@ pub(crate) fn begin<'a>(
     let shown_now = vec![0_u8; CELLS];
     let hidden_now = [0_u32; 3];
     World {
-        seed,
         s,
         sphere,
         belt: (0..CELLS)
@@ -507,6 +500,8 @@ pub(crate) fn begin<'a>(
         deep,
         heat,
         hung,
+        slab_of: seen.slab_of.clone(),
+        slab_left: seen.slab_left.clone(),
         hotspots: hotspots.to_vec(),
         plumes,
         spent,
@@ -539,7 +534,6 @@ pub(crate) fn begin<'a>(
         edges_last,
         record_of,
         locked: Vec::new(),
-        arc_steps,
         land,
         bits,
         disp,

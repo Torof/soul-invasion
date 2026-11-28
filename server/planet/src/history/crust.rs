@@ -10,34 +10,36 @@ pub(super) struct Rock {
     pub(super) class: u8,
     pub(super) piece: u8,
     pub(super) margins: u8,
-    /// Steps it has ridden over a sinking ocean (an island arc's growth).
-    pub(super) arc: u8,
     /// The later rift it lies along (index + 1), 0 none.
     pub(super) rift: u8,
     /// When it formed, millions of years ago.
     pub(super) born_my: u16,
     pub(super) orogeny: u16,
     pub(super) home: u32,
-    /// Its thickness, tenths of a km.
+    /// Its thickness, tenths of a km. **The one ledger of its height**
+    /// (version 18): a crust stands as its thickness floats it
+    /// ([`ISOSTASY_M`], for any thickness), plus its heat (`warm`) and
+    /// the sediment on it (`silt`). Nothing else raises or lowers it:
+    /// what builds a mountain adds crust, what wears it takes crust away.
     pub(super) thick: u16,
-    /// Its height, m above the sea of the start, without its grain
-    /// ([`History::rough`], [`History::broad`]) and without what a pile
-    /// lifts ([`ISOSTASY_M`]). The crust carries it (version 7): only what
-    /// happens to the crust changes it.
-    pub(super) high: i16,
-    /// How far it has still to sink as it cools, m (a stretched margin).
-    pub(super) cool: i16,
-    /// How far stretching has lowered it in all, m.
-    pub(super) sunk: i16,
+    /// The rest of its thickness, m, beyond `thick` (−50 to 49): wear
+    /// takes a few metres a step, less than a tenth of a km.
+    pub(super) fine: i8,
+    /// What its heat adds to its height, m: crust just stretched, the
+    /// shoulders of a rift, a plume under it, a young floor under an arc
+    /// stand higher than their thickness alone gives, and sink as they
+    /// cool ([`rifts::COOLING`] of it a step). Below zero (crust built
+    /// on old, cold, dense floor) it stays.
+    pub(super) warm: i16,
     /// A continent's shore at a passive margin: how hard the floor beside
     /// it was pushed on it at the last step, per mille of what the
     /// margin's section holds (`trenches::margins_give_way`; 0: no
     /// margin, or not pushed). Written anew at each step.
     pub(super) pressed: i16,
     /// The sediment lying on it, m of thickness (version 16): what
-    /// erosion took from higher ground and laid here. On a continent its
-    /// lift is in `high` already; on the ocean floor it raises the bed
-    /// ([`floor_bed`]).
+    /// erosion took from higher ground and laid here. It raises the
+    /// ground by [`SILT_LIFTS`] of its thickness, on a continent
+    /// ([`Rock::high`]) as on the ocean floor ([`floor_bed`]).
     pub(super) silt: u16,
     /// When that sediment was laid, millions of years ago (the mean of
     /// its layers by thickness); [`NEVER`] with none.
@@ -132,16 +134,22 @@ pub fn sinking(age: i64) -> i64 {
 /// water on it: a ridge's crest, sunk as its age says, with its grain
 /// (`more`: and what a map draws on it), all of them depths under the
 /// sea standing at the datum, so less the water's push
-/// ([`WATER_SINKS`]); raised by the sediment on it.
+/// ([`WATER_SINKS`]); raised by the sediment on it, and by the crust an
+/// arc has added to its 7 km (`thick`, tenths of a km: an island arc
+/// growing under the sea, version 18), as any crust floats
+/// ([`ISOSTASY_M`]).
 #[must_use]
-pub fn floor_bed(age_my: i64, silt_m: i64, more: i64) -> i64 {
-    (RIDGE_M - sinking(age_my) + more) * (1000 - WATER_SINKS) / 1000 + silt_m * SILT_LIFTS / 1000
+pub fn floor_bed(age_my: i64, silt_m: i64, thick: u16, more: i64) -> i64 {
+    (RIDGE_M - sinking(age_my) + more) * (1000 - WATER_SINKS) / 1000
+        + silt_m * SILT_LIFTS / 1000
+        + (i64::from(thick) - i64::from(OCEAN_THICK)) * ISOSTASY_M / 10
 }
 
 /// A continent's crust above the datum, m, without its grain and with
-/// no water on it: the height it carries, what a pile lifts (isostasy),
-/// its flood basalts.
-/// The history's sea and the maps read this one height.
+/// no water on it: what its crust up to a continent's thickness, its
+/// heat and its sediment give (`high`, [`Rock::high`]), what its crust
+/// beyond that thickness lifts (a pile), its flood basalts. The
+/// history's sea and the maps read this one height.
 #[must_use]
 pub fn stands(high: i16, thick: u16, margins: u8) -> i64 {
     i64::from(high)
@@ -149,15 +157,18 @@ pub fn stands(high: i16, thick: u16, margins: u8) -> i64 {
         + if margins & LIP != 0 { LIP_M } else { 0 }
 }
 
-/// A carried height changed by `by` m.
+/// A height changed by `by` m (the record's width: a limit of the
+/// arithmetic).
 pub(super) fn lift(high: i16, by: i64) -> i16 {
-    (i64::from(high) + by).clamp(-6_000, 8_000) as i16
+    (i64::from(high) + by).clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
 }
 
-/// The causes that change a crust's carried height, in the order of
-/// [`History::cause_at`]: a rift stretched it, it cooled, an arc
-/// built on it, a terrane docked, a plume lifted it, it wore down, it
-/// levelled with its neighbours, sediment filled it.
+/// The causes that change a crust's height ([`Rock::high`]), in the
+/// order of [`History::cause_at`]: a rift stretched it, it cooled, an
+/// arc added crust to it, crust was piled on it below a continent's
+/// thickness (a docking, a collision), a plume warmed it, it wore down,
+/// crust flowed or slid to or from its neighbours, sediment was laid on
+/// it.
 pub const CAUSES: usize = 8;
 pub(super) const BY_STRETCH: usize = 0;
 pub(super) const BY_COOLING: usize = 1;
@@ -169,24 +180,96 @@ pub(super) const BY_LEVEL: usize = 6;
 pub(super) const BY_FILL: usize = 7;
 
 impl Rock {
+    /// Its crust's thickness, m.
+    pub(super) fn crust_m(&self) -> i64 {
+        i64::from(self.thick) * 100 + i64::from(self.fine)
+    }
+
+    /// Its height above the datum, m, without its grain, its flood
+    /// basalts and what its crust beyond a continent's thickness lifts
+    /// ([`stands`] adds those): its crust floating, its heat, its
+    /// sediment. Worked out, never kept.
+    pub(super) fn high(&self) -> i16 {
+        let whole = i64::from(CONTINENT_THICK) * 100;
+        lift(
+            0,
+            PLATFORM_M
+                + ((self.crust_m().min(whole) - whole) * ISOSTASY_M).div_euclid(1000)
+                + i64::from(self.warm)
+                + i64::from(self.silt) * SILT_LIFTS / 1000,
+        )
+    }
+
+    /// Something happens to it (`what`), for a cause: the change of its
+    /// height is written to that cause.
+    pub(super) fn change(&mut self, cause: usize, what: impl FnOnce(&mut Rock)) {
+        let was = i64::from(self.high());
+        what(self);
+        // (The ocean floor's height is its age's: it keeps no causes.)
+        if self.class != OCEAN {
+            self.why[cause] = lift(self.why[cause], i64::from(self.high()) - was);
+        }
+    }
+
+    /// Its crust gains `m` metres of thickness (loses, below zero), for
+    /// a cause. (Between nothing and 6,500 km: the record's width.)
+    pub(super) fn thicken(&mut self, m: i64, cause: usize) {
+        self.change(cause, |r| {
+            let all = (r.crust_m() + m).clamp(0, 6_553_500);
+            r.thick = ((all + 50) / 100) as u16;
+            r.fine = (all - i64::from(r.thick) * 100) as i8;
+        });
+    }
+
+    /// Its heat raises it by `m` metres more (less, below zero).
+    pub(super) fn heat(&mut self, m: i64, cause: usize) {
+        self.change(cause, |r| r.warm = lift(r.warm, m));
+    }
+
     /// Sediment laid on it, `m` of thickness, now: its thickness and the
     /// mean date of its layers. (A thickness beyond what the record
     /// holds, 65 km, is not counted: a limit of the arithmetic.)
     pub(super) fn lay(&mut self, m: i64, now_my: u16) {
-        let had = i64::from(self.silt);
-        let all = (had + m).min(i64::from(u16::MAX));
-        if all > 0 {
-            let then = if had > 0 { i64::from(self.laid) } else { 0 };
-            self.laid = ((then * had + i64::from(now_my) * (all - had)) / all) as u16;
-        }
-        self.silt = all as u16;
+        self.change(BY_FILL, |r| {
+            let had = i64::from(r.silt);
+            let all = (had + m).min(i64::from(u16::MAX));
+            if all > 0 {
+                let then = if had > 0 { i64::from(r.laid) } else { 0 };
+                r.laid = ((then * had + i64::from(now_my) * (all - had)) / all) as u16;
+            }
+            r.silt = all as u16;
+        });
     }
 
-    /// Its carried height changes by `by` m, for a cause.
-    pub(super) fn rise(&mut self, by: i64, cause: usize) {
-        let was = self.high;
-        self.high = lift(was, by);
-        self.why[cause] = lift(self.why[cause], i64::from(self.high) - i64::from(was));
+    /// A rift stretches it: `thin` tenths of a km thinner than the
+    /// `was` it had. It floats lower by what it lost, half of it at
+    /// once and half as it cools (stretched crust is hot under: the
+    /// warm mantle has risen where the cold lithosphere thinned;
+    /// `McKenzie` 1978), and its sediment stretches with it.
+    pub(super) fn thinned(&mut self, thin: i64, was: i64) {
+        self.thicken(-thin * 100, BY_STRETCH);
+        self.heat(thin * ISOSTASY_M / 10 / 2, BY_STRETCH);
+        self.change(BY_STRETCH, |r| {
+            r.silt = (i64::from(r.silt) * (was - thin) / was.max(1)) as u16;
+        });
+    }
+
+    /// Its heat is set so that it stands `m` metres above the datum
+    /// (without its grain) as it is: crust made of a floor stands where
+    /// that floor stood.
+    pub(super) fn stand_at(&mut self, m: i64) {
+        self.warm = 0;
+        self.warm = lift(0, m - i64::from(self.high()));
+    }
+
+    /// `m` metres of rock worn off its top: its sediment first, then
+    /// its crust. Gives what was taken of each, m.
+    pub(super) fn wear(&mut self, m: i64) -> (i64, i64) {
+        let loose = m.min(i64::from(self.silt));
+        let hard = (m - loose).min(self.crust_m());
+        self.change(BY_WEAR, |r| r.silt -= loose as u16);
+        self.thicken(-hard, BY_WEAR);
+        (loose, hard)
     }
 }
 
@@ -428,4 +511,58 @@ pub(super) fn compact(world: &mut World) {
     *hidden_now = hidden;
     shortened_km2.push(*shortened);
     made_km2.push(*made);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn crust(thick: u16) -> Rock {
+        Rock {
+            class: CONTINENT,
+            piece: 0,
+            margins: 0,
+            rift: 0,
+            born_my: 0,
+            orogeny: NEVER,
+            home: 0,
+            thick,
+            fine: 0,
+            warm: 0,
+            pressed: 0,
+            silt: 0,
+            laid: NEVER,
+            why: [0; CAUSES],
+        }
+    }
+
+    #[test]
+    fn a_crust_stands_as_its_thickness_floats_it_and_wear_takes_crust() {
+        let height = |r: &Rock| stands(r.high(), r.thick, r.margins);
+        // A whole crust on the platform; thinner lower, thicker higher,
+        // by the same 150 m a km.
+        let mut r = crust(CONTINENT_THICK);
+        assert_eq!(height(&r), PLATFORM_M);
+        assert_eq!(height(&crust(250)), PLATFORM_M - 1_500);
+        assert_eq!(height(&crust(600)), PLATFORM_M + 3_750);
+        // What builds adds crust: 10 km of it, 1,500 m.
+        r.thicken(10_000, BY_ARC);
+        assert_eq!((r.thick, height(&r)), (450, PLATFORM_M + 1_500));
+        // What wears takes crust, and the crust floats back: 2 km of
+        // rock off the top lower it by 300 m.
+        assert_eq!(r.wear(2_000), (0, 2_000));
+        assert_eq!((r.thick, height(&r)), (430, PLATFORM_M + 1_200));
+        // A few metres are kept, not lost to the record's tenth of a km.
+        for _ in 0..10 {
+            r.wear(30);
+        }
+        assert_eq!(r.crust_m(), 42_700);
+        // Sediment is worn before the crust under it.
+        r.lay(100, 0);
+        assert_eq!(r.wear(150), (100, 50));
+        // Heat holds it up, and goes.
+        let cold = height(&r);
+        r.heat(400, BY_PLUME);
+        assert_eq!(height(&r), cold + 400);
+    }
 }

@@ -162,9 +162,9 @@ pub(super) fn hotspots_mark(world: &mut World) {
         // A plume lifts the continent over it and floods it a little.
         if let Some(j) = above {
             let around: Vec<usize> = land.kin(sphere, j).map(|(i, _)| i).collect();
-            land.cells[j].rock.rise(PLUME_UP_M, BY_PLUME);
+            land.cells[j].rock.heat(PLUME_UP_M, BY_PLUME);
             for i in around {
-                land.cells[i].rock.rise(PLUME_UP_M / 3, BY_PLUME);
+                land.cells[i].rock.heat(PLUME_UP_M / 3, BY_PLUME);
             }
         }
         let p = first.2;

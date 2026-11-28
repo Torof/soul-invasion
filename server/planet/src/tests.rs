@@ -68,7 +68,10 @@ fn lands_come_from_the_history() {
             .iter()
             .filter(|l| l.area_km2 > 1_000_000)
             .count();
-        assert!(large >= 4, "seed {seed}: {large} lands over 1 M km²");
+        // (Four and more until version 17; with the sea of version 18,
+        // which wear and the arcs' crust raise, this seed's dry land
+        // makes two large bodies and smaller ones.)
+        assert!(large >= 2, "seed {seed}: {large} lands over 1 M km²");
         assert!(
             world.history.collisions.iter().any(|c| c.front_cells >= 40),
             "seed {seed}: no collision"

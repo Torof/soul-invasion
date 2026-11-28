@@ -1443,24 +1443,20 @@ fn real(world: &Planet, settings: &Settings) -> Vec<(&'static str, Vec<i64>)> {
                     .max(1),
         ],
     ));
-    // What the wear takes: the relief's height (no crust is taken with
-    // it) against the piles' thickness.
-    let mut relief = 0_i64;
-    for t in 1..=last {
-        for x in h.pieces_at[t].iter().flat_map(|p| &p.tiles) {
-            // The sixth cause: it wore down.
-            relief -= i64::from(x.why[5]) * i64::from(x.area_km2);
-        }
-    }
+    // What the wear takes: crust off the top (version 18: one ledger),
+    // or sediment that lay there; what is neither would be height taken
+    // with no crust (21.7 M km3 a planet in version 17).
     let worn: i64 = h.budget.iter().map(|b| b.worn).sum();
+    let crust: i64 = h.budget.iter().map(|b| b.crust).sum();
+    let again: i64 = worn - crust;
     let start: i64 = h.pieces_at[0]
         .iter()
         .flat_map(|p| &p.tiles)
         .map(|x| i64::from(x.thick) * 100 * i64::from(x.area_km2))
         .sum();
     rows.push((
-        "sediment made in the history, k km3: in all; of which worn off the relief with no crust taken; the continents' crust at the start, k km3",
-        vec![worn / 1_000_000, relief / 1_000_000, start / 1_000_000],
+        "sediment made in the history, k km3: in all; of which crust taken off the continents; of which sediment taken up again; the continents' crust at the start, k km3",
+        vec![worn / 1_000_000, crust / 1_000_000, again / 1_000_000, start / 1_000_000],
     ));
     rows
 }
