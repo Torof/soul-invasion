@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::hands::Part;
 use crate::map::{CHUNK_SIZE, Terrain};
 use crate::time::{Calendar, Season};
 use crate::woods::Habitat;
@@ -84,6 +85,49 @@ pub struct Look {
 }
 
 impl Material {
+    /// What comes of folding a piece of it (D57, amended 27 November
+    /// 2026), by what it is: nothing when it is no sheet; a sheet at
+    /// least `fold_suppleness` supple takes a hollow, the open box of
+    /// the most volume a square sheet of its face folds into (2/27 of
+    /// its side cubed); a stiffer sheet breaks.
+    #[must_use]
+    pub fn folded(&self, fold_suppleness: u8) -> Folded {
+        if self.form != Form::Sheet || self.area_dm2 == 0 {
+            return Folded::Nothing;
+        }
+        if self.suppleness < fold_suppleness {
+            return Folded::Breaks;
+        }
+        // Its side in millimetres, then 2/27 of its cube: mm³ to ml.
+        let side_mm = u64::from(self.area_dm2 * 10_000).isqrt();
+        let ml = side_mm * side_mm * side_mm * 2 / 27 / 1000;
+        Folded::Hollow(u32::try_from(ml).unwrap_or(u32::MAX).max(1))
+    }
+
+    /// Whether a piece of `self` in hand works a piece of `other` loose
+    /// (D57, amended 27 November 2026): it has an edge, at least as keen
+    /// as `other` is tough, and is the harder of the two.
+    #[must_use]
+    pub fn works(&self, other: &Material) -> bool {
+        self.edge > 0 && self.edge >= other.toughness && self.hardness > other.hardness
+    }
+
+    /// Which of two things struck one against the other breaks (D57,
+    /// amended 27 November 2026), by what they are: the less tough of
+    /// the two, `Some(true)` when it is `self`; neither when they are as
+    /// tough, when one has no toughness to speak of (flesh, fruit), or
+    /// when the one that would break is supple enough to fold: it gives
+    /// under the blow.
+    #[must_use]
+    pub fn struck_with(&self, other: &Material, fold_suppleness: u8) -> Option<bool> {
+        if self.toughness == 0 || other.toughness == 0 || self.toughness == other.toughness {
+            return None;
+        }
+        let mine = self.toughness < other.toughness;
+        let broken = if mine { self } else { other };
+        (broken.suppleness < fold_suppleness).then_some(mine)
+    }
+
     /// Mass of one piece, in grams.
     // Not generation: content gives masses in kilograms, read once.
     #[allow(
@@ -94,6 +138,14 @@ impl Material {
     )]
     pub fn mass_g(&self) -> u32 {
         (self.mass_kg * 1000.0).round().clamp(0.0, 1e9) as u32
+    }
+
+    /// Whether a pile of it is loose (D57, amended 27 November 2026):
+    /// many small things, of which a part may go where the whole would
+    /// not. Food, as the arms hold it (D35), and whatever comes in bits.
+    #[must_use]
+    pub fn loose(&self) -> bool {
+        self.food.is_some() || self.form == Form::Bits
     }
 
     /// The days after it was made that it tears, in a cycle of
@@ -129,33 +181,85 @@ pub struct Material {
     pub flammable: bool,
     /// Can it be eaten?
     pub food: Option<Food>,
-    /// Its edge cuts what a body cuts with it in hand (D57).
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub sharp: bool,
-    /// The material it becomes when folded, its grams kept (D57).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub folds_into: Option<String>,
-    /// A container (D57): the grams of loose food it keeps together, on
-    /// top of what the arms hold (`movement.hands_g`). 0: none.
+    /// How keen its edge is, 0 (none) to 10 (D57): a thing worked with
+    /// it comes away when the edge is at least as keen as that thing is
+    /// tough, and the stuff harder.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub edge: u8,
+    /// How far it bends before it breaks, 0 (not at all) to 10 (D57).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub suppleness: u8,
+    /// How it holds together against an edge, a tear, a crumbling, 0
+    /// (falls apart) to 10 (D57).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub toughness: u8,
+    /// The shape of a piece (D57).
+    #[serde(default, skip_serializing_if = "Form::is_block")]
+    pub form: Form,
+    /// The face of a piece that is a sheet, in square decimetres: what a
+    /// fold has to make a hollow of. 0 otherwise.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
-    pub holds_g: u32,
-    /// The days after it was made that it tears and is gone (D57): a
-    /// short wear, written in days. 0: not in days (food spoils by its
-    /// own keeping).
+    pub area_dm2: u32,
+    /// The days after it was folded that it tears at its folds and is
+    /// gone (D57): a short wear, written in days. 0: not in days (food
+    /// spoils by its own keeping).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub wears_days: u32,
-    /// The seasons after it was made that it tears and is gone: a long
+    /// The seasons after it was folded that it tears and is gone: a long
     /// wear, written in seasons so it follows the world's cycle (D09).
     /// 0: not in seasons; never both; neither, it never wears.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub wears_seasons: u32,
+    /// What a piece broken off it by a blow is made of (D57, amended 27
+    /// November 2026), when the break changes what the eye and the hand
+    /// find: a nodule of flint breaks into keen flint. None: its pieces
+    /// are of itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breaks_into: Option<String>,
     /// How it looks.
     pub look: Look,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
-fn is_false(b: &bool) -> bool {
-    !*b
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
+}
+
+/// The shape of a piece of a material (D57): what a body sees of it, and
+/// what a fold can make of it. It says what the piece is, never what it
+/// is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Form {
+    /// A lump: a stone, a bone, a piece of meat.
+    #[default]
+    Block,
+    /// Flat and wide: a bark, a hide, a big leaf.
+    Sheet,
+    /// Long and stiff: a branch, a log.
+    Stick,
+    /// Long and limp: fibres.
+    Strand,
+    /// Many small things together: berries, nuts, small leaves.
+    Bits,
+}
+
+impl Form {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
+    fn is_block(&self) -> bool {
+        *self == Form::Block
+    }
+}
+
+/// What comes of folding a piece (D57), computed from what it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Folded {
+    /// Nothing: it is no sheet, or too small a one.
+    Nothing,
+    /// It breaks: a sheet too stiff to bend. The piece is lost.
+    Breaks,
+    /// It takes a hollow of so many millilitres, by its face.
+    Hollow(u32),
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
@@ -1344,10 +1448,12 @@ impl Learning {
 }
 
 /// The gestures of the hands (D57; the project lead, 24 November 2026:
-/// "C'est parfait"): picking up, cutting with what is in hand, folding.
-/// No recipe: what comes of a gesture is what the materials are
-/// (`sharp`, `folds_into`, `holds_g`, a tree's `bark`). D30 placeholders,
-/// named and explained in `content/needs.ron`.
+/// "C'est parfait"): picking up, cutting with what is in hand, folding,
+/// putting a thing in another. No recipe: what comes of a gesture is computed from what the
+/// materials are on the scales they all share (hardness, edge,
+/// suppleness, toughness, form), never from what they are for (amended
+/// 27 November 2026). D30 placeholders, named and explained in
+/// `content/needs.ron`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hands {
     /// The game minutes a cut or a fold takes.
@@ -1358,6 +1464,240 @@ pub struct Hands {
     /// The gestures a body in a trial of its hands tries a day, at most.
     /// 0: nobody tries one, and the hands are never a trial.
     pub tries_per_day: u32,
+    /// The suppleness from which a sheet folded takes a hollow; a
+    /// stiffer one breaks.
+    #[serde(default = "Hands::default_fold_suppleness")]
+    pub fold_suppleness: u8,
+    /// The grams of loose things a litre of hollow keeps together.
+    #[serde(default = "Hands::default_loose_g_per_litre")]
+    pub loose_g_per_litre: u32,
+    /// The gestures that gave nothing, or broke the thing, a body
+    /// remembers, at most (D57, amended 27 November 2026). Since 28
+    /// November 2026 (third round) this memory lasts and the value is a
+    /// guard no life reaches: beyond it the oldest goes. 0: none
+    /// remembered.
+    #[serde(default = "Hands::default_failures_kept")]
+    pub failures_kept: u32,
+    /// The deeds a body remembers having seen give a thing in its own
+    /// hands, without keeping them, at most (D57, amended 28 November
+    /// 2026: seen is not kept). Since the third round of that day this
+    /// memory lasts and the value is a guard no life reaches: beyond it
+    /// the oldest goes.
+    #[serde(default = "Hands::default_seen_kept")]
+    pub seen_kept: u32,
+    /// The chance, in per mille a journée, that a body is ready to take
+    /// up again one deed whose result it knows and that brought it
+    /// nothing (D57, amended 28 November 2026, third round: "one can
+    /// take it up again later"), drawn from the seed for that body, that
+    /// journée and that deed. 0: never.
+    #[serde(default = "Hands::default_again_permille")]
+    pub again_permille: u32,
+    /// The things on which a deed done for what it gives did not give it
+    /// into its hands that a body remembers, at most (D57, amended 28
+    /// November 2026: "told bark, here it gave no bark"): the oldest goes
+    /// when one more comes. 0: none remembered.
+    #[serde(default = "Hands::default_amiss_kept")]
+    pub amiss_kept: u32,
+    /// The things it laid at its feet to free its hands that a body
+    /// remembers, at most (D57, amended 28 November 2026): the oldest
+    /// goes when one more comes.
+    #[serde(default = "Hands::default_laid_kept")]
+    pub laid_kept: u32,
+    /// What a body sees (the project lead, 25 November 2026: "on ne coupe
+    /// pas avec une baie"): the edge from which a thing looks like it
+    /// could cut.
+    #[serde(default = "Hands::default_edge_seen")]
+    pub edge_seen: u8,
+    /// The suppleness from which a thing that is no sheet feels in hand
+    /// like it could bend.
+    #[serde(default = "Hands::default_supple_seen")]
+    pub supple_seen: u8,
+    /// What a standing tree is made of and how it answers a cut (D57,
+    /// amended 27 November 2026, trees in parts). Absent: a tree gives
+    /// its bark only, has no branch to take and never falls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trees: Option<TreeParts>,
+}
+
+/// A standing tree in parts (D57, amended 27 November 2026): a trunk of a
+/// thickness, living branches, green wood under the bark. What the world
+/// answers to a cut on a part is computed from these and from the scales
+/// of the materials named; nothing here says what a tree is for.
+/// Explained, with their sources, in `content/needs.ron`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeParts {
+    /// The living wood: the material of a branch cut off a standing tree,
+    /// and the stuff of the trunk under the bark that an edge must work.
+    pub wood: String,
+    /// What falls from a trunk an edge bites.
+    pub chips: String,
+    /// What a trunk is once it lies.
+    pub log: String,
+    /// A grown tree's height over its trunk's thickness, for a kind that
+    /// is not `big`.
+    pub slender: u32,
+    /// The same for a `big` kind, stouter for its height.
+    pub slender_big: u32,
+    /// How far a tree's thickness lies from its kind's, either way, in
+    /// hundredths: fixed for each tree by the seed and where it stands.
+    pub girth_spread_percent: u32,
+    /// The square millimetres of a trunk's section one gesture cuts
+    /// through, for each point of the tool's edge over the living wood's
+    /// toughness, plus one.
+    pub bite_mm2: u32,
+    /// The grams of chips that fall for each square centimetre cut.
+    pub chips_g_per_cm2: u32,
+    /// A trunk's volume as hundredths of the cylinder of its thickness
+    /// and its tree's height.
+    pub stem_form_percent: u32,
+    /// The mass of a cubic metre of living wood, in kilograms.
+    pub wood_kg_per_m3: u32,
+    /// The crown's branches as hundredths of the trunk's mass.
+    pub crown_percent: u32,
+    /// The branches of a fallen crown big enough to be things, at most.
+    pub branches_most: u32,
+    /// The height of trunk whose bark a standing body's hands lift, in
+    /// millimetres (amended 28 November 2026): with the trunk's girth,
+    /// how many pieces of its bark a tree gives before its wood is bare.
+    pub bark_reach_mm: u32,
+    /// The seasons a notch as wide as the trunk's whole section would
+    /// take to close, nobody deepening it (amended 28 November 2026): a
+    /// lesser notch closes in proportion.
+    pub notch_closes_seasons: u32,
+    /// The seasons a trunk stripped at hand height takes to wear all its
+    /// bark again (amended 28 November 2026).
+    pub bark_grows_seasons: u32,
+}
+
+impl TreeParts {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            wood: "green_branch".to_owned(),
+            chips: "wood_chips".to_owned(),
+            log: "log".to_owned(),
+            slender: 80,
+            slender_big: 40,
+            girth_spread_percent: 25,
+            bite_mm2: 330,
+            chips_g_per_cm2: 5,
+            stem_form_percent: 45,
+            wood_kg_per_m3: 900,
+            crown_percent: 20,
+            branches_most: 8,
+            bark_reach_mm: 1000,
+            notch_closes_seasons: 8,
+            bark_grows_seasons: 8,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if !(10..=200).contains(&self.slender)
+            || !(10..=200).contains(&self.slender_big)
+            || self.girth_spread_percent > 90
+            || !(1..=1_000_000).contains(&self.bite_mm2)
+            || self.chips_g_per_cm2 > 1000
+            || !(1..=100).contains(&self.stem_form_percent)
+            || !(100..=2000).contains(&self.wood_kg_per_m3)
+            || self.crown_percent > 100
+            || self.branches_most > 64
+            || !(1..=10_000).contains(&self.bark_reach_mm)
+            || !(1..=4000).contains(&self.notch_closes_seasons)
+            || !(1..=4000).contains(&self.bark_grows_seasons)
+        {
+            return Err(ContentError::Needs(
+                "hands.trees: slender and slender_big 10 to 200, girth_spread_percent at most 90, bite_mm2 1 to a million, chips_g_per_cm2 at most 1000, stem_form_percent 1 to 100, wood_kg_per_m3 100 to 2000, crown_percent at most 100, branches_most at most 64, bark_reach_mm 1 to 10000, notch_closes_seasons and bark_grows_seasons 1 to 4000",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The thickness of the trunk of a tree of `species`, in millimetres,
+    /// `roll` being the tree's own number: its kind's height over its
+    /// slenderness, the tree's share of the spread either way.
+    #[must_use]
+    // Not generation: the content gives heights in metres, read once.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::float_arithmetic,
+        reason = "a height checked positive and under 100 m; float maths of the simulation, the same result on every run"
+    )]
+    pub fn trunk_mm(&self, species: &Species, roll: u64) -> u32 {
+        let height_mm = (species.height_m * 1000.0).round().clamp(0.0, 100_000.0) as u64;
+        let slender = u64::from(if species.big {
+            self.slender_big
+        } else {
+            self.slender
+        });
+        let spread = u64::from(self.girth_spread_percent);
+        let share = 100 - spread + roll % (2 * spread + 1);
+        u32::try_from(height_mm * share / (slender.max(1) * 100))
+            .unwrap_or(u32::MAX)
+            .max(1)
+    }
+
+    /// The section of a trunk `trunk_mm` thick, in square millimetres:
+    /// what a notch has to cut through for the tree to fall.
+    #[must_use]
+    pub fn section_mm2(trunk_mm: u32) -> u32 {
+        // π / 4 as 355 / 452.
+        let d = u64::from(trunk_mm);
+        u32::try_from(d * d * 355 / 452).unwrap_or(u32::MAX).max(1)
+    }
+
+    /// The mass of the trunk of a tree of `species` `trunk_mm` thick, in
+    /// grams: its section, its kind's height, the stem's form, the living
+    /// wood's density.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::float_arithmetic,
+        reason = "a height checked positive and under 100 m; float maths of the simulation, the same result on every run"
+    )]
+    pub fn trunk_g(&self, species: &Species, trunk_mm: u32) -> u32 {
+        let height_mm = (species.height_m * 1000.0).round().clamp(0.0, 100_000.0) as u64;
+        // mm³, then the form; a cubic metre is 10⁹ mm³, a kilogram 10³ g.
+        let mm3 =
+            u64::from(Self::section_mm2(trunk_mm)) * height_mm * u64::from(self.stem_form_percent)
+                / 100;
+        u32::try_from(mm3 * u64::from(self.wood_kg_per_m3) / 1_000_000)
+            .unwrap_or(u32::MAX)
+            .max(1)
+    }
+
+    /// The grams of chips a cut through `mm2` of a trunk lets fall.
+    #[must_use]
+    pub fn chips_g(&self, mm2: u32) -> u32 {
+        u32::try_from(u64::from(mm2) * u64::from(self.chips_g_per_cm2) / 100).unwrap_or(u32::MAX)
+    }
+
+    /// How many pieces of `bark` a trunk `trunk_mm` thick wears where
+    /// the hands reach (amended 28 November 2026): its girth times the
+    /// height reached, over the area of one piece; one at least.
+    #[must_use]
+    pub fn bark_plates(&self, trunk_mm: u32, bark: &Material) -> u32 {
+        // π as 355 / 113; a square decimetre is 10,000 mm².
+        let girth_mm = u64::from(trunk_mm) * 355 / 113;
+        let piece_mm2 = u64::from(bark.area_dm2.max(1)) * 10_000;
+        u32::try_from(girth_mm * u64::from(self.bark_reach_mm) / piece_mm2)
+            .unwrap_or(u32::MAX)
+            .max(1)
+    }
+
+    /// The journées a notch as wide as the whole section takes to close,
+    /// and a stripped trunk to wear its bark again, under a calendar of
+    /// `days_per_cycle` journées a cycle: a journée each at least.
+    #[must_use]
+    pub fn heal_days(&self, days_per_cycle: u32) -> (u64, u64) {
+        let days = |seasons| u64::from(season_days(seasons, days_per_cycle).max(1));
+        (
+            days(self.notch_closes_seasons),
+            days(self.bark_grows_seasons),
+        )
+    }
 }
 
 impl Default for Hands {
@@ -1367,6 +1707,7 @@ impl Default for Hands {
             gesture_minutes: 10,
             near_tiles: 4,
             tries_per_day: 0,
+            ..Self::placeholders()
         }
     }
 }
@@ -1379,7 +1720,60 @@ impl Hands {
             gesture_minutes: 10,
             near_tiles: 4,
             tries_per_day: 4,
+            fold_suppleness: Self::default_fold_suppleness(),
+            loose_g_per_litre: Self::default_loose_g_per_litre(),
+            failures_kept: Self::default_failures_kept(),
+            seen_kept: Self::default_seen_kept(),
+            again_permille: Self::default_again_permille(),
+            amiss_kept: Self::default_amiss_kept(),
+            laid_kept: Self::default_laid_kept(),
+            edge_seen: Self::default_edge_seen(),
+            supple_seen: Self::default_supple_seen(),
+            trees: None,
         }
+    }
+
+    fn default_fold_suppleness() -> u8 {
+        5
+    }
+
+    fn default_loose_g_per_litre() -> u32 {
+        500
+    }
+
+    fn default_failures_kept() -> u32 {
+        1024
+    }
+
+    fn default_seen_kept() -> u32 {
+        1024
+    }
+
+    fn default_again_permille() -> u32 {
+        10
+    }
+
+    fn default_amiss_kept() -> u32 {
+        32
+    }
+
+    fn default_laid_kept() -> u32 {
+        32
+    }
+
+    fn default_edge_seen() -> u8 {
+        3
+    }
+
+    fn default_supple_seen() -> u8 {
+        5
+    }
+
+    /// The grams of loose things a hollow of `hollow_ml` keeps together.
+    #[must_use]
+    pub fn holds_g(&self, hollow_ml: u32) -> u32 {
+        u32::try_from(u64::from(hollow_ml) * u64::from(self.loose_g_per_litre) / 1000)
+            .unwrap_or(u32::MAX)
     }
 
     /// Whether anybody tries a gesture.
@@ -1394,6 +1788,23 @@ impl Hands {
                 "hands: gesture_minutes 1 to a day, near_tiles 1 to 16",
             ));
         }
+        if self.fold_suppleness > 10
+            || self.edge_seen > 10
+            || self.supple_seen > 10
+            || !(1..=2000).contains(&self.loose_g_per_litre)
+            || self.failures_kept > 4096
+            || self.seen_kept > 4096
+            || self.again_permille > 1000
+            || self.amiss_kept > 64
+            || self.laid_kept > 64
+        {
+            return Err(ContentError::Needs(
+                "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000, failures_kept and seen_kept at most 4096, again_permille at most 1000, amiss_kept and laid_kept at most 64",
+            ));
+        }
+        if let Some(trees) = &self.trees {
+            trees.validate()?;
+        }
         Ok(())
     }
 }
@@ -1401,16 +1812,18 @@ impl Hands {
 /// The refusals of the world a body remembers as a problem (D50 and D57,
 /// amended 26 November 2026; the project lead: "not a feeling added to
 /// push them, rather a limitation that leads to thought: my arms are full,
-/// I can't take more"). Each kind links a refusal of the world to the
-/// property of the materials its test read: `full` (a gathering stopped
-/// with its arms full, the plant still bearing) to `holds_g`. A lived
+/// I can't take more"). Each kind names a refusal of the world: `full` (a
+/// gathering stopped with its arms full, the plant still bearing), and
+/// the ailments felt (D59). Nothing names what would answer it: the label
+/// that tied `full` to a property of the materials, read by no decision,
+/// is gone (amended 27 November 2026). A lived
 /// problem lets a willing body try its hands there and then, and that
 /// trial is judged by the problem. No word for what would answer it. D30
 /// placeholders, named and explained in `content/needs.ron`. Absent (no
 /// kinds): nothing is remembered as a problem.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Problems {
-    /// The kinds remembered, each a refusal and its property.
+    /// The kinds remembered, each a refusal.
     pub kinds: Vec<ProblemKind>,
     /// A problem not lived again for this many seasons is forgotten.
     pub fades_seasons: u32,
@@ -1425,8 +1838,6 @@ pub struct ProblemKind {
     /// The refusal of the world, in the simulation's own word: `full`
     /// (a gathering stopped with all it could carry, [`crate::WorkEnd::Full`]).
     pub refusal: String,
-    /// The property of the materials the refusal's test read: `holds_g`.
-    pub property: String,
     /// The trials a body begins from this problem in a season, at most.
     pub trials_per_season: u32,
     /// A trial from this problem is given up when this many seasons
@@ -1436,13 +1847,12 @@ pub struct ProblemKind {
 }
 
 impl ProblemKind {
-    /// An ailment felt (D59): lived by the body, read by no material, and
-    /// no trial begun from it in this first step.
+    /// An ailment felt (D59): lived by the body, and no trial begun from
+    /// it in this first step.
     #[must_use]
     pub fn felt(refusal: &str) -> Self {
         Self {
             refusal: refusal.to_owned(),
-            property: "felt".to_owned(),
             trials_per_season: 0,
             gives_up_seasons: 1,
         }
@@ -1456,13 +1866,8 @@ impl ProblemKind {
     }
 }
 
-/// The refusals a problem may name, each with the one property its test
-/// reads (D50, amended 26 November 2026).
-const PROBLEM_LINKS: [(&str, &str); 3] = [
-    ("full", "holds_g"),
-    ("ill_gut", "felt"),
-    ("ill_chest", "felt"),
-];
+/// The refusals a problem may name (D50, amended 26 November 2026).
+const PROBLEM_REFUSALS: [&str; 3] = ["full", "ill_gut", "ill_chest"];
 
 impl Problems {
     /// The placeholders of `content/needs.ron` (D30).
@@ -1472,7 +1877,6 @@ impl Problems {
             kinds: vec![
                 ProblemKind {
                     refusal: "full".to_owned(),
-                    property: "holds_g".to_owned(),
                     trials_per_season: 1,
                     gives_up_seasons: 1,
                 },
@@ -1516,11 +1920,7 @@ impl Problems {
         if !self.on() {
             return Ok(());
         }
-        let linked = |k: &ProblemKind| {
-            PROBLEM_LINKS
-                .iter()
-                .any(|(r, p)| *r == k.refusal && *p == k.property)
-        };
+        let linked = |k: &ProblemKind| PROBLEM_REFUSALS.contains(&k.refusal.as_str());
         let unique = self
             .kinds
             .iter()
@@ -1536,8 +1936,8 @@ impl Problems {
                 .all(|k| linked(k) && k.gives_up_seasons > 0)
         {
             return Err(ContentError::Needs(
-                "problems: each refusal once, linked to the property its test reads \
-                 (full: holds_g; ill_gut, ill_chest: felt), gives_up_seasons and fades_seasons at least 1, mind_slots 1 to 255",
+                "problems: each refusal once, one the simulation knows \
+                 (full, ill_gut, ill_chest), gives_up_seasons and fades_seasons at least 1, mind_slots 1 to 255",
             ));
         }
         Ok(())
@@ -3893,19 +4293,40 @@ impl Content {
         Ok(())
     }
 
-    /// Checks what the gestures of the hands name (D57): a material's
-    /// fold and a tree's bark are materials.
+    /// Checks what the gestures of the hands read (D57): the scales of
+    /// a material, and that a tree's bark is a material.
     fn validate_gestures(&self, ids: &BTreeSet<&str>) -> Result<(), ContentError> {
+        if self.materials.len() >= usize::from(crate::brain::HOLLOW) {
+            return Err(ContentError::Needs("too many materials"));
+        }
+        if self.species.len() >= usize::from(crate::brain::BRANCH) {
+            return Err(ContentError::Needs("too many species"));
+        }
+        if let Some(trees) = &self.needs.hands.trees
+            && [&trees.wood, &trees.chips, &trees.log]
+                .iter()
+                .any(|id| !ids.contains(id.as_str()))
+        {
+            return Err(ContentError::Needs(
+                "hands.trees: wood, chips and log name materials",
+            ));
+        }
         for material in &self.materials {
-            if material
-                .folds_into
-                .as_ref()
-                .is_some_and(|into| !ids.contains(into.as_str()) || *into == material.id)
+            let invalid = |what| ContentError::InvalidValue {
+                id: material.id.clone(),
+                what,
+            };
+            if material.edge > 10 || material.suppleness > 10 || material.toughness > 10 {
+                return Err(invalid("edge, suppleness and toughness are 0 to 10"));
+            }
+            if (material.form == Form::Sheet) != (material.area_dm2 > 0) || material.area_dm2 > 400
             {
-                return Err(ContentError::InvalidValue {
-                    id: material.id.clone(),
-                    what: "folds_into names another material",
-                });
+                return Err(invalid(
+                    "a sheet has an area_dm2 of 1 to 400, nothing else has one",
+                ));
+            }
+            if material.days_worn(4) > 0 && material.food.is_some() {
+                return Err(invalid("food spoils by its keeping, it does not wear"));
             }
         }
         for species in &self.species {
@@ -3956,9 +4377,6 @@ impl Content {
             }
             if !is_hex_colour(&material.look.colour) {
                 return Err(invalid("look.colour must be #rrggbb"));
-            }
-            if material.holds_g > 0 && material.food.is_some() {
-                return Err(invalid("food is no container"));
             }
         }
         self.validate_gestures(&ids)?;
@@ -4342,6 +4760,59 @@ impl Content {
     /// A material by id.
     pub fn material(&self, id: &str) -> Option<&Material> {
         self.materials.iter().find(|m| m.id == id)
+    }
+
+    /// What a cut of a part of a tree of `species` gives with a piece of
+    /// `tool` in hand (D57, amended 27 November 2026), the tree being as
+    /// the seed made it. On the trunk: the tree's bark, when it has one
+    /// that comes away and the tool works it loose ([`Material::works`]);
+    /// on a tree with no such bark, the chips of the living wood, when
+    /// the tool bites it ([`Content::bite_mm2`]). The wood under a bark
+    /// is cut only where the bark is gone (amended 28 November 2026):
+    /// that is the tree's state, the world's to know
+    /// ([`crate::World::bark_left`]). On a branch: the branch, of living
+    /// wood, when the tool works that. Nothing otherwise.
+    #[must_use]
+    pub fn cut_gives(&self, tool: &Material, species: &Species, part: Part) -> Option<&Material> {
+        let trees = self.needs.hands.trees.as_ref();
+        match part {
+            Part::Trunk => {
+                if let Some(bark) = species.bark.as_deref().and_then(|b| self.material(b)) {
+                    return tool.works(bark).then_some(bark);
+                }
+                self.bite_mm2(tool)?;
+                self.material(&trees?.chips)
+            }
+            Part::Branch => self.material(&trees?.wood).filter(|wood| tool.works(wood)),
+        }
+    }
+
+    /// The square millimetres of a living trunk's section one gesture
+    /// with a piece of `tool` in hand cuts through (D57, amended 27
+    /// November 2026): nothing when the tool does not work the living
+    /// wood; else the content's bite for each point of its edge over the
+    /// wood's toughness, plus one.
+    #[must_use]
+    pub fn bite_mm2(&self, tool: &Material) -> Option<u32> {
+        let trees = self.needs.hands.trees.as_ref()?;
+        let wood = self.material(&trees.wood)?;
+        tool.works(wood).then(|| {
+            trees
+                .bite_mm2
+                .saturating_mul(u32::from(tool.edge - wood.toughness) + 1)
+        })
+    }
+
+    /// The material of the piece a blow of `with` on `on` breaks off
+    /// ([`Material::struck_with`]), whichever of the two breaks.
+    #[must_use]
+    pub fn strike_gives(&self, on: &Material, with: &Material) -> Option<&Material> {
+        let broken = if on.struck_with(with, self.needs.hands.fold_suppleness)? {
+            on
+        } else {
+            with
+        };
+        self.material(broken.breaks_into.as_deref().unwrap_or(&broken.id))
     }
 
     /// A small, valid content for tests: a stone, a branch and a berry.
@@ -4997,18 +5468,19 @@ mod bounds_tests {
     }
 
     #[test]
-    fn the_problems_link_a_refusal_to_the_property_its_test_reads() {
+    fn the_problems_name_refusals_the_simulation_knows_and_no_property() {
         let repo = crate::crops::tests::content();
         assert_eq!(repo.needs.problems, Problems::placeholders());
         assert_eq!(repo.needs.problems.kind_of("full"), Some(0));
         assert!(!Problems::default().on() && Problems::default().validate().is_ok());
         let mut p = Problems::placeholders();
         assert!(p.validate().is_ok());
-        p.kinds[0].property = "wears_days".to_owned();
-        assert!(p.validate().is_err(), "full reads holds_g");
-        let mut p = Problems::placeholders();
         p.kinds[0].refusal = "water".to_owned();
-        assert!(p.validate().is_err(), "no such refusal linked");
+        assert!(p.validate().is_err(), "no such refusal");
+        // The label that named what answers `full` is gone (D57, amended
+        // 27 November 2026): nothing in the content says it.
+        let needs = include_str!("../../../content/needs.ron");
+        assert!(!needs.contains("property:") && !needs.contains("holds_g"));
         let mut p = Problems::placeholders();
         p.kinds.push(p.kinds[0].clone());
         assert!(p.validate().is_err(), "each refusal once");

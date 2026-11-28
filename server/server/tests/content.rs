@@ -32,7 +32,7 @@ fn the_content_directory_loads_and_validates() {
 /// The long durations are written in seasons (D09, the clocks audit's
 /// principle D, 25 November 2026) and give calendar v1's days exactly as
 /// the days they replaced: nuts, grain, peas and seeds keep 64 days,
-/// walnuts six seasons (96, from 90), folded bark lasts 64, the hearth,
+/// walnuts six seasons (96, from 90), a folded bark lasts two seasons, the hearth,
 /// the habits and the lessons hold 64; under another cycle they follow it.
 #[test]
 fn the_long_durations_in_seasons_give_calendar_v1_its_days() {
@@ -51,7 +51,7 @@ fn the_long_durations_in_seasons_give_calendar_v1_its_days() {
     }
     assert_eq!(kept("walnuts", v1), Some(96));
     assert_eq!(kept("berries", v1), Some(3), "a short keeping stays days");
-    let bark = content.material("folded_birch_bark").unwrap();
+    let bark = content.material("birch_bark").unwrap();
     assert_eq!(bark.days_worn(v1), 32);
     let needs = &content.needs;
     assert_eq!(needs.fire.hearth_nights(v1), 64);
@@ -157,14 +157,27 @@ fn the_valley_drops_dead_wood_and_pebbles_where_they_belong() {
     assert!(items.iter().any(|i| i.material() == "branch"));
     assert!(items.iter().any(|i| i.material() == "pebble"));
     // Flint lies on the banks and by the rock (D57).
-    assert!(items.iter().any(|i| i.material() == "flint"));
+    assert!(items.iter().any(|i| i.material() == "flint_nodule"));
+    // The other stones and the big leaves of the banks (D57, amended 27
+    // November 2026).
+    for more in ["quartz", "slate", "sandstone", "butterbur_leaf"] {
+        assert!(items.iter().any(|i| i.material() == more), "{more}");
+    }
     // Nothing else ready-made lies about: berries and fibres will come
     // from the bushes and the plants.
     assert!(
-        items
-            .iter()
-            .all(|i| matches!(i.material(), "branch" | "pebble" | "flint")),
-        "only dead wood, pebbles and flint lie on the ground"
+        items.iter().all(|i| matches!(
+            i.material(),
+            "branch"
+                | "pebble"
+                | "flint"
+                | "flint_nodule"
+                | "quartz"
+                | "slate"
+                | "sandstone"
+                | "butterbur_leaf"
+        )),
+        "only dead wood, stones and big leaves lie on the ground"
     );
 }
 

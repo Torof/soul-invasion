@@ -400,10 +400,12 @@ pub struct Body {
     /// stored.
     #[serde(skip)]
     food_g: u32,
-    /// Grams of loose food its containers keep together (D57), on top of
-    /// what its arms hold. Derived with `load_g`, never stored.
+    /// Grams of the loose food it carries that lie in a hollow it carries
+    /// (D57, amended 27 November 2026: put there by a gesture, never by
+    /// the hollow's mere presence): off its arms. Derived with `load_g`,
+    /// never stored.
     #[serde(skip)]
-    holds_g: u32,
+    stowed_g: u32,
     /// The work it is busy at, if any (D45): gathering, a pinch at a time.
     #[serde(default)]
     work: Option<Work>,
@@ -698,36 +700,41 @@ impl Body {
             .saturating_sub(self.carrying_g)
     }
 
-    /// What its arms and containers hold of loose food, in grams (D35,
-    /// amended 24 November 2026; D57): the content's `hands_g` to its
-    /// size, an infant riding on the back and taking nothing from it, and
-    /// what each container it carries keeps together.
-    pub fn food_capacity_g(&self, movement: &Movement) -> u32 {
-        let size = u64::from(self.condition.size_permille.min(1000));
-        let arms = u64::from(movement.hands_g) * size / 1000;
-        u32::try_from(arms)
-            .unwrap_or(u32::MAX)
-            .saturating_add(self.holds_g)
-    }
-
-    /// The grams of loose food it can still take (D57): what its arms and
-    /// containers hold less the food it carries, and no more than its
-    /// load leaves.
+    /// The grams of loose food it can still take (D57): what its arms
+    /// hold less the food in them, and no more than its load leaves.
+    /// Nothing holds by itself (amended 27 November 2026): the food put
+    /// in a hollow it carries is off its arms, a hollow merely carried
+    /// adds nothing.
     pub fn food_room_g(&self, movement: &Movement) -> u32 {
-        self.food_capacity_g(movement)
-            .saturating_sub(self.food_g)
+        self.arms_g(movement)
+            .saturating_sub(self.arms_food_g())
             .min(self.capacity_g(movement).saturating_sub(self.load_g))
     }
 
-    /// Grams of loose food it carries, as last weighed (D57).
+    /// Grams of loose food it carries, as last weighed (D57): in its
+    /// arms and in the hollows it carries.
     pub fn food_g(&self) -> u32 {
         self.food_g
     }
 
-    /// Grams of loose food its arms alone hold (D57): `hands_g` by its
-    /// size, without the containers.
+    /// Grams of its loose food that lie in a hollow it carries (D57,
+    /// amended 27 November 2026).
+    pub fn stowed_g(&self) -> u32 {
+        self.stowed_g
+    }
+
+    /// Grams of loose food in its arms: what it carries less what lies
+    /// in a hollow.
+    pub fn arms_food_g(&self) -> u32 {
+        self.food_g.saturating_sub(self.stowed_g)
+    }
+
+    /// Grams of loose food its arms hold (D35, amended 24 November 2026;
+    /// D57): the content's `hands_g` to its size, an infant riding on the
+    /// back and taking nothing from it.
     pub fn arms_g(&self, movement: &Movement) -> u32 {
-        self.food_capacity_g(movement).saturating_sub(self.holds_g)
+        let size = u64::from(self.condition.size_permille.min(1000));
+        u32::try_from(u64::from(movement.hands_g) * size / 1000).unwrap_or(u32::MAX)
     }
 
     /// The gesture it is busy at, if any (D57).
@@ -778,9 +785,29 @@ pub struct Item {
     /// the world) or left by a death.
     made: Tick,
     place: Place,
+    /// The hollow it was folded into, in millilitres (D57, amended 27
+    /// November 2026: a form of the thing, no material of its own); 0:
+    /// as it came.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    hollow_ml: u32,
+    /// The hollow thing it was put in (D57, amended 27 November 2026),
+    /// while both are carried by the same body; `None`: in the arms, on
+    /// the ground, in a store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    within: Option<ItemId>,
 }
 
 impl Item {
+    /// The hollow it was folded into, in millilitres; 0: none.
+    pub fn hollow_ml(&self) -> u32 {
+        self.hollow_ml
+    }
+
+    /// The hollow thing it lies in, if it was put in one.
+    pub fn within(&self) -> Option<ItemId> {
+        self.within
+    }
+
     /// The item's id.
     pub fn id(&self) -> ItemId {
         self.id
@@ -830,6 +857,8 @@ impl Item {
             mass_g: grams,
             made: self.made,
             place: self.place,
+            hollow_ml: 0,
+            within: self.within,
         })
     }
 
@@ -839,12 +868,17 @@ impl Item {
     /// make the old ones fresh, so a store cannot be kept young by topping
     /// it up (a mass-weighted date would allow just that), and the date
     /// stays exact, never rounded. Gives `other` back, untouched, when the
-    /// materials differ or the mass would overflow.
+    /// materials differ, one of them is folded into a hollow (a thing of
+    /// its own, no pile) or the mass would overflow.
     ///
     /// # Errors
     /// `other` itself, when it cannot be merged.
     pub fn merge(&mut self, other: Item) -> Result<(), Item> {
-        if other.material != self.material {
+        if other.material != self.material
+            || other.hollow_ml > 0
+            || self.hollow_ml > 0
+            || other.within != self.within
+        {
             return Err(other);
         }
         let Some(mass) = self.mass_g.checked_add(other.mass_g) else {
@@ -895,6 +929,10 @@ pub enum Refusal {
     /// The body can eat no more today: its reserve is full, or it ate
     /// the day's ceiling.
     Sated,
+    /// Its arms hold other things than those of the gesture (D57, amended
+    /// 28 November 2026, the project lead: "with full arms the hands are
+    /// not free; one cannot do an action").
+    HandsFull,
 }
 
 /// What a body that stopped for good short of its target sees barring
@@ -1065,6 +1103,10 @@ pub enum Intention {
         chunk: ChunkPos,
         /// The tree.
         tree: trees::TreeKey,
+        /// The part of the tree it cuts (amended 27 November 2026): its
+        /// trunk when not said.
+        #[serde(default)]
+        part: hands::Part,
     },
     /// Fold the item `item` it carries (D57): a gesture of the content's
     /// minutes, whatever comes of it.
@@ -1073,6 +1115,37 @@ pub enum Intention {
         body: BodyId,
         /// The item folded.
         item: ItemId,
+    },
+    /// Put the item `item` it carries in the item `into` it carries (D57,
+    /// amended 27 November 2026): a gesture of the content's minutes,
+    /// whatever comes of it.
+    PutIn {
+        /// Who.
+        body: BodyId,
+        /// The item put.
+        item: ItemId,
+        /// The item it is put in.
+        into: ItemId,
+    },
+    /// Take the item `item` out of the item it carries it lies in (D57,
+    /// amended 27 November 2026): a gesture of the content's minutes,
+    /// whatever comes of it.
+    TakeOut {
+        /// Who.
+        body: BodyId,
+        /// The item taken out.
+        item: ItemId,
+    },
+    /// Strike the item `item` it carries with the item `with` it carries
+    /// (D57, amended 27 November 2026): a gesture of the content's
+    /// minutes, whatever comes of it.
+    Strike {
+        /// Who.
+        body: BodyId,
+        /// The item struck.
+        item: ItemId,
+        /// The item it is struck with.
+        with: ItemId,
     },
 }
 
@@ -1113,7 +1186,10 @@ impl Intention {
             | Intention::Follow { body, .. }
             | Intention::Gather { body, .. }
             | Intention::Cut { body, .. }
-            | Intention::Fold { body, .. } => body,
+            | Intention::Fold { body, .. }
+            | Intention::PutIn { body, .. }
+            | Intention::TakeOut { body, .. }
+            | Intention::Strike { body, .. } => body,
         }
     }
 }
@@ -1280,19 +1356,85 @@ pub enum Event {
         /// Its version now ([`World::chunk_version`]).
         version: ground::Version,
     },
-    /// A body finished a gesture (D57): a cut or a fold, on `item` (the
-    /// tool it cut with, or what it folded), and what came of it: a new
-    /// item cut, the item folded into another material, or nothing.
-    /// Seen by all.
+    /// A body finished a gesture (D57): a cut, a fold or a put-in, on
+    /// `item` (the tool it cut with, what it folded, what it put), and
+    /// what came of it: a new item cut, the item folded into a hollow,
+    /// the item (or the part of it that went) now in the hollow, nothing,
+    /// or the item broken and lost (amended 27 November 2026). Seen by
+    /// all.
     Gestured {
         /// Who.
         body: BodyId,
         /// The gesture.
         gesture: hands::Gesture,
-        /// The tool it cut with, or what it folded.
+        /// The tool it cut with, what it folded, or what it put.
         item: ItemId,
+        /// What it was done on: the material folded or put, or the
+        /// species of the tree cut (content ids).
+        on: String,
+        /// The thing it was put in, for a put-in.
+        into: Option<ItemId>,
+        /// The part of the tree cut, for a cut (amended 27 November
+        /// 2026).
+        part: Option<hands::Part>,
         /// What came of it, if anything.
         gave: Option<ItemId>,
+        /// The thing folded broke: it is gone.
+        broke: bool,
+    },
+    /// A piece of bark was lifted off a trunk (D57, amended 28 November
+    /// 2026): the trunk wears one less where the hands reach, its wood
+    /// untouched. Seen by all.
+    BarkLifted {
+        /// Who.
+        body: BodyId,
+        /// The chunk of the tree.
+        chunk: ChunkPos,
+        /// The tree.
+        tree: trees::TreeKey,
+        /// The pieces of bark its trunk still wears where the hands reach.
+        left: u32,
+        /// Its chunk's version right after it.
+        version: ground::Version,
+    },
+    /// An edge bit the living wood of a trunk (D57, amended 27 November
+    /// 2026): chips fell and the tree's notch deepened. Seen by all.
+    TreeBitten {
+        /// Who.
+        body: BodyId,
+        /// The chunk of the tree.
+        chunk: ChunkPos,
+        /// The tree.
+        tree: trees::TreeKey,
+        /// The chips that fell, in grams.
+        chips_g: u32,
+        /// The section of its trunk cut through now, in square
+        /// millimetres, by whoever cut.
+        notch_mm2: u32,
+        /// The whole section of its trunk.
+        section_mm2: u32,
+        /// Its chunk's version right after it.
+        version: ground::Version,
+    },
+    /// A tree fell, its trunk cut through (D57, amended 27 November
+    /// 2026): it stands no more, for good. Seen by all.
+    TreeFell {
+        /// Who gave the last cut.
+        body: BodyId,
+        /// The chunk of the tree.
+        chunk: ChunkPos,
+        /// The tree.
+        tree: trees::TreeKey,
+        /// Where it stood.
+        at: FinePos,
+        /// Its species (a content id).
+        species: String,
+        /// How thick its trunk was, in millimetres.
+        trunk_mm: u32,
+        /// The log it left, in grams.
+        log_g: u32,
+        /// Its chunk's version right after it.
+        version: ground::Version,
     },
     /// A body could not begin a gesture (D57). Told to the pilot.
     GestureRefused {
@@ -1946,7 +2088,9 @@ impl World {
 
     /// The trees standing in `chunk`, placed from the map and the seed
     /// ([`trees::trees_in`]) the first time they are asked for and held a
-    /// while ([`ground::Ground`]): the same every time, nothing stored.
+    /// while ([`ground::Ground`]), less those men felled (D57, amended 27
+    /// November 2026): the same every time, nothing stored but the
+    /// felled trees' keys.
     pub fn trees_in(&self, chunk: ChunkPos) -> Arc<[trees::Tree]> {
         self.ground_cache.trees_in(
             &self.map,
@@ -2069,6 +2213,13 @@ impl World {
         at: FinePos,
         crop: usize,
     ) -> Option<(u64, u32)> {
+        // A felled tree bears nothing (D57, amended 27 November 2026):
+        // it stays among the seed's bearers, so that nothing else moves.
+        if let crops::Source::Tree(tree) = source
+            && changes.is_some_and(|c| c.felled.contains(&tree))
+        {
+            return None;
+        }
         let frame = r#gen::scatter::Frame::at(self.map.origin());
         let key = self.crop_keys.get(crop).copied();
         let crop = &self.crops[crop];
@@ -2424,15 +2575,23 @@ impl World {
 
     /// Puts back a chunk's changes as the storage kept them, version
     /// included: how a world is loaded.
-    pub fn restore_changes(&mut self, chunk: ChunkPos, changes: changes::ChunkChanges) {
+    pub fn restore_changes(&mut self, chunk: ChunkPos, mut changes: changes::ChunkChanges) {
+        // The trees healed since are forgotten (D57, amended 28 November
+        // 2026); the version stays the stored one.
+        changes.forget_healed(self.day_now());
         self.ground_cache.set_version(chunk, changes.version);
+        self.ground_cache.set_felled(chunk, &changes.felled);
         self.changes.insert(chunk, Arc::new(changes));
     }
 
     /// Changes `chunk` as `change` does, and counts it: the chunk's
     /// version grows by one.
     fn change(&mut self, chunk: ChunkPos, change: impl FnOnce(&mut changes::ChunkChanges)) {
+        let today = self.day_now();
         let changes = Arc::make_mut(self.changes.entry(chunk).or_default());
+        // A chunk men change forgets its trees healed since (D57, amended
+        // 28 November 2026): its own marks alone are looked at.
+        changes.forget_healed(today);
         change(changes);
         changes.version += 1;
         self.ground_cache.set_version(chunk, changes.version);
@@ -2572,21 +2731,27 @@ impl World {
     }
 
     /// Weighs a body's load again ([`Body::load_g`]), its loose food and
-    /// what its containers hold (D57).
+    /// what of it lies in a hollow it carries (D57): a thing put in a
+    /// hollow that the body no longer carries is in its arms again.
     fn refresh_load(&mut self, index: usize, rules: &Content) {
         let body = &self.bodies[index];
-        let (mut load, mut food, mut holds) = (0_u32, 0_u32, 0_u32);
+        let (mut load, mut food, mut stowed) = (0_u32, 0_u32, 0_u32);
         for item in body.inventory().filter_map(|id| self.item(id)) {
             load = load.saturating_add(item.mass_g);
-            if let Some(material) = rules.material(&item.material) {
-                if material.food.is_some() {
-                    food = food.saturating_add(item.mass_g);
+            if rules
+                .material(&item.material)
+                .is_some_and(|m| m.food.is_some())
+            {
+                food = food.saturating_add(item.mass_g);
+                if item.within.is_some_and(|hollow| {
+                    body.has(hollow) && self.item(hollow).is_some_and(|h| h.hollow_ml > 0)
+                }) {
+                    stowed = stowed.saturating_add(item.mass_g);
                 }
-                holds = holds.saturating_add(material.holds_g);
             }
         }
         let body = &mut self.bodies[index];
-        (body.load_g, body.food_g, body.holds_g) = (load, food, holds);
+        (body.load_g, body.food_g, body.stowed_g) = (load, food, stowed);
     }
 
     /// Grams a body carries in all, its items' own (the body keeps the
@@ -2612,6 +2777,8 @@ impl World {
                 mass_g: mass_g.max(1),
                 made: self.tick,
                 place: Place::Ground { pos },
+                hollow_ml: 0,
+                within: None,
             },
         );
         self.lay(id, pos.chunk());
@@ -2633,6 +2800,8 @@ impl World {
                 mass_g: mass_g.max(1),
                 made: self.tick,
                 place: Place::Ground { pos },
+                hollow_ml: 0,
+                within: None,
             },
         );
         self.kept_in.entry(pos.chunk()).or_default().insert(id);
@@ -2667,7 +2836,7 @@ impl World {
             carried: Vec::new(),
             load_g: 0,
             food_g: 0,
-            holds_g: 0,
+            stowed_g: 0,
             work: None,
             making: None,
             born_day: -25 * i64::from(self.calendar.days_per_age_year()),
@@ -2690,6 +2859,12 @@ impl World {
     /// The world's day now, counted from its first.
     pub fn today(&self) -> i64 {
         i64::try_from(self.tick.0 / self.calendar.ticks_per_day().max(1)).unwrap_or(i64::MAX)
+    }
+
+    /// [`World::today`], never negative: the journée the changes of the
+    /// chunks are dated with.
+    fn day_now(&self) -> u64 {
+        u64::try_from(self.today()).unwrap_or(0)
     }
 
     /// How old a body is, in thousandths of an age-year (lot 3 B; D09,
@@ -3345,6 +3520,7 @@ impl World {
                 continue;
             };
             dropped.place = Place::Ground { pos: at };
+            dropped.within = None;
             let material = dropped.material.clone();
             let mass_g = dropped.mass_g;
             self.lay(item, at.chunk());
@@ -3453,8 +3629,12 @@ impl World {
                 with,
                 chunk,
                 tree,
-            } => self.cut(id, with, (chunk, tree), rules, events),
+                part,
+            } => self.cut(id, with, (chunk, tree, part), rules, events),
             Intention::Fold { body: id, item } => self.fold(id, item, rules, events),
+            Intention::PutIn { .. } | Intention::TakeOut { .. } | Intention::Strike { .. } => {
+                self.on_carried(intention, rules, events);
+            }
             Intention::Sleep { body: id } => {
                 if let Some(index) = self.index_of(id) {
                     let body = &mut self.bodies[index];
@@ -3797,8 +3977,12 @@ impl World {
             .as_ref()
             .and_then(|w| w.into)
             .filter(|item| {
+                // A pile in its arms: what lies in a hollow was put
+                // there by a gesture (D57, amended 27 November 2026).
                 self.items.get(item).is_some_and(|i| {
-                    i.material == gives && matches!(i.place, Place::Carried { body } if body == id)
+                    i.material == gives
+                        && i.within.is_none()
+                        && matches!(i.place, Place::Carried { body } if body == id)
                 })
             });
         let item = if let Some(item) = into {
@@ -3817,6 +4001,8 @@ impl World {
                     mass_g: grams,
                     made: self.tick,
                     place: Place::Carried { body: id },
+                    hollow_ml: 0,
+                    within: None,
                 },
             );
             let body = &mut self.bodies[index];
@@ -3863,8 +4049,8 @@ impl World {
     }
 
     /// Has `item` spoiled (D16, D45)? Food does, its content's keeping
-    /// after it was made; a material that wears tears its wear after
-    /// (D57); anything else never. Keeping and wear written in seasons
+    /// after it was made; a thing folded of a material that wears tears
+    /// its wear after the fold (D57); anything else never. Keeping and wear written in seasons
     /// follow this world's cycle (D09).
     fn spoiled(&self, item: &Item, rules: &Content) -> bool {
         self.spoils_at(item, rules)
@@ -3892,6 +4078,8 @@ impl World {
         let per_cycle = self.calendar.days_per_cycle();
         let days = match material.food {
             Some(food) => food.days_kept(per_cycle),
+            // Only a thing folded wears: at its folds, from the fold.
+            None if item.hollow_ml == 0 => return None,
             None => match material.days_worn(per_cycle) {
                 0 => return None,
                 worn => worn,
@@ -3936,13 +4124,24 @@ impl World {
                 continue;
             };
             match item.place {
-                Place::Ground { pos } => events.push(Event::ItemRemoved {
-                    item: id,
-                    at: pos,
-                    version: self.chunk_version(pos.chunk()),
-                }),
+                Place::Ground { pos } => {
+                    // What lay in it lies on the ground, in nothing.
+                    for thing in self.inside_on_ground(id, pos) {
+                        if let Some(thing) = self.items.get_mut(&thing) {
+                            thing.within = None;
+                        }
+                    }
+                    events.push(Event::ItemRemoved {
+                        item: id,
+                        at: pos,
+                        version: self.chunk_version(pos.chunk()),
+                    });
+                }
                 Place::Carried { body } => {
                     if let Some(index) = self.index_of(body) {
+                        // A hollow torn lets fall what it held (D57,
+                        // amended 27 November 2026).
+                        self.spill(index, id, events);
                         let was_held = self.bodies[index].held == Some(id);
                         self.bodies[index].let_go(id);
                         self.inventory_changed(index, rules, events);
@@ -4145,7 +4344,18 @@ impl World {
             }
             Err(reason) => return Self::refuse(events, id, ItemAct::PickUp, item, reason),
         };
-        let mass = self.item_or_kept(item).map_or(0, Item::mass_g);
+        // A hollow lying with things in it is taken up with them (D57,
+        // amended 28 November 2026): one thing to take, as heavy as all
+        // of it.
+        let inside = self.inside_on_ground(item, pos);
+        let within_g = inside
+            .iter()
+            .filter_map(|i| self.item(*i))
+            .fold(0_u32, |sum, i| sum.saturating_add(i.mass_g));
+        let mass = self
+            .item_or_kept(item)
+            .map_or(0, Item::mass_g)
+            .saturating_add(within_g);
         let food = self
             .item_or_kept(item)
             .and_then(|i| rules.material(&i.material))
@@ -4198,8 +4408,11 @@ impl World {
         } else {
             if let Some(taken) = self.items.get_mut(&item) {
                 taken.place = Place::Carried { body: id };
+                // Taken out of the hollow it lay in, if any.
+                taken.within = None;
                 self.lift(item, pos.chunk());
             }
+            self.take_inside(index, (&inside, pos), events);
             false
         };
         let body = &mut self.bodies[index];
@@ -4234,6 +4447,10 @@ impl World {
             return Self::refuse(events, id, ItemAct::Drop, item, reason);
         }
         self.wake(index, events);
+        // What a hollow holds is laid down with it, still in it (D57,
+        // amended 28 November 2026: a thing laid at one's feet is set
+        // down, not thrown; before, what it held fell out of it).
+        self.set_down_inside(index, item, events);
         let at = self.bodies[index].pos();
         let was_held = self.bodies[index].held == Some(item);
         self.bodies[index].let_go(item);
@@ -4241,6 +4458,7 @@ impl World {
             return;
         };
         dropped.place = Place::Ground { pos: at };
+        dropped.within = None;
         let material = dropped.material.clone();
         let mass_g = dropped.mass_g;
         self.lay(item, at.chunk());
@@ -4348,6 +4566,7 @@ impl World {
             return;
         };
         record.place = Place::Ground { pos: at };
+        record.within = None;
         let (material, mass_g) = (record.material.clone(), record.mass_g);
         let mut into = item;
         let heap = self
@@ -4397,6 +4616,10 @@ impl World {
         if !self.bodies[index].carried.contains(&item) {
             let reason = self.not_had(item);
             return Self::refuse(events, id, ItemAct::Hold, item, reason);
+        }
+        // Taken in hand, it is out of the hollow it lay in (D57).
+        if let Some(taken) = self.items.get_mut(&item) {
+            taken.within = None;
         }
         let body = &mut self.bodies[index];
         body.carried.retain(|i| *i != item);

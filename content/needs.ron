@@ -973,10 +973,13 @@
         giver_starving_fat_percent: 15,
     ),
     // The gestures of the hands (D57; the project lead, 24 November 2026:
-    // "C'est parfait"): pick up, cut with what is in hand, fold. No
-    // recipe: what a gesture gives is what the materials are
-    // (materials.ron: sharp, folds_into, holds_g, wears_days or
-    // wears_seasons; species.ron: bark). A trial of the hands (D50, the way `hands`) is a gesture drawn
+    // "C'est parfait"): pick up, cut with what is in hand, fold, put a
+    // thing in another. No
+    // recipe: what a gesture gives is computed from what the materials
+    // are on the scales they all share (materials.ron: hardness, edge,
+    // suppleness, toughness, form, area_dm2, wears_days or wears_seasons;
+    // species.ron: bark), and may be nothing, or the thing broken (amended
+    // 27 November 2026). A trial of the hands (D50, the way `hands`) is a gesture drawn
     // from the run's seed on what lies within `near_tiles` or is carried;
     // what worked is told at the fire as any trial judged (D55).
     // gesture_minutes: 10 — a cut or a fold takes ten game minutes;
@@ -984,17 +987,203 @@
     //                       tiles around itself, and steps there;
     // tries_per_day:    4 — a body in a trial of its hands tries four
     //                       gestures a day at most (0: nobody tries one).
+    // What the world computes:
+    // fold_suppleness:  5 — a sheet at least this supple takes a hollow
+    //                       when folded; a stiffer one breaks;
+    // loose_g_per_litre: 500 — a litre of hollow keeps half a kilogram of
+    //                       loose things together (berries, nuts, leaves
+    //                       heaped, not packed), once they are put in it:
+    //                       nothing holds by being carried (27 November
+    //                       2026). A thing with no hollow holds nothing.
+    // The memory of results (27 and 28 November 2026; it lasts since the
+    // third round of the 28th, the project lead: "it is in my memory a
+    // year later"): one entry a deed, six bytes, in one list or the
+    // other, never pushed out by a newer one in a life. The two values
+    // are guards no life reaches (the most seen in a run of four cycles:
+    // 50 deeds for one person); beyond them the oldest goes.
+    // failures_kept: 1024 — the gestures that gave nothing or broke the
+    //                       thing (the gesture, on what kind, with or in
+    //                       what kind) a body remembers: "this gives
+    //                       nothing" (0: none remembered).
+    // seen_kept:     1024 — the deeds a body remembers having seen give
+    //                       a thing in its own hands without keeping
+    //                       them: "this gives that, and it brought me
+    //                       nothing". Its hands do not practise them: a
+    //                       deed is kept only when it belongs to a chain
+    //                       that relieved a problem the body lived, and
+    //                       a deed seen is done again only when a deed
+    //                       kept, or the chain in hand, needs what it
+    //                       gives.
+    // A known result is not tried again (28 November 2026): a deed of
+    // one list or the other, known from before the trial under way, is
+    // not drawn, and hearing it told again does not aim at it; a tale
+    // with nothing new to the listener opens no trial. Except rarely:
+    // again_permille:  10 — each journée, for each person and each deed
+    //                       whose result it knows, 10 chances in 1,000
+    //                       that it is ready to take that deed up again
+    //                       that journée (if it then draws it in a
+    //                       trial, or hears it told that evening): one
+    //                       journée in 100 for a given person and deed,
+    //                       a cycle and a half of 64 journées; a person
+    //                       who knows 26 results has one of them open
+    //                       about one journée in four (0: never).
+    // What a body remembers of a deed that did not give what was told (28
+    // November 2026):
+    // amiss_kept:      32 — the things (this tree, this piece) on which a
+    //                       deed done for what it gives did not give it
+    //                       into its hands ("told bark, here it gave no
+    //                       bark"), the oldest going when one more comes;
+    //                       the deed is not done again on that thing while
+    //                       remembered, elsewhere it may be (0: none
+    //                       remembered).
+    // Free hands (28 November 2026): a gesture other than a taking up
+    // needs the arms free of all but its own things; the rest is laid at
+    // its feet, a thing a tick, and taken up again afterwards.
+    // laid_kept:       32 — the things laid so that a body remembers, with
+    //                       where, the oldest going when one more comes.
+    // What a body sees before it tries (the project lead, 25 November
+    // 2026: "on ne coupe pas avec une baie"); it may still be wrong:
+    // edge_seen:        3 — a thing with at least this edge looks like it
+    //                       could cut; it is tried on any tree;
+    // supple_seen:      5 — a thing at least this supple feels like it
+    //                       could bend; so does any sheet, stiff or not.
+    // A put-in is tried in any thing carried that is a hollow or a sheet,
+    // of any other thing carried.
     hands: (
         gesture_minutes: 10,
         near_tiles: 4,
         tries_per_day: 4,
+        fold_suppleness: 5,
+        loose_g_per_litre: 500,
+        failures_kept: 1024,
+        seen_kept: 1024,
+        again_permille: 10,
+        amiss_kept: 32,
+        laid_kept: 32,
+        edge_seen: 3,
+        supple_seen: 5,
+        // A standing tree in parts (D57, amended 27 November 2026): a
+        // trunk of a thickness, living branches, living wood under the
+        // bark. Physics only: what the world answers to a cut on a part;
+        // nothing says what a tree, a branch, chips or a log are for.
+        //   wood, chips, log: the materials (materials.ron) of a branch
+        //                 cut off a living tree (and of the trunk under
+        //                 its bark, which an edge must work to bite),
+        //                 of what falls from a bitten trunk, and of the
+        //                 trunk once it lies.
+        //   slender:      80 — a grown tree's height over its trunk's
+        //                 thickness at a man's chest, for a kind that is
+        //                 not `big` (species.ron): a birch of 18 m is
+        //                 22 cm thick, a hazel stem of 5 m 6 cm.
+        //   slender_big:  40 — the same for a `big` kind, the canopy
+        //                 trees, stouter for their height: an oak of
+        //                 22 m is 55 cm thick, an ash of 28 m 70 cm.
+        //                 Forest-grown trees stand between 50 and 100
+        //                 heights a thickness, old canopy trees under 50
+        //                 (the foresters' slenderness ratio h/d).
+        //   girth_spread_percent: 25 — each tree is that much thinner or
+        //                 thicker than its kind at most, fixed for the
+        //                 tree by the seed and where it stands.
+        //   bite_mm2:     330 — the square millimetres of a trunk's
+        //                 section one gesture (gesture_minutes above)
+        //                 cuts through, for each point of the tool's edge
+        //                 over the living wood's toughness, plus one. A
+        //                 tree falls when the cuts, whoever gave them,
+        //                 add up to its trunk's whole section; the time
+        //                 grows as the square of the thickness.
+        //                 Keen flint in the bare hand (edge 9 on a wood
+        //                 of toughness 6: 4 × 330 = 1,320 mm², 13 cm² in
+        //                 ten minutes): a stem of 5 cm falls in 2
+        //                 gestures (20 minutes), one of 10 cm in 6 (an
+        //                 hour), a birch of 22 cm in 31 (five hours), an
+        //                 oak of 40 cm in 96 (16 hours of work), of 55 cm
+        //                 in 180 (30 hours), an ash of 70 cm in 292 (49
+        //                 hours): days.
+        //                 Sources. The time as the square of the
+        //                 thickness is what the felling experiments with
+        //                 hafted polished stone axes give, about 20 to
+        //                 28 cm² of section a minute: 10 cm in 4 minutes
+        //                 and 30 cm in 20 (New Guinea, ethnographic
+        //                 averages, stonetoolsmuseum.com, "Using stone
+        //                 axes and adzes: insights from New Guinea");
+        //                 14 to 15 cm in 7 minutes (Czechoslovakia,
+        //                 1960s) and 25 cm in 20 minutes (Semenov, near
+        //                 Leningrad, 1951), both as reported by
+        //                 lithiccastinglab.com; an oak over 30 cm in
+        //                 half an hour (the Danish Draved experiment, as
+        //                 Britannica reports it, "Hand tool: Neolithic
+        //                 tools"); Mathieu and Meyer, "Comparing axe
+        //                 heads of stone, bronze and steel", Journal of
+        //                 Field Archaeology 24 (1997). No measured
+        //                 figure was found for a flake held in the bare
+        //                 hand: the value is set on the project lead's
+        //                 own figure (27 November 2026: a thin tree of 5
+        //                 to 10 cm in the order of an hour, a big oak a
+        //                 matter of days), 1.3 cm² a minute, some
+        //                 fifteen to twenty times slower than a hafted
+        //                 axe. A placeholder to that extent.
+        //   chips_g_per_cm2: 5 — the grams of chips that fall for each
+        //                 square centimetre cut: a notch some 5 cm high
+        //                 in wood of 0.9 g/cm³ (66 g a gesture of flint).
+        //   stem_form_percent: 45 — a trunk's volume as a share of the
+        //                 cylinder of its thickness and its tree's height
+        //                 (the foresters' form factor, 0.4 to 0.5).
+        //   wood_kg_per_m3: 900 — living wood, heavy with sap (green
+        //                 birch about 900, green oak about 1,050): the
+        //                 log a fallen trunk leaves weighs 6 kg for a
+        //                 hazel stem, 290 kg for a birch of 22 cm, 2.1 t
+        //                 for an oak of 55 cm.
+        //   crown_percent: 20, branches_most: 8 — the crown's branches
+        //                 weigh a fifth of the trunk; those big enough to
+        //                 be things lie where the tree fell, one at
+        //                 least, eight at most (the twigs and the leaves
+        //                 are not things).
+        //   bark_reach_mm: 1000 — the height of trunk whose bark a
+        //                 standing body's hands lift (28 November 2026).
+        //                 A trunk's bark is finite there: its girth
+        //                 times this height, over the area of one piece
+        //                 of its bark (area_dm2 in materials.ron), one
+        //                 piece at least: 4 pieces on a birch of 22 cm,
+        //                 10 on an oak of 55 cm. A cut lifts a piece and
+        //                 never bites the wood; the wood is cut only
+        //                 once the bark is gone. A placeholder.
+        //   notch_closes_seasons: 8 — a notch nobody deepens closes: a
+        //                 notch as wide as the trunk's whole section
+        //                 would take these seasons (two cycles), a
+        //                 lesser one in proportion (a single bite of
+        //                 flint in a birch of 22 cm: 5 journées; a birch
+        //                 half cut through: a cycle). A felling of
+        //                 several journées loses a fifth of a bite a
+        //                 night on such a birch. A placeholder.
+        //   bark_grows_seasons: 8 — a trunk stripped at hand height
+        //                 wears all its bark again in these seasons
+        //                 (two cycles), piece by piece. Once the notch
+        //                 is closed and the bark back, nothing is kept
+        //                 of the tree: it is as the seed made it. A
+        //                 felled tree stays felled. A placeholder.
+        trees: Some((
+            wood: "green_branch",
+            chips: "wood_chips",
+            log: "log",
+            slender: 80,
+            slender_big: 40,
+            girth_spread_percent: 25,
+            bite_mm2: 330,
+            chips_g_per_cm2: 5,
+            stem_form_percent: 45,
+            wood_kg_per_m3: 900,
+            crown_percent: 20,
+            branches_most: 8,
+            bark_reach_mm: 1000,
+            notch_closes_seasons: 8,
+            bark_grows_seasons: 8,
+        )),
     ),
     // The problems (D50 and D57, amended 26 November 2026; the project
     // lead: "not a feeling added to push them, rather a limitation that
     // leads to thought: my arms are full, I can't take more"). A refusal of
     // the world lived by a body is remembered as a problem (the refusal, the
-    // place, the day, how many times), linked to the property of the
-    // materials the refusal's test read, and carried among its things to
+    // place, the day, how many times) and carried among its things to
     // think about (mind_slots below). Living it, the chance of its will may
     // make a body mean to try it; it begins a trial of its hands at a free
     // moment (hunger and thirst under the day's distress lines: a calm
@@ -1007,9 +1196,10 @@
     // with its problem, and only a listener who lives the same problem
     // tries it first. Absent: nothing is remembered as a problem.
     // kinds:               one, `full` (a gathering stopped with the arms
-    //                      full, the plant still bearing), whose test read
-    //                      `holds_g` (what a body's containers hold beyond
-    //                      its arms); its limit moved when a later
+    //                      full, the plant still bearing); nothing names
+    //                      what would answer it (the label that tied it to
+    //                      a property of the materials is gone, 27 November
+    //                      2026); its limit moved when a later
     //                      gathering stopped full finds the body carrying
     //                      more than its arms alone;
     //   trials_per_season: 1 — at most one trial a season begun from it;
@@ -1028,27 +1218,23 @@
     //                      tries if something new lies around, else puts
     //                      it back below the top.
     // ill_gut, ill_chest (D59, 27 November 2026): an ailment felt, the gut
-    //                      or the chest, lived by the body itself (property
-    //                      `felt`: no material's test reads it), pushed by
+    //                      or the chest, lived by the body itself, pushed by
     //                      the `learning` section below; trials_per_season
     //                      0 — nothing is tried from it in this first step.
     problems: (
         kinds: [
             (
                 refusal: "full",
-                property: "holds_g",
                 trials_per_season: 1,
                 gives_up_seasons: 1,
             ),
             (
                 refusal: "ill_gut",
-                property: "felt",
                 trials_per_season: 0,
                 gives_up_seasons: 1,
             ),
             (
                 refusal: "ill_chest",
-                property: "felt",
                 trials_per_season: 0,
                 gives_up_seasons: 1,
             ),

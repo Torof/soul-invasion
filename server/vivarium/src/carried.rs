@@ -464,8 +464,8 @@ impl CarryProbe {
         arms.gathered_kj += kj(content, gives, grams);
         if let Some(b) = world.body(body) {
             let movement = &content.movement;
-            if b.food_g() >= b.food_capacity_g(movement) {
-                if b.food_capacity_g(movement) == b.arms_g(movement) {
+            if b.arms_food_g() >= b.arms_g(movement) {
+                if b.stowed_g() == 0 {
                     arms.full_arms += 1;
                     self.hunger_at_full_arms.note(b.condition(), &content.needs);
                 } else {
@@ -739,6 +739,7 @@ mod tests {
             search: true,
             continents: None,
             helpers: 0,
+            journal: None,
         };
         let mut content = content().clone();
         content.needs.reserve_kj = 60_000;

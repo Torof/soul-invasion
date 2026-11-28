@@ -110,6 +110,8 @@ vivarium [options]   runs a world of the simulation headless and accelerated,
                            (D56, amended 27 November 2026): nobody notices
                            an absent, nobody goes (the content's search
                            section replaced by none)
+  --journal FILE           also write the journal: every news of the brains and the
+                           world's events of things and lives, a JSON line each
   --no-continent-cache     bear the vivarium's continent anew instead of
                            reading it from ${XDG_CACHE_HOME:-~/.cache}/soul-sim/
                            continents/ (where a run keeps it; same pages)
@@ -228,6 +230,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-learning" => settings.learning = false,
             "--learning-believe-only" => settings.learning_act = false,
             "--no-search" => settings.search = false,
+            "--journal" => settings.journal = Some(PathBuf::from(value(&mut i, "--journal")?)),
             "--no-continent-cache" => settings.continents = None,
             "--no-land-cache" => settings.lands = None,
             "--prepare-land" => prepare = true,

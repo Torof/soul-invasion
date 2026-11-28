@@ -6,7 +6,8 @@
 //!
 //! One kind today, read from the content (`content/needs.ron`, section
 //! `problems`): `full`, a gathering stopped with the arms full while the
-//! plant still bears, linked to the property its test read, `holds_g`.
+//! plant still bears. Nothing names what would answer it (the label that
+//! tied it to a property of the materials is gone, 27 November 2026).
 //!
 //! **The things to think about** (the project lead's design, for
 //! lightness): each body keeps a short list of the problems it lived, at
@@ -22,12 +23,14 @@
 //! is read only when a problem is lived and at those free moments, and
 //! only when not empty; nothing scans it by tick. A body may also begin
 //! there and then, where it lives the problem, if it is free. The gesture is drawn as in any trial of the hands, nothing
-//! weighed toward an answer. The trial is judged by the problem: kept as
-//! soon as a gathering stopped full finds the body carrying more than its
-//! arms alone, like "what served is kept"; given up when
-//! `gives_up_seasons` passed with the problem lived again and nothing
-//! moved; unjudged, as [`handwork::end_untried`], when nothing new was
-//! tried, or when the problem never came back. It is told at the fire
+//! weighed toward an answer. The trial ends as soon as a gathering
+//! stopped full finds the body carrying more than its arms alone, or
+//! when `gives_up_seasons` passed, and has one verdict (amended 28
+//! November 2026): kept if and only if a chain of its deeds served the
+//! problem ("what served is kept"); else given up when the problem was
+//! lived again and nothing moved; unjudged, as
+//! [`handwork::end_untried`], when nothing new was tried, or when the
+//! problem never came back. It is told at the fire
 //! with its problem, and only a listener who carries the same problem has
 //! a reason to try it.
 
@@ -70,8 +73,12 @@ pub struct ProblemAim {
     pub kind: u8,
     /// The times the problem came back with the limit unmoved.
     pub returns: u32,
-    /// The day its time is out: `gives_up_seasons` after it began.
+    /// The day its time is out: `gives_up_seasons` after it began, or
+    /// later when it saw something new near its end, never past `last`.
     pub until: u64,
+    /// The latest day its time may be out (amended 28 November 2026):
+    /// its time and the `trial_days` once, however many deeds it sees.
+    pub last: u64,
 }
 
 /// What happened of a problem (D50, amended 26 November 2026), for the
@@ -160,8 +167,8 @@ fn stopped_full(
     let arms = body.arms_g(movement);
     // The limit moved: it carries more than its arms alone hold.
     let beyond = body.food_g() > arms;
-    // Lived: no container holds anything for it, and its arms are full.
-    let lived = body.food_capacity_g(movement) == arms && body.food_g() >= arms;
+    // Lived: nothing it carries lies in a hollow, and its arms are full.
+    let lived = body.stowed_g() == 0 && body.food_g() >= arms;
     let (day, now) = (today(world), world.tick().0);
     let mut news = Vec::new();
     if let Some(trial) = mind
@@ -169,6 +176,8 @@ fn stopped_full(
         .filter(|t| t.problem.is_some_and(|a| a.kind == kind))
     {
         if beyond {
+            // It lives it now: what holds its food served it.
+            handwork::note_served(world, rules, id, mind);
             news.extend(judge(rules, (id, day, now), mind, &trial, true));
         } else if lived && let Some(aim) = mind.trial.as_mut().and_then(|t| t.problem.as_mut()) {
             aim.returns += 1;
@@ -202,11 +211,12 @@ fn stopped_full(
             p.looked = None;
         }
     }
-    if free(body) && handwork::something_new(world, rules, (id, body.pos()), mind) {
+    let again = handwork::Again::of(rules, seed, id, day);
+    if free(body) && handwork::something_new(world, rules, (id, body.pos()), mind, again) {
         news.extend(begin(
             world,
             rules,
-            memory,
+            (memory, seed),
             (id, day, now),
             kind,
             mind,
@@ -296,7 +306,7 @@ pub(super) fn push(
 pub(super) fn free_moment(
     world: &World,
     rules: &Content,
-    memory: &Store,
+    (memory, seed): (&Store, u64),
     (id, here, day, now): (BodyId, Pos, u64, u64),
     mind: &mut Mind,
 ) -> Vec<News> {
@@ -316,8 +326,17 @@ pub(super) fn free_moment(
     {
         return Vec::new();
     }
-    if handwork::something_new(world, rules, (id, here), mind) {
-        return begin(world, rules, memory, (id, day, now), p.kind, mind, true);
+    let again = handwork::Again::of(rules, seed, id, day);
+    if handwork::something_new(world, rules, (id, here), mind, again) {
+        return begin(
+            world,
+            rules,
+            (memory, seed),
+            (id, day, now),
+            p.kind,
+            mind,
+            true,
+        );
     }
     // Nothing new around: back below the top.
     let mut p = mind.problems.remove(top);
@@ -329,13 +348,16 @@ pub(super) fn free_moment(
 
 /// `id` begins on `day` a trial of its hands from the problem `kind`
 /// (D50, amended 26 November 2026): counted against the season, aimed
-/// first at the deeds told at the fire with the same problem, else its
-/// gestures drawn as any trial of the hands; its time `gives_up_seasons`
-/// from today. `later`: at a free moment after it was lived. The news.
+/// first at the deeds told at the fire with the same problem, those
+/// whose result it knows left out (D57, amended 28 November 2026: its
+/// memory brings them back when a deed aimed at needs what they give),
+/// else its gestures drawn as any trial of the hands; its time
+/// `gives_up_seasons` from today. `later`: at a free moment after it was
+/// lived. The news.
 fn begin(
     world: &World,
     rules: &Content,
-    memory: &Store,
+    (memory, seed): (&Store, u64),
     (id, day, now): (BodyId, u64, u64),
     kind: u8,
     mind: &mut Mind,
@@ -356,11 +378,13 @@ fn begin(
     }
     let before = mind.ways;
     let told = told_with(memory, mind, kind);
-    if told.is_empty() {
+    let sifted = handwork::sift(mind, handwork::Again::of(rules, seed, id, day), &told);
+    if sifted.new.is_empty() {
         mind.handwork.drop_aim();
     } else {
-        handwork::aim_at(mind, &told, day);
+        handwork::aim_at(mind, &sifted.new, day);
     }
+    handwork::note_heard(mind, &told, day);
     mind.trial = Some(Trial {
         way: Way::Hands,
         before,
@@ -372,11 +396,12 @@ fn begin(
             kind,
             returns: 0,
             until: day + u64::from(span),
+            last: day + u64::from(span) + u64::from(trials.trial_days),
         }),
     });
     mind.changed_day = Some(day);
-    let heard = !told.is_empty();
-    vec![
+    let heard = !sifted.new.is_empty();
+    let mut news = vec![
         News::Trying {
             body: id,
             way: Way::Hands,
@@ -391,7 +416,9 @@ fn begin(
             step: ProblemStep::Began { heard, later },
             at: now,
         },
-    ]
+    ];
+    news.extend(handwork::again_news(id, &sifted.again, now));
+    news
 }
 
 /// The deeds of the hands told at the fire with the problem `kind`, kept,
@@ -429,17 +456,23 @@ fn told_with(memory: &Store, mind: &Mind, kind: u8) -> Vec<(super::Deed, u32)> {
         .collect()
 }
 
-/// `mind`'s trial from a problem judged by it (D50, amended 26 November
-/// 2026): `moved`, the limit moved. Unjudged when nothing new was tried
-/// ([`handwork::end_untried`]); else kept when the limit moved and its
-/// hands learnt something, given up otherwise, the will taught either
-/// way and the judgement held for the fire with its problem. The news.
+/// `mind`'s trial from a problem ended (D50, amended 26 and 28 November
+/// 2026). Unjudged when nothing new was tried
+/// ([`handwork::end_untried`]). Else by the one verdict of a trial of the
+/// hands: kept if and only if a chain of its deeds served the problem it
+/// lived ([`handwork::keep_what_served`]), at whichever ending: the
+/// gathering stopped beyond its arms, its time out with the problem back
+/// or never back. Kept, its will learns a success and the tale told is a
+/// success with its problem. Not kept and `judged` (the problem came
+/// back unmoved in its time), it is given up: its will learns a failure,
+/// told with its problem. Not kept and never judged by its problem, it
+/// lapses: nothing told, its will as it was. The news.
 fn judge(
     rules: &Content,
     (id, day, now): (BodyId, u64, u64),
     mind: &mut Mind,
     trial: &Trial,
-    moved: bool,
+    judged: bool,
 ) -> Vec<News> {
     let Some(kind) = trial.problem.map(|a| a.kind) else {
         return Vec::new();
@@ -455,7 +488,20 @@ fn judge(
             },
         ];
     }
-    let kept = moved && mind.ways.hands != trial.before.hands;
+    let kept = handwork::keep_what_served(rules, mind);
+    mind.handwork.drop_aim();
+    mind.trial = None;
+    if !kept && !judged {
+        return vec![
+            News::Untried { body: id, at: now },
+            News::Problem {
+                body: id,
+                kind,
+                step: ProblemStep::Lapsed,
+                at: now,
+            },
+        ];
+    }
     mind.judged = Some(Judged {
         way: Way::Hands,
         after: mind.ways,
@@ -469,11 +515,7 @@ fn judge(
     mind.learn_will(rules, kept);
     if kept {
         mind.changed_day = Some(day);
-    } else {
-        trial.way.copy(&mut mind.ways, &trial.before);
     }
-    mind.handwork.drop_aim();
-    mind.trial = None;
     vec![
         News::Tried {
             body: id,
@@ -497,36 +539,12 @@ fn judge(
     ]
 }
 
-/// `mind`'s trial from a problem, its time out and the problem never back
-/// to judge it (D50, amended 26 November 2026): ended unjudged, its ways
-/// as before, nothing told, its will as it was. The news.
-pub(super) fn lapse(mind: &mut Mind, trial: &Trial, (id, now): (BodyId, u64)) -> Vec<News> {
-    let kind = trial.problem.map_or(0, |a| a.kind);
-    let step = if handwork::untried(mind, trial) {
-        ProblemStep::Untried
-    } else {
-        ProblemStep::Lapsed
-    };
-    trial.way.copy(&mut mind.ways, &trial.before);
-    mind.handwork.drop_aim();
-    mind.trial = None;
-    vec![
-        News::Untried { body: id, at: now },
-        News::Problem {
-            body: id,
-            kind,
-            step,
-            at: now,
-        },
-    ]
-}
-
 /// At nightfall on `day` (a cycle of `per_year` days): a trial from a
-/// problem whose time is out ends, given up when the problem came back
-/// unmoved in it ([`judge`]), else unjudged ([`lapse`]), its news in
-/// `news` and `true` then: nothing else changes that night, as after any
-/// trial ended; any other trial under way is due, returned, when its days
-/// are over.
+/// problem whose time is out ends ([`judge`]): kept when a chain of it
+/// served, else given up when the problem came back unmoved in it, else
+/// lapsed unjudged; its news in `news` and `true` then: nothing else
+/// changes that night, as after any trial ended; any other trial under
+/// way is due, returned, when its days are over.
 pub(super) fn nightfall(
     rules: &Content,
     (id, day, now, per_year): (BodyId, u64, u64, u32),
@@ -538,10 +556,8 @@ pub(super) fn nightfall(
     };
     if let Some(aim) = trial.problem {
         let over = day >= aim.until;
-        if over && aim.returns > 0 {
-            news.extend(judge(rules, (id, day, now), mind, &trial, false));
-        } else if over {
-            news.extend(lapse(mind, &trial, (id, now)));
+        if over {
+            news.extend(judge(rules, (id, day, now), mind, &trial, aim.returns > 0));
         }
         return (None, over);
     }
@@ -606,6 +622,39 @@ mod tests {
         let item = world.spawn_item(material, grams, pos);
         world.queue(Intention::PickUp { body: id, item });
         world.advance(1, rules, &mut Vec::new());
+    }
+
+    /// Has it take a birch bark folded into a hollow: the hollow.
+    fn take_hollow(world: &mut World, rules: &Content, id: BodyId) -> crate::ItemId {
+        let pos = world.body(id).unwrap().pos();
+        let item = world.spawn_hollow("birch_bark", 200, pos, rules);
+        world.queue(Intention::PickUp { body: id, item });
+        world.advance(1, rules, &mut Vec::new());
+        item
+    }
+
+    /// Puts the food of its arms in `hollow`.
+    fn stow(world: &mut World, rules: &Content, id: BodyId, hollow: crate::ItemId) {
+        let food: Vec<crate::ItemId> = world
+            .body(id)
+            .unwrap()
+            .inventory()
+            .filter(|i| *i != hollow && world.item(*i).unwrap().within().is_none())
+            .collect();
+        for item in food {
+            assert!(world.put_now(id, (item, hollow), rules).is_some());
+        }
+    }
+
+    fn put_berries(rules: &Content) -> Deed {
+        let index = |id: &str| {
+            u16::try_from(rules.materials.iter().position(|m| m.id == id).unwrap()).unwrap()
+        };
+        Deed {
+            gesture: Gesture::PutIn,
+            on: index("berries"),
+            with: index("birch_bark") | handwork::HOLLOW,
+        }
     }
 
     /// Lays a flint at its feet: something new to take.
@@ -710,12 +759,22 @@ mod tests {
     fn carrying_beyond_the_arms_or_without_the_section_is_no_problem() {
         let (mut rules, mut world, mut brains, id) = valley();
         willing(&mut brains, id, 100);
-        take(&mut world, &rules, id, "folded_birch_bark", 100);
-        take(&mut world, &rules, id, "berries", 3000);
+        let hollow = take_hollow(&mut world, &rules, id);
+        take(&mut world, &rules, id, "berries", 1000);
+        stow(&mut world, &rules, id, hollow);
+        take(&mut world, &rules, id, "berries", 1000);
         let body = world.body(id).unwrap();
         assert!(body.food_g() > body.arms_g(&rules.movement));
         stopped(&mut world, &rules, &mut brains, id);
         assert_eq!(brains.minds[&id].problems.len(), 0);
+        // A hollow merely carried moves no limit (amended 27 November
+        // 2026): its arms full beside it, the problem is lived.
+        let (_, mut world, mut brains, id) = valley();
+        willing(&mut brains, id, 0);
+        take_hollow(&mut world, &rules, id);
+        arms_full(&mut world, &rules, id);
+        stopped(&mut world, &rules, &mut brains, id);
+        assert_eq!(brains.minds[&id].problems.len(), 1);
         let (_, mut world, mut brains, id) = valley();
         rules.needs.problems = crate::content::Problems::default();
         willing(&mut brains, id, 100);
@@ -763,16 +822,62 @@ mod tests {
         let deed = fold_bark(&rules);
         let mind = brains.minds.get_mut(&id).unwrap();
         assert!(mind.trial.is_some());
-        // In its trial it folded the bark, a gesture new to its hands.
+        // In its trial it folded the bark and put its berries in it,
+        // gestures new to its hands; it also took a pebble, of which
+        // nothing came that served.
+        let put = put_berries(&rules);
+        let pebble = Deed {
+            gesture: Gesture::PickUp,
+            on: u16::try_from(
+                rules
+                    .materials
+                    .iter()
+                    .position(|m| m.id == "pebble")
+                    .unwrap(),
+            )
+            .unwrap(),
+            with: NOTHING,
+        };
         mind.handwork.gestured = true;
-        mind.ways.hands.add(deed);
+        // Seen in its trial, not kept (amended 28 November 2026).
+        for seen in [deed, put, pebble] {
+            mind.handwork.see(seen, 32);
+        }
         let _ = brains.news();
-        take(&mut world, &rules, id, "folded_birch_bark", 100);
-        take(&mut world, &rules, id, "berries", 2000);
+        // The hollow merely carried, its arms full again: the limit has
+        // not moved (amended 27 November 2026).
+        let hollow = take_hollow(&mut world, &rules, id);
+        // The thread of its trial: that very bark folded, its berries
+        // put in that very hollow (amended 28 November 2026: what is
+        // kept is what really took part).
+        let hands = &mut brains.minds.get_mut(&id).unwrap().handwork;
+        hands.made(deed, [Some(hollow), None], hollow);
+        hands.made(put, [None, Some(hollow)], hollow);
+        stopped(&mut world, &rules, &mut brains, id);
+        assert_eq!(
+            brains.minds[&id]
+                .trial
+                .and_then(|t| t.problem)
+                .map(|a| a.returns),
+            Some(1)
+        );
+        let _ = brains.news();
+        stow(&mut world, &rules, id, hollow);
+        take(&mut world, &rules, id, "berries", 1000);
         stopped(&mut world, &rules, &mut brains, id);
         let mind = &brains.minds[&id];
         assert!(mind.trial.is_none());
         assert!(mind.ways.hands.contains(deed), "what served is kept");
+        assert!(mind.ways.hands.contains(put));
+        assert!(
+            !mind.ways.hands.contains(pebble) && mind.handwork.saw(pebble),
+            "a deed of which nothing came that served is not kept: seen"
+        );
+        assert_eq!(
+            mind.handwork.kept,
+            [put, deed],
+            "its own, from a kept trial"
+        );
         let judged = mind.judged.expect("told tonight");
         assert!(judged.kept);
         assert_eq!(judged.problem, Some(0), "told with its problem");
@@ -801,7 +906,7 @@ mod tests {
         let deed = fold_bark(&rules);
         let mind = brains.minds.get_mut(&id).unwrap();
         mind.handwork.gestured = true;
-        mind.ways.hands.add(deed);
+        mind.handwork.see(deed, 32);
         let _ = brains.news();
         // The problem comes back unmoved, again and again: it waits.
         for back in 1..=5 {
@@ -853,7 +958,7 @@ mod tests {
         let news = free_moment(
             &world,
             &rules,
-            &brains.memory,
+            (&brains.memory, 0),
             (id, world.body(id).unwrap().pos(), 0, 0),
             mind,
         );
@@ -893,7 +998,7 @@ mod tests {
         let news = free_moment(
             &world,
             &rules,
-            &brains.memory,
+            (&brains.memory, 0),
             (id, world.body(id).unwrap().pos(), 0, 0),
             mind,
         );
@@ -905,7 +1010,7 @@ mod tests {
         let news = free_moment(
             &world,
             &rules,
-            &brains.memory,
+            (&brains.memory, 0),
             (id, world.body(id).unwrap().pos(), 0, 0),
             mind,
         );
@@ -924,7 +1029,7 @@ mod tests {
         let news = free_moment(
             &world,
             &rules,
-            &brains.memory,
+            (&brains.memory, 0),
             (id, world.body(id).unwrap().pos(), 0, 0),
             mind,
         );
@@ -970,16 +1075,16 @@ mod tests {
         push(&world, &rules, mind, 0, (here, 0));
         let kinds = |mind: &Mind| mind.problems.iter().map(|p| p.kind).collect::<Vec<_>>();
         assert_eq!(kinds(mind), [0, 1]);
-        let news = free_moment(&world, &rules, &brains.memory, (id, here, 0, 0), mind);
+        let news = free_moment(&world, &rules, (&brains.memory, 0), (id, here, 0, 0), mind);
         assert_eq!(news.len(), 0);
         assert_eq!(kinds(mind), [1, 0]);
         // Bark laid here: the same place the same day it does not look
         // again; another day, at a free moment, it begins.
         world.spawn_item("birch_bark", 200, here);
         let mind = brains.minds.get_mut(&id).unwrap();
-        let news = free_moment(&world, &rules, &brains.memory, (id, here, 0, 0), mind);
+        let news = free_moment(&world, &rules, (&brains.memory, 0), (id, here, 0, 0), mind);
         assert_eq!(news.len(), 0);
-        let news = free_moment(&world, &rules, &brains.memory, (id, here, 1, 0), mind);
+        let news = free_moment(&world, &rules, (&brains.memory, 0), (id, here, 1, 0), mind);
         assert!(matches!(
             steps(&news)[..],
             [ProblemStep::Began { later: true, .. }]
@@ -1074,11 +1179,61 @@ mod tests {
         let until = brains.minds[&id].trial.unwrap().problem.unwrap().until;
         let mind = brains.minds.get_mut(&id).unwrap();
         mind.handwork.gestured = true;
-        mind.ways.hands.add(fold_bark(&rules));
+        mind.handwork.see(fold_bark(&rules), 32);
         let news = night(&world, &mut brains, &rules, id, until);
         let mind = &brains.minds[&id];
         assert!(mind.trial.is_none() && mind.judged.is_none());
         assert!(mind.ways.hands.is_empty(), "its ways as before");
         assert_eq!(steps(&news), [ProblemStep::Lapsed]);
+    }
+
+    #[test]
+    fn a_trial_from_a_problem_whose_chain_served_is_kept_at_whichever_ending() {
+        // One verdict (28 November 2026): a trial of the hands is kept
+        // if and only if a chain of it served its lived problem. Before,
+        // a trial whose time ran out was given up or lapsed even when
+        // its hollow had carried food beyond its arms, its will lowered,
+        // the tale told a failure, and the chain kept all the same as no
+        // trial of its own.
+        let put = put_berries(&rules_of());
+        for returns in [0, 3] {
+            let (rules, mut world, mut brains, id) = valley();
+            willing(&mut brains, id, 100);
+            flint_here(&mut world, id);
+            arms_full(&mut world, &rules, id);
+            stopped(&mut world, &rules, &mut brains, id);
+            for _ in 0..returns {
+                stopped(&mut world, &rules, &mut brains, id);
+            }
+            let until = brains.minds[&id].trial.unwrap().problem.unwrap().until;
+            let mind = brains.minds.get_mut(&id).unwrap();
+            mind.handwork.gestured = true;
+            let hollow = mind.handwork.threaded([put], 900);
+            mind.handwork.served.push(put.with);
+            mind.handwork.served_things.push(hollow);
+            let mut taught = mind.clone();
+            taught.learn_will(&rules, true);
+            let _ = brains.news();
+            let news = night(&world, &mut brains, &rules, id, until);
+            let mind = &brains.minds[&id];
+            assert!(mind.trial.is_none());
+            assert!(mind.ways.hands.contains(put), "returns {returns}");
+            assert_eq!(mind.handwork.kept, [put], "its own");
+            assert!(mind.judged.is_some_and(|j| j.kept && j.problem == Some(0)));
+            assert_eq!(
+                (mind.will, mind.will_rest, mind.will_failures),
+                (taught.will, taught.will_rest, taught.will_failures),
+                "a success learnt"
+            );
+            assert_eq!(steps(&news), [ProblemStep::Kept], "returns {returns}");
+            assert!(
+                news.iter()
+                    .any(|n| matches!(n, News::Tried { kept: true, .. }))
+            );
+        }
+    }
+
+    fn rules_of() -> Content {
+        valley().0
     }
 }

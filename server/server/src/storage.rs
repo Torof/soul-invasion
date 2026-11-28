@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, params};
-use sim::changes::{ChunkChanges, Construction, Picked, Planted, Stage};
+use sim::changes::{ChunkChanges, Construction, Picked, Planted, Scar, Stage};
 use sim::crops::{PlantKey, Source};
 use sim::ground::Version;
 use sim::plan::Continent;
@@ -39,12 +39,16 @@ use sim::{CHUNK_SIZE, ChunkPos, Content, Pos, World};
 
 /// Version of the serialized `World` inside a snapshot. Bump on any change
 /// to `World`'s shape, and add a migration in `decode_world`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 19;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 21;
 
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
 /// 2 (16 November 2026): the crops picked (D45), a fifth list.
-pub const CHUNK_CHANGES_FORMAT_VERSION: u32 = 2;
+/// 3 (27 November 2026, reshaped on the 28th before any world was stored
+/// with it): the marks on the trunks (D57), a sixth: each tree's notch,
+/// its bark lifted, the journée of the last mark and how long they take
+/// to heal.
+pub const CHUNK_CHANGES_FORMAT_VERSION: u32 = 3;
 
 /// Snapshots kept: the latest and two before it. Every one used to be
 /// kept, a full copy of the world each game day (18 MB on the valley).
@@ -447,16 +451,20 @@ impl Storage for Sqlite {
     }
 }
 
-/// A chunk's changes as stored, format 2: five lists, each its length
+/// A chunk's changes as stored, format 3: six lists, each its length
 /// then its entries, every number a LEB128 varint (a byte under 128).
-/// Format 1 was the first four.
+/// Format 1 was the first four, format 2 the first five.
 /// The taken slots and the felled trees' keys ([`TreeKey::bits`]) in
 /// order, each as its distance from the one before: about a byte an
 /// entry. A planted tree: its key, its species' id (length, then UTF-8),
 /// its stage (0 to 3), its day. A construction: its kind's id, its tile
 /// in the chunk (`y × 32 + x`), its day. A crop picked: what bore it (0
 /// and a tree's key, or 1 and a plant's place in millimetres, east then
-/// south), the material's id, the crop's year, the grams taken.
+/// south), the material's id, the crop's year, the grams taken. A marked
+/// trunk (D57, amended 27 and 28 November 2026), in the keys' order: the
+/// tree's key, the square millimetres of its trunk's section cut
+/// through, the pieces of bark lifted, the journée of the last mark, and
+/// the journées from it to the one by which the marks have healed.
 fn encode_changes(chunk: ChunkPos, changes: &ChunkChanges) -> Vec<u8> {
     fn varint(out: &mut Vec<u8>, mut value: u64) {
         while value >= 0x80 {
@@ -523,12 +531,20 @@ fn encode_changes(chunk: ChunkPos, changes: &ChunkChanges) -> Vec<u8> {
         varint(&mut out, picked.year);
         varint(&mut out, u64::from(picked.grams));
     }
+    varint(&mut out, changes.scars.len() as u64);
+    for (key, scar) in &changes.scars {
+        varint(&mut out, u64::from(key.bits()));
+        varint(&mut out, u64::from(scar.notch_mm2));
+        varint(&mut out, u64::from(scar.barked));
+        varint(&mut out, scar.day);
+        varint(&mut out, scar.whole_day.saturating_sub(scar.day));
+    }
     out
 }
 
 /// The changes [`encode_changes`] wrote for `chunk` at `version`, in
-/// `format` (1 or 2); `None` if the bytes are damaged or the format
-/// unknown.
+/// `format` (1 to 3); `None` if the bytes are damaged or the format
+/// unknown. An older format has no marked trunk: none is read.
 #[allow(
     clippy::too_many_lines,
     reason = "one straight reading, top to bottom; splitting it would scatter the rule"
@@ -648,6 +664,29 @@ fn decode_changes(
             changes
                 .picked
                 .insert((source, gives), Picked { year, grams });
+        }
+    }
+    if format >= 3 {
+        for _ in 0..bytes.count()? {
+            let key = TreeKey::from_bits(u16::try_from(bytes.varint()?).ok()?)?;
+            let notch_mm2 = u32::try_from(bytes.varint()?).ok()?;
+            let barked = u32::try_from(bytes.varint()?).ok()?;
+            let day = bytes.varint()?;
+            let whole_day = day.checked_add(bytes.varint()?)?;
+            let scar = Scar {
+                notch_mm2,
+                barked,
+                day,
+                whole_day,
+            };
+            // A mark is of a tree standing, each tree once, and is of
+            // something.
+            if (notch_mm2 == 0 && barked == 0)
+                || changes.felled.contains(&key)
+                || changes.scars.insert(key, scar).is_some()
+            {
+                return None;
+            }
         }
     }
     bytes.0.is_empty().then_some(changes)
@@ -875,6 +914,8 @@ fn decode_world(format_version: u32, data: &str, content: &Content) -> Result<Wo
             16 => migrate_v16_to_v17(data),
             17 => migrate_v17_to_v18(&data)?,
             18 => migrate_v18_to_v19(data),
+            19 => migrate_v19_to_v20(&data, content)?,
+            20 => migrate_v20_to_v21(data),
             _ => return Err(unsupported()),
         };
         version += 1;
@@ -1166,6 +1207,62 @@ fn migrate_v17_to_v18(data: &str) -> Result<String, StorageError> {
 /// is what the fields read as when absent: the data is the same.
 fn migrate_v18_to_v19(data: String) -> String {
     data
+}
+
+/// v21: "put in" is a gesture and nothing holds by itself (D57, amended
+/// 27 November 2026): an item may lie `within` a hollow thing carried by
+/// the same body, and a put-in under way names what it puts `into`. A
+/// world saved before has nothing put in anything, which is what the
+/// fields read as when absent: the data is the same. Since 28 November
+/// 2026 an item may also lie `within` a hollow laid on its own tile: the
+/// same field, no new version. A body that carried
+/// food beyond its arms beside a hollow holds it all in its arms again,
+/// and takes no more till they have room.
+fn migrate_v20_to_v21(data: String) -> String {
+    data
+}
+
+/// The hollow the repository's birch bark took when folded, in
+/// millilitres, when v20 came: for a content that holds no birch bark.
+const LEGACY_FOLDED_BARK_ML: u32 = 4740;
+
+/// v20: a fold gives a thing a hollow, a form of the thing, instead of
+/// turning it into another material (D57, amended 27 November 2026): an
+/// item may carry `hollow_ml`. A world saved before holds its folded
+/// barks as items of the material `folded_birch_bark`, which is gone:
+/// each becomes a birch bark with the hollow a fold gives it today.
+fn migrate_v19_to_v20(data: &str, content: &Content) -> Result<String, StorageError> {
+    fn walk(value: &mut serde_json::Value, hollow_ml: u32) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.get("material").and_then(serde_json::Value::as_str)
+                    == Some("folded_birch_bark")
+                {
+                    map.insert("material".to_owned(), "birch_bark".into());
+                    map.insert("hollow_ml".to_owned(), hollow_ml.into());
+                }
+                for inner in map.values_mut() {
+                    walk(inner, hollow_ml);
+                }
+            }
+            serde_json::Value::Array(list) => {
+                for inner in list {
+                    walk(inner, hollow_ml);
+                }
+            }
+            _ => {}
+        }
+    }
+    let hollow_ml = match content
+        .material("birch_bark")
+        .map(|m| m.folded(content.needs.hands.fold_suppleness))
+    {
+        Some(sim::content::Folded::Hollow(ml)) => ml,
+        _ => LEGACY_FOLDED_BARK_ML,
+    };
+    let mut old: serde_json::Value = serde_json::from_str(data)?;
+    walk(&mut old, hollow_ml);
+    Ok(old.to_string())
 }
 
 fn standard_world_at_old_tick(data: &str, content: &Content) -> Result<String, StorageError> {
@@ -1523,6 +1620,33 @@ mod tests {
                 },
             );
         }
+        a.scars.insert(
+            key(8),
+            Scar {
+                notch_mm2: 1,
+                barked: 0,
+                day: 0,
+                whole_day: 4000,
+            },
+        );
+        a.scars.insert(
+            key(0x0890),
+            Scar {
+                notch_mm2: u32::MAX,
+                barked: u32::MAX,
+                day: 70_000,
+                whole_day: 70_128,
+            },
+        );
+        a.scars.insert(
+            key(2 << 11 | 0x0105),
+            Scar {
+                notch_mm2: 0,
+                barked: 3,
+                day: 12,
+                whole_day: 108,
+            },
+        );
         a.picked.insert(
             (Source::Tree(key(0x0888)), "hazelnuts".to_owned()),
             Picked {
@@ -1565,7 +1689,9 @@ mod tests {
         // Format 1 was format 2 without its fifth list.
         for (chunk, mut changes) in every_kind_of_change() {
             changes.picked.clear();
+            changes.scars.clear();
             let mut bytes = encode_changes(chunk, &changes);
+            assert_eq!(bytes.pop(), Some(0), "an empty sixth list");
             assert_eq!(bytes.pop(), Some(0), "an empty fifth list");
             let back = decode_changes(chunk, changes.version, 1, &bytes);
             assert_eq!(back.as_ref(), Some(&changes));
@@ -1582,8 +1708,110 @@ mod tests {
             ),
             Picked { year: 0, grams: 1 },
         );
-        let bytes = encode_changes(ChunkPos::new(0, 0), &far);
+        let mut bytes = encode_changes(ChunkPos::new(0, 0), &far);
+        assert_eq!(bytes.pop(), Some(0), "an empty sixth list");
         assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 2, &bytes), None);
+    }
+
+    #[test]
+    fn chunk_changes_of_format_2_are_read_with_no_notch() {
+        // Format 2 was format 3 without its sixth list (D57, amended 27
+        // November 2026): a world stored before the notches is read as it
+        // was, no tree cut into.
+        for (chunk, mut changes) in every_kind_of_change() {
+            assert!(
+                chunk.x < 0 || !changes.scars.is_empty(),
+                "a marked trunk among the changes"
+            );
+            let with = encode_changes(chunk, &changes);
+            changes.scars.clear();
+            let mut bytes = encode_changes(chunk, &changes);
+            assert_eq!(bytes.pop(), Some(0), "an empty sixth list");
+            let back = decode_changes(chunk, changes.version, 2, &bytes);
+            assert_eq!(back.as_ref(), Some(&changes));
+            // The sixth list is not of format 2.
+            if with.len() > bytes.len() + 1 {
+                assert_eq!(decode_changes(chunk, changes.version, 2, &with), None);
+            }
+        }
+        // A mark on a felled tree, two on one tree, or a mark of nothing
+        // are damage.
+        let key = TreeKey::from_bits(0x0888).unwrap();
+        let mut felled = ChunkChanges::default();
+        felled.felled.insert(key);
+        let mut bytes = encode_changes(ChunkPos::new(0, 0), &felled);
+        assert_eq!(bytes.pop(), Some(0));
+        let (lo, hi) = (0x08_u8 | 0x80, 0x11_u8);
+        bytes.extend([1, lo, hi, 5, 0, 3, 9]);
+        assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 3, &bytes), None);
+        let mut twice = encode_changes(ChunkPos::new(0, 0), &ChunkChanges::default());
+        assert_eq!(twice.pop(), Some(0));
+        let empty = twice.clone();
+        twice.extend([2, lo, hi, 5, 0, 3, 9, lo, hi, 6, 0, 3, 9]);
+        assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 3, &twice), None);
+        let mut nothing = empty.clone();
+        nothing.extend([1, lo, hi, 0, 0, 3, 9]);
+        assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 3, &nothing), None);
+        // The same tree marked once is read: its notch, its bark, the
+        // journée, and the journée it is whole again.
+        let mut marked = empty;
+        marked.extend([1, lo, hi, 5, 2, 3, 9]);
+        let read = decode_changes(ChunkPos::new(0, 0), 1, 3, &marked).expect("read");
+        assert_eq!(
+            read.scars[&key],
+            Scar {
+                notch_mm2: 5,
+                barked: 2,
+                day: 3,
+                whole_day: 12
+            }
+        );
+    }
+
+    #[test]
+    fn a_tree_healed_since_is_forgotten_when_the_world_is_loaded() {
+        // D57, amended 28 November 2026: a marked tree is kept until the
+        // journée it is whole again; loaded on or after it, it is a tree
+        // among the others, and its chunk keeps its version.
+        let (dir, path) = temp_db("healed");
+        let mut world = world_at(6);
+        let today = u64::try_from(world.today()).unwrap();
+        let chunk = ChunkPos::new(1, 1);
+        let key = |bits: u16| TreeKey::from_bits(bits).unwrap();
+        let scar = |whole_day| Scar {
+            notch_mm2: 1320,
+            barked: 2,
+            day: 0,
+            whole_day,
+        };
+        let mut changes = ChunkChanges {
+            version: 5,
+            ..ChunkChanges::default()
+        };
+        changes.scars.insert(key(8), scar(today + 1));
+        let kept = changes.clone();
+        world.restore_changes(chunk, changes.clone());
+        assert_eq!(world.changes_in(chunk), Some(&kept));
+        // Stored with a tree whose marks have healed by today.
+        changes.scars.insert(key(0x0890), scar(today));
+        let bytes = encode_changes(chunk, &changes);
+        let read = decode_changes(chunk, 5, CHUNK_CHANGES_FORMAT_VERSION, &bytes).unwrap();
+        assert_eq!(read.scars.len(), 2, "the bytes keep both");
+        world.restore_changes(chunk, read);
+        assert_eq!(world.changes_in(chunk), Some(&kept));
+        // Through the database: the same.
+        Sqlite::open(&path, content())
+            .unwrap()
+            .save_world(&world)
+            .unwrap();
+        let back = Sqlite::open(&path, content())
+            .unwrap()
+            .latest_world()
+            .unwrap()
+            .unwrap();
+        assert_eq!(back.changes_in(chunk), Some(&kept));
+        assert_eq!(back.chunk_version(chunk), 5);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1605,10 +1833,13 @@ mod tests {
             let mut longer = bytes.clone();
             longer.push(0);
             assert_eq!(decode_changes(chunk, 1, format, &longer), None);
-            assert_eq!(decode_changes(chunk, 1, 3, &bytes), None, "unknown format");
+            assert_eq!(decode_changes(chunk, 1, 4, &bytes), None, "unknown format");
         }
         let none = ChunkChanges::default();
-        assert_eq!(encode_changes(ChunkPos::new(0, 0), &none), [0, 0, 0, 0, 0]);
+        assert_eq!(
+            encode_changes(ChunkPos::new(0, 0), &none),
+            [0, 0, 0, 0, 0, 0]
+        );
         // Through a database file, closed and opened again.
         let (dir, path) = temp_db("round-trip");
         let mut world = world_at(6);
@@ -1962,6 +2193,52 @@ mod tests {
         let today = storage.latest_world().unwrap().unwrap();
         assert_eq!(today.calendar(), &quick);
         assert_eq!(today.calendar().days_per_age_year(), 4);
+    }
+
+    #[test]
+    fn a_v19_folded_bark_becomes_a_birch_bark_with_a_hollow() {
+        let content = content();
+        let mut world = World::with_valley(Calendar::new(2, 3).unwrap(), &content, 256);
+        let material = content.materials[0].id.clone();
+        let item = world.spawn_item(&material, 200, sim::Pos::new(3, 3));
+        let old = serde_json::to_string(&world).unwrap().replace(
+            &format!("\"material\":\"{material}\""),
+            "\"material\":\"folded_birch_bark\"",
+        );
+        assert!(old.contains("folded_birch_bark"));
+        let mut storage = Sqlite::in_memory(content).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (0, 19, ?1)",
+                [old],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        let folded = back.item(item).expect("the item kept");
+        assert_eq!(folded.material(), "birch_bark");
+        assert!(folded.hollow_ml() > 0, "folded: it holds");
+        assert_eq!(folded.mass_g(), 200);
+    }
+
+    #[test]
+    fn a_v20_world_has_nothing_put_in_anything() {
+        let content = content();
+        let mut world = World::with_valley(Calendar::new(2, 3).unwrap(), &content, 256);
+        let material = content.materials[0].id.clone();
+        let item = world.spawn_item(&material, 200, sim::Pos::new(3, 3));
+        let old = serde_json::to_string(&world).unwrap();
+        assert!(!old.contains("within"), "absent when nothing is put in");
+        let mut storage = Sqlite::in_memory(content).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO snapshots (tick, format_version, data) VALUES (0, 20, ?1)",
+                [old],
+            )
+            .unwrap();
+        let back = storage.latest_world().unwrap().unwrap();
+        assert_eq!(back.item(item).expect("the item kept").within(), None);
     }
 
     #[test]

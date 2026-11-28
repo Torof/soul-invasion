@@ -628,6 +628,7 @@ mod tests {
             search: true,
             continents: None,
             helpers: 0,
+            journal: None,
         }
     }
 

@@ -104,7 +104,10 @@ mod search;
 mod search_tests;
 #[cfg(test)]
 mod wake_tests;
-pub use handwork::{DEEDS, Deed, Deeds, Handwork, NOTHING, container_deeds};
+pub use handwork::{
+    BRANCH, DEEDS, Deed, Deeds, HOLLOW, Handwork, NOTHING, container_deeds, cut_part, cut_species,
+    kind_hollow, kind_material,
+};
 pub use learning::{BeliefHeld, Forgot, LearnStep, Learner, TrialEnd};
 pub use problems::{Problem, ProblemAim, ProblemStep};
 pub use search::{Quiet, SearchStep, Stayed, Tie};
@@ -999,7 +1002,7 @@ fn judge_due(
     if kept {
         mind.changed_day = Some(day);
     } else {
-        trial.way.copy(&mut mind.ways, &trial.before);
+        handwork::leave_not_kept(mind, trial);
     }
     mind.trial = None;
     mind.judged = Some(judged);
@@ -1866,6 +1869,135 @@ pub enum News {
         body: BodyId,
         /// The trial began on a tale heard.
         heard: bool,
+        /// The tick.
+        at: u64,
+    },
+    /// `body`, in a trial of its hands, saw `deed` give a thing for the
+    /// first time in that trial (D57, amended 28 November 2026): a
+    /// memory, not a deed its hands keep.
+    DeedSeen {
+        /// Who.
+        body: BodyId,
+        /// The deed.
+        deed: Deed,
+        /// The tick.
+        at: u64,
+    },
+    /// `body`'s hands keep `deed` from now on (D57, amended 28 November
+    /// 2026): it belongs to a chain that relieved a problem it lived.
+    /// Said at its hands' next thought after the trial's end.
+    DeedKept {
+        /// Who.
+        body: BodyId,
+        /// The deed.
+        deed: Deed,
+        /// Kept as its own kept trial; else left by a trial not kept.
+        own: bool,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` did `deed` for what it gives on a thing that did not give
+    /// it into its hands (D57, amended 28 November 2026: "told bark,
+    /// here it gave no bark"): remembered of that thing.
+    NotAsTold {
+        /// Who.
+        body: BodyId,
+        /// The deed.
+        deed: Deed,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` laid `item` at its feet to free its hands for a gesture
+    /// (D57, amended 28 November 2026).
+    Laid {
+        /// Who.
+        body: BodyId,
+        /// The thing laid.
+        item: ItemId,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` took up again `item` it had laid at its feet; `late`:
+    /// after it had gone beyond its hands' sight of it.
+    LaidBack {
+        /// Who.
+        body: BodyId,
+        /// The thing.
+        item: ItemId,
+        /// It had left it behind meanwhile.
+        late: bool,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` went beyond its hands' sight of `item` it had laid at its
+    /// feet: left behind, as any thing lying.
+    LaidLeft {
+        /// Who.
+        body: BodyId,
+        /// The thing.
+        item: ItemId,
+        /// The tick.
+        at: u64,
+    },
+    /// `item` that `body` had laid at its feet lies there no more: taken
+    /// by another (`by`), or eaten, spoiled or torn.
+    LaidLost {
+        /// Who laid it.
+        body: BodyId,
+        /// The thing.
+        item: ItemId,
+        /// Who carries it now, if anyone.
+        by: Option<BodyId>,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` let `item` it had laid at its feet be: it does not want it
+    /// any more, or could not carry it with what it preferred.
+    LaidLetBe {
+        /// Who.
+        body: BodyId,
+        /// The thing.
+        item: ItemId,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` heard told `deeds` deeds of the hands and would have set
+    /// out to try them, but it knows what each of them gives, and that
+    /// it brought it nothing: no trial is begun (D57, amended 28
+    /// November 2026: a known result is not tried again).
+    TaleKnown {
+        /// Who.
+        body: BodyId,
+        /// The deeds of the tale, all known.
+        deeds: u32,
+        /// The tick.
+        at: u64,
+    },
+    /// `body` takes up again a deed whose result it knows and that
+    /// brought it nothing, by the rare chance (D57, amended 28 November
+    /// 2026: "one can take it up again later").
+    TakenUpAgain {
+        /// Who.
+        body: BodyId,
+        /// The deed.
+        deed: Deed,
+        /// As an aim, having heard it told; else drawn in a trial.
+        heard: bool,
+        /// The tick.
+        at: u64,
+    },
+    /// `body`, drawing a gesture in a trial of its hands, set aside
+    /// `deeds` different gestures the things at hand made plausible,
+    /// because it remembers they gave nothing in its hands (D57, amended
+    /// 27 November 2026), and `known` because it remembers the thing
+    /// they give, which brought it nothing (amended 28 November 2026).
+    Skipped {
+        /// Who.
+        body: BodyId,
+        /// The gestures set aside at this draw as having given nothing.
+        deeds: u32,
+        /// Those set aside as giving a thing that brought it nothing.
+        known: u32,
         /// The tick.
         at: u64,
     },
@@ -5027,12 +5159,20 @@ impl Brains {
             if !mind.unseen.is_empty() {
                 pending.push(id);
             }
+            mind.handwork.idle = false;
             if let Some(decision) = decide(world, rules, &mut land, id, mind, self.seed) {
                 if decision.why == Why::Night
                     && matches!(decision.intention, Intention::Sleep { .. })
                 {
                     lay_down.push(id);
                 }
+                // Its hands idle, it leaves where it worked: what it
+                // laid at its feet there is taken along first (D57,
+                // amended 28 November 2026, fifth round).
+                if mind.handwork.idle && handwork::leaves(&decision.intention, body.pos()) {
+                    handwork::leave_with(world, rules, (id, body.pos()), mind, land.news);
+                }
+                decisions.extend(handwork::along(id, mind).map(|taken| (id, taken)));
                 decisions.push((id, decision));
             }
             (mind.stopped, mind.blocked) = (false, None);
@@ -6986,8 +7126,17 @@ impl Brains {
             if let Some(&by) = followed.get(&id) {
                 mind.calling = None;
                 if let Some(t) = mind.trial.take() {
-                    // Ended unjudged: no lesson, no credit moved.
-                    t.way.copy(&mut mind.ways, &t.before);
+                    // Ended unjudged: no lesson, no credit moved. A
+                    // trial of the hands ends by its one verdict
+                    // (amended 28 November 2026): kept if a chain of it
+                    // served, a success learnt and told; else unjudged,
+                    // and what it was after is dropped. Before, the
+                    // deeds heard stayed its aim with no trial, done
+                    // again without end, and a hollow that had served
+                    // was lost.
+                    if let Some(news) = handwork::cut_short(rules, (id, today, now), mind, &t) {
+                        self.news.push(news);
+                    }
                 }
                 let before = mind.ways;
                 mind.ways.home = to;
@@ -7012,7 +7161,9 @@ impl Brains {
             } else if child {
                 // A child takes its mother's home, as every nightfall.
                 mind.ways.home = to;
-            } else if let Some((_, news)) = go_to_live(id, mind, now) {
+            } else if let Some((_, news)) =
+                go_to_live(rules, id, mind, (today, now), &mut self.news)
+            {
                 self.news.push(news);
             }
             if let Some(news) = set_goal(world, rules, id, mind, to) {
@@ -7183,7 +7334,8 @@ impl Brains {
             return;
         };
         let now = world.tick().0;
-        if let Some((to, tried)) = go_to_live(id, mind, now) {
+        if let Some((to, tried)) = go_to_live(rules, id, mind, (today(world), now), &mut self.news)
+        {
             self.news.push(tried);
             if let Some(news) = set_goal(world, rules, id, mind, to) {
                 self.news.push(news);
@@ -7674,7 +7826,7 @@ impl Brains {
                     mind.water.retain(|_, place| place.water != *at);
                 }
                 match event {
-                    Event::Gestured { gave, .. } => mind.handwork.done = Some(gave.is_some()),
+                    Event::Gestured { gave, .. } => mind.handwork.came(*gave),
                     Event::GestureRefused { .. }
                     | Event::ActRefused {
                         act: crate::ItemAct::PickUp,
@@ -8508,7 +8660,7 @@ fn decide(
         news.extend(problems::free_moment(
             world,
             rules,
-            memory,
+            (memory, seed),
             (id, here, day, now),
             mind,
         ));
@@ -11180,12 +11332,12 @@ fn change_or_move(
     // November 2026, the project lead's design): its top problem, tried
     // when something new lies around.
     let here = world.body(id).map_or(mind.ways.home, Body::pos);
-    let mut news = problems::free_moment(world, rules, memory, (id, here, day, now), mind);
+    let mut news = problems::free_moment(world, rules, (memory, seed), (id, here, day, now), mind);
     if mind.trial.is_some() {
         return news;
     }
     if wants_to_try(&rules.needs.trials, seed, (id, day), mind)
-        && let Some(begun) = start_trial(world, rules, (memory, seed), id, mind, day)
+        && let Some(begun) = start_trial(world, rules, (memory, seed), id, mind, (day, &mut news))
     {
         mind.changed_day = Some(day);
         news.push(begun);
@@ -11193,7 +11345,10 @@ fn change_or_move(
     }
     // A deed heard is tried more readily than an invention (D57, the
     // project lead, 25 November 2026): an extra chance, by its will and
-    // the tellers it heard it from.
+    // the tellers it heard it from. But a deed whose result it knows,
+    // and that brought it nothing, is not tried again for being told
+    // again (amended 28 November 2026): a tale with nothing new to it
+    // opens no trial, one with something new is tried for that.
     if rules.needs.hands.on() {
         let heard = handwork::heard_deeds(memory, mind);
         let chance = handwork::heard_chance(rules, mind, &heard);
@@ -11201,11 +11356,55 @@ fn change_or_move(
             && trial_fits(world, &rules.needs.trials, Way::Hands, day)
             && scatter::roll(seed, purpose::HANDS_HEARD, &[u64::from(id.0), day]) % 1000 < chance
         {
-            mind.changed_day = Some(day);
-            news.push(start_heard_deeds(world, rules, id, mind, (&heard, day)));
+            weigh_tale(
+                world,
+                rules,
+                seed,
+                (id, day, now),
+                mind,
+                (&heard, &mut news),
+            );
         }
     }
     news
+}
+
+/// `id`, whom the extra chance sets out to try the deeds `heard` on
+/// `day`, weighs them against what it knows (D57, amended 28 November
+/// 2026, the project lead: "one tries, and if it does not work and
+/// brings nothing, one stops. One can take it up again later"): the
+/// deeds whose result it knows, and that brought it nothing, are no aim
+/// ([`handwork::sift`]). With something new to it left, a trial of its
+/// hands aimed at that; with nothing, no trial. The whole tale is weighed
+/// tonight either way: not again till heard again.
+fn weigh_tale(
+    world: &World,
+    rules: &Content,
+    seed: u64,
+    (id, day, now): (BodyId, u64, u64),
+    mind: &mut Mind,
+    (heard, news): (&[(Deed, u32)], &mut Vec<News>),
+) {
+    let again = handwork::Again::of(rules, seed, id, day);
+    let sifted = handwork::sift(mind, again, heard);
+    if sifted.new.is_empty() {
+        news.push(News::TaleKnown {
+            body: id,
+            deeds: sifted.known,
+            at: now,
+        });
+    } else {
+        mind.changed_day = Some(day);
+        news.push(start_heard_deeds(
+            world,
+            rules,
+            id,
+            mind,
+            (&sifted.new, day),
+        ));
+        news.extend(handwork::again_news(id, &sifted.again, now));
+    }
+    handwork::note_heard(mind, heard, day);
 }
 
 /// `id` sets out on `day` to try the deeds of the hands it heard and does
@@ -11260,12 +11459,36 @@ fn start_trial(
     (memory, seed): (&Store, u64),
     id: BodyId,
     mind: &mut Mind,
-    day: u64,
+    (day, news): (u64, &mut Vec<News>),
 ) -> Option<News> {
     let trials = &rules.needs.trials;
     // A kept way it heard at the fire comes first (D55): "I heard it
     // worked for N, I try it", the way as told, a step lost at times.
-    if let Some((way, theirs)) = heard_candidate(memory, seed, id, mind) {
+    // Not a tale of the hands whose every deed it knows the result of
+    // (D57, amended 28 November 2026): that one opens no trial, and its
+    // will draws a way as if it had heard nothing.
+    let heard = heard_candidate(memory, seed, id, mind).filter(|(way, theirs)| {
+        if *way != Way::Hands {
+            return true;
+        }
+        let told: Vec<(Deed, u32)> = theirs
+            .hands
+            .iter()
+            .filter(|d| !mind.ways.hands.contains(*d))
+            .map(|d| (d, 1))
+            .collect();
+        let sifted = handwork::sift(mind, handwork::Again::of(rules, seed, id, day), &told);
+        if !told.is_empty() && sifted.new.is_empty() {
+            news.push(News::TaleKnown {
+                body: id,
+                deeds: sifted.known,
+                at: world.tick().0,
+            });
+            return false;
+        }
+        true
+    });
+    if let Some((way, theirs)) = heard {
         // A short trial waits for a season that can hold its days (D50,
         // amended 25 November 2026).
         if !trial_fits(world, trials, way, day) {
@@ -11278,13 +11501,15 @@ fn start_trial(
             // knowledge model, 22 November 2026): it tries the deeds
             // heard, and learns those that come to something in its own
             // hands.
-            let heard: Vec<(Deed, u32)> = theirs
+            let told: Vec<(Deed, u32)> = theirs
                 .hands
                 .iter()
                 .filter(|d| !mind.ways.hands.contains(*d))
                 .map(|d| (d, 1))
                 .collect();
-            handwork::aim_at(mind, &heard, day);
+            let sifted = handwork::sift(mind, handwork::Again::of(rules, seed, id, day), &told);
+            handwork::aim_at(mind, &sifted.new, day);
+            news.extend(handwork::again_news(id, &sifted.again, world.tick().0));
         } else {
             copy_way(mind, way, &theirs, seed, &[u64::from(id.0), day], trials);
         }
@@ -11669,8 +11894,19 @@ fn believe_caller(
 /// `id` goes to live at the home it called (D56, amended 24 November
 /// 2026): its home trial begins. The home, and the news of the trial, if
 /// it held a call.
-fn go_to_live(id: BodyId, mind: &mut Mind, now: u64) -> Option<(Pos, News)> {
+fn go_to_live(
+    rules: &Content,
+    id: BodyId,
+    mind: &mut Mind,
+    (day, now): (u64, u64),
+    news: &mut Vec<News>,
+) -> Option<(Pos, News)> {
     let c = mind.calling.take()?;
+    // A trial under way is cut short by the one that begins (amended 28
+    // November 2026): one of the hands ends by its one verdict.
+    if let Some(t) = mind.trial.take() {
+        news.extend(handwork::cut_short(rules, (id, day, now), mind, &t));
+    }
     let mut trial = c.trial;
     trial.before = mind.ways;
     mind.ways.home = c.to;
@@ -19352,8 +19588,15 @@ mod tests {
             (1..=40)
                 .map(|day| {
                     let mut mind = Mind::new(Pos::new(5, 5));
-                    start_trial(&world, &rules, (&brains.memory, seed), me, &mut mind, day)
-                        .and(mind.trial.map(|t| t.way))
+                    start_trial(
+                        &world,
+                        &rules,
+                        (&brains.memory, seed),
+                        me,
+                        &mut mind,
+                        (day, &mut Vec::new()),
+                    )
+                    .and(mind.trial.map(|t| t.way))
                 })
                 .collect()
         };
@@ -19374,7 +19617,14 @@ mod tests {
         theirs.stock_kj = STOCK_KJ * 2;
         heard_kept(&mut brains, (me, mate, 1), Way::StockKj, theirs, 50);
         let mind = brains.minds.get_mut(&me).unwrap();
-        let news = start_trial(&world, &rules, (&brains.memory, brains.seed), me, mind, 3);
+        let news = start_trial(
+            &world,
+            &rules,
+            (&brains.memory, brains.seed),
+            me,
+            mind,
+            (3, &mut Vec::new()),
+        );
         assert!(
             matches!(news, Some(News::Trying { way: Way::StockKj, after, .. }) if after.stock_kj == STOCK_KJ * 2),
             "{news:?}"
@@ -19408,7 +19658,7 @@ mod tests {
             (&brains.memory, brains.seed),
             me,
             &mut mind,
-            3,
+            (3, &mut Vec::new()),
         );
         assert!(
             matches!(news, Some(News::Trying { way, .. }) if way != Way::Home),
@@ -19953,7 +20203,7 @@ mod tests {
                     (&brains.memory, brains.seed),
                     me,
                     &mut mind,
-                    day,
+                    (day, &mut Vec::new()),
                 ) && (way != Way::StockKj || step_up(way, &before, &after))
                 {
                     given_up += 1;
@@ -20653,7 +20903,7 @@ mod tests {
                 (&Store::default(), 7),
                 BodyId(1),
                 &mut m,
-                day,
+                (day, &mut Vec::new()),
             );
             assert!(!matches!(tried, Some(News::Trying { way: Way::Home, .. })));
         }
