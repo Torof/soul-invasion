@@ -3513,6 +3513,8 @@ pub fn run_watched(
                 | News::Turned { .. }
                 | News::Untried { .. }
                 | News::Drew { .. }
+                | News::DeedSeen { .. }
+                | News::DeedKept { .. }
                 | News::Skipped { .. }
                 | News::ToolTaken { .. }
                 | News::Problem { .. }

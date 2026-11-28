@@ -37,6 +37,7 @@ fn told(event: &Event) -> bool {
     matches!(
         event,
         Event::Gestured { .. }
+            | Event::BarkLifted { .. }
             | Event::TreeBitten { .. }
             | Event::TreeFell { .. }
             | Event::GestureRefused { .. }

@@ -8,7 +8,8 @@
     journal.py FILE gestures [--top N]
         the gestures of the hands by kind: in a trial of the hands or not,
         with something coming of them, leading to food put in a hollow or
-        to nothing; the people who worked most; what the kept trials did
+        to nothing; the deeds seen and kept, the bark lifted, the trees
+        felled; the people who worked most; what the kept trials did
         afterwards
 
 The story leaves out the news of every evening (told, heard, company)
@@ -131,7 +132,11 @@ def trials(path):
 
 def gestures(path, top):
     """The work of the hands: what belonged to a trial, what led to food."""
-    wanted = ('"gestured"', "tree_fell", "Trying {", "way: Hands", "Untried", '"carry"', "step: Began", "work_stopped")
+    wanted = (
+        '"gestured"', "tree_fell", "bark_lifted", "Trying {", "way: Hands", "Untried", '"carry"',
+        "step: Began", "work_stopped", "DeedSeen", "DeedKept",
+    )
+    lifted, seen, kept_own, kept_left = [0], Counter(), Counter(), Counter()
     spans = defaultdict(list)  # body -> [start, end, from a problem, kept, on a tale]
     done, days, felled, short_cut = [], set(), Counter(), [0]
     food, stops = set(), defaultdict(list)
@@ -145,8 +150,14 @@ def gestures(path, top):
                 done.append((tick, line["d"], body, what))
             elif what["type"] == "tree_fell":
                 felled[body] += 1
+            elif what["type"] == "bark_lifted":
+                lifted[0] += 1
             elif what["type"] == "work_stopped":
                 food.add(what["gives"])
+        elif what.startswith("DeedSeen"):
+            seen[body] += 1
+        elif what.startswith("DeedKept"):
+            (kept_own if "own: true" in what else kept_left)[body] += 1
         elif what.startswith("Trying"):
             # One trial at a time: another begun cuts short the one under
             # way (a move followed), unjudged.
@@ -234,6 +245,20 @@ def gestures(path, top):
         total.update(row)
         print(name.ljust(14) + "".join(str(row[h]).rjust(19) for h in heads))
     print("all".ljust(14) + "".join(str(total[h]).rjust(19) for h in heads))
+    inside, outside = total["in a trial"], total["done"] - total["in a trial"]
+    led_in, led_out = total["in a trial, led"], total["led to food"] - total["in a trial, led"]
+    share = lambda part, whole: f"{100 * part // whole} %" if whole else "-"
+    print(
+        f"\nin a trial of the hands: {inside} gestures, {led_in} led to food ({share(led_in, inside)}); "
+        f"outside: {outside} gestures, {led_out} led to food ({share(led_out, outside)})"
+    )
+    print(
+        f"deeds seen give a thing in a trial (each once a trial): {sum(seen.values())} by {len(seen)} people; "
+        f"deeds kept: {sum(kept_own.values()) + sum(kept_left.values())} "
+        f"(of a kept trial {sum(kept_own.values())} by {len(kept_own)} people, "
+        f"left by a trial not kept {sum(kept_left.values())} by {len(kept_left)} people)"
+    )
+    print(f"bark pieces lifted: {lifted[0]}; trees felled: {sum(felled.values())} by {len(felled)} people")
     print(f"\npeople with a gesture: {len(people)}; person-journées seen in the events: {len(days)}")
     trials = [s for body in spans for s in spans[body]]
     lengths = sorted((s[1] - s[0]) for s in trials if s[1] is not None)

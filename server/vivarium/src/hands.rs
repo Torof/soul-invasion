@@ -204,6 +204,43 @@ pub struct HandsProbe {
     /// hollow, by tribe and hollow: each counted once a hollow, whatever
     /// the foods its deeds name.
     pub put_knowers: BTreeMap<(u8, String), u32>,
+    /// Who is in a trial of its hands, as the news say (28 November
+    /// 2026): begun, till judged, unjudged, or cut short by another.
+    pub trying: BTreeSet<BodyId>,
+    /// Every gesture ended, in order (28 November 2026): what the round
+    /// "seen is not kept" is judged on ([`HandsProbe::work_json`]).
+    pub done: Vec<Done>,
+    /// The deeds seen give a thing in a trial, each once a trial, and
+    /// the deeds kept: as a kept trial's own, and left by a trial not
+    /// kept whose chain had served (D57, amended 28 November 2026).
+    pub deeds_seen: u32,
+    /// See `deeds_seen`.
+    pub deeds_kept_own: u32,
+    /// See `deeds_seen`.
+    pub deeds_kept_left: u32,
+    /// Pieces of bark lifted off trunks (D57, amended 28 November 2026).
+    pub barks_lifted: u32,
+}
+
+/// A gesture ended, as the round's figures need it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Done {
+    /// The tool it cut with, what it folded, struck or put.
+    pub item: sim::ItemId,
+    /// The thing it was put in.
+    pub into: Option<sim::ItemId>,
+    /// What came of it.
+    pub gave: Option<sim::ItemId>,
+    /// A put-in of food.
+    pub food_put: bool,
+    /// Done in a trial of the hands.
+    pub in_trial: bool,
+}
+
+/// Whether a gesture ended is a put-in of food: `on` is then the
+/// material put.
+fn food_put(content: &Content, gesture: Gesture, on: &str) -> bool {
+    gesture == Gesture::PutIn && content.material(on).is_some_and(|m| m.food.is_some())
 }
 
 /// The least, the median (the lower of two) and the most of `values`;
@@ -259,6 +296,7 @@ impl HandsProbe {
                 cuts.1 += u32::from(gave.is_some());
                 self.branches_taken += u32::from(*part == Part::Branch && gave.is_some());
             }
+            Event::BarkLifted { .. } => self.barks_lifted += 1,
             Event::TreeBitten { chips_g, .. } => {
                 self.bites += 1;
                 self.chips_g += u64::from(*chips_g);
@@ -279,6 +317,95 @@ impl HandsProbe {
             }),
             _ => {}
         }
+    }
+
+    /// A gesture ended, kept for the work's figures (28 November 2026).
+    fn work_event(&mut self, content: &Content, event: &Event) {
+        if let Event::Gestured {
+            body,
+            gesture,
+            item,
+            on,
+            into,
+            gave,
+            ..
+        } = event
+        {
+            self.done.push(Done {
+                item: *item,
+                into: *into,
+                gave: *gave,
+                food_put: food_put(content, *gesture, on),
+                in_trial: self.trying.contains(body),
+            });
+        }
+    }
+
+    /// What a news tells of the work of the hands (28 November 2026):
+    /// who is in a trial of its hands (one trial at a time, and another
+    /// begun, a move followed, cuts it short), the deeds seen and kept.
+    fn work_news(&mut self, news: &News) {
+        match news {
+            News::Trying { body, way, .. } => {
+                if *way == Way::Hands {
+                    self.trying.insert(*body);
+                } else {
+                    self.trying.remove(body);
+                }
+            }
+            News::Tried { body, .. } | News::Untried { body, .. } => {
+                self.trying.remove(body);
+            }
+            News::DeedSeen { .. } => self.deeds_seen += 1,
+            News::DeedKept { own: true, .. } => self.deeds_kept_own += 1,
+            News::DeedKept { own: false, .. } => self.deeds_kept_left += 1,
+            _ => {}
+        }
+    }
+
+    /// The work of the hands in a trial and outside (`docs/10`,
+    /// `hands.work`; 28 November 2026): the gestures ended, and of them
+    /// those that led to food put in a hollow, read backwards as
+    /// `tools/lab/journal.py gestures` reads them (a put-in of food, the
+    /// thing it was put in, the gesture that gave that thing, the thing
+    /// that gesture was done with or on, and so on); the deeds seen and
+    /// kept; the bark lifted and the trees felled.
+    fn work_json(&self) -> Value {
+        let mut useful: BTreeSet<sim::ItemId> = BTreeSet::new();
+        // (gestures, of them led to food): outside a trial, in one.
+        let mut counts = [(0_u32, 0_u32); 2];
+        for done in self.done.iter().rev() {
+            let side = &mut counts[usize::from(done.in_trial)];
+            side.0 += 1;
+            let Some(gave) = done.gave else {
+                continue;
+            };
+            if done.food_put {
+                useful.extend(done.into);
+            } else if useful.contains(&gave) {
+                useful.insert(done.item);
+                useful.extend(done.into);
+            } else {
+                continue;
+            }
+            side.1 += 1;
+        }
+        let side = |(gestures, led): (u32, u32)| {
+            json!({
+                "gestures": gestures,
+                "led_to_food": led,
+                "led_percent": (gestures > 0).then(|| u64::from(led) * 100 / u64::from(gestures)),
+            })
+        };
+        json!({
+            "in_a_trial": side(counts[1]),
+            "outside": side(counts[0]),
+            "deeds_seen": self.deeds_seen,
+            "deeds_kept": self.deeds_kept_own + self.deeds_kept_left,
+            "deeds_kept_own": self.deeds_kept_own,
+            "barks_lifted": self.barks_lifted,
+            "trees_felled": self.felled.len(),
+        })
     }
 
     /// The trees' figures as JSON (`docs/10`, `hands.trees`).
@@ -311,6 +438,7 @@ impl HandsProbe {
         (day, age_year): (u64, u64),
     ) {
         self.trees_event(people, event, day);
+        self.work_event(content, event);
         match event {
             Event::Gestured {
                 body,
@@ -443,6 +571,7 @@ impl HandsProbe {
             _ => "kept trial".to_owned(),
         };
         for news in batch {
+            self.work_news(news);
             match news {
                 News::Trying {
                     body,
@@ -827,6 +956,7 @@ impl HandsProbe {
             "cuts_with": self.cuts_with.iter().map(|(m, (done, gave))| (m.clone(), json!({"done": done, "gave": gave}))).collect::<serde_json::Map<String, Value>>(),
             "barks_dropped": self.barks_dropped,
             "trees": self.trees_json(),
+            "work": self.work_json(),
             "put_in": self.put_in_json(None),
             "tribes": tribes_json,
         })
@@ -1272,5 +1402,78 @@ mod tests {
         let empty = HandsProbe::default().json(&[], 8, 1);
         assert_eq!(empty["put_in"]["days_from_hollow_to_put_in"], Value::Null);
         assert_eq!(empty["put_in"]["same_failure_repeated"], Value::Null);
+    }
+    #[test]
+    fn the_work_of_the_hands_is_counted_in_a_trial_and_outside_with_what_led_to_food() {
+        // 28 November 2026, "seen is not kept": the figures a run of the
+        // round is judged on.
+        let content = Content::sample();
+        let mut world = World::new(sim::Calendar::default(), &content);
+        let stone = content.materials[0].id.clone();
+        let food = content
+            .materials
+            .iter()
+            .find(|m| m.food.is_some())
+            .expect("a food")
+            .id
+            .clone();
+        let mut thing = || world.spawn_item(&stone, 400, sim::Pos::new(1, 1));
+        let (tool, bark, chips, hollow, berries) = (thing(), thing(), thing(), thing(), thing());
+        let people = BTreeMap::new();
+        let mut probe = HandsProbe::default();
+        let body = BodyId(3);
+        let ended = |gesture, item, on: &str, into, gave| Event::Gestured {
+            body,
+            gesture,
+            item,
+            on: on.to_owned(),
+            into,
+            part: (gesture == Gesture::Cut).then_some(Part::Trunk),
+            gave,
+            broke: false,
+        };
+        let chunk = sim::ChunkPos::new(0, 0);
+        let tree = sim::trees::TreeKey::from_bits(8).expect("a key");
+        // In a trial: a cut that gives bark, lifted off the trunk, a cut
+        // that gives chips, a fold for nothing, the bark folded.
+        probe.trying.insert(body);
+        for event in [
+            ended(Gesture::Cut, tool, "birch", None, Some(bark)),
+            Event::BarkLifted {
+                body,
+                chunk,
+                tree,
+                left: 3,
+                version: 1,
+            },
+            ended(Gesture::Cut, tool, "hazel", None, Some(chips)),
+            ended(Gesture::Fold, chips, "wood_chips", None, None),
+            ended(Gesture::Fold, bark, "birch_bark", None, Some(hollow)),
+        ] {
+            probe.event((&world, &content), &people, &event, (1, 1));
+        }
+        // Outside: its food put in the hollow, and a stone.
+        probe.trying.remove(&body);
+        for event in [
+            ended(Gesture::PutIn, berries, &food, Some(hollow), Some(berries)),
+            ended(Gesture::PutIn, tool, &stone, Some(hollow), Some(tool)),
+        ] {
+            probe.event((&world, &content), &people, &event, (2, 1));
+        }
+        probe.deeds_seen = 3;
+        probe.deeds_kept_own = 2;
+        probe.deeds_kept_left = 1;
+        assert_eq!(
+            probe.json(&[], 4, 1)["work"],
+            json!({
+                "in_a_trial": {"gestures": 4, "led_to_food": 2, "led_percent": 50},
+                "outside": {"gestures": 2, "led_to_food": 1, "led_percent": 50},
+                "deeds_seen": 3,
+                "deeds_kept": 3,
+                "deeds_kept_own": 2,
+                "barks_lifted": 1,
+                "trees_felled": 0,
+            })
+        );
     }
 }
