@@ -23,17 +23,20 @@
 //! to read; the trees used to be keyed by it too, so every item laid,
 //! lifted or picked in a chunk placed its trees again (115,638 placings
 //! for some 15,000 chunks over a vivarium run of 400 days), though no
-//! change of men touches a tree yet. The trees held are the seed's.
-//! Felling, when it comes, lays a chunk's felled and planted trees over
-//! the seed's trees held here (a patch: some trees taken out, some put
-//! in, never a new placing) and works that chunk's trunks and walkable
-//! pieces out again.
+//! change of men touched a tree then. The trees held are the seed's.
+//! **Felling** (D57, amended 27 November 2026) lays a chunk's felled
+//! trees over the seed's trees held here (a patch: some trees taken out,
+//! never a new placing) and works that chunk's trunks and walkable
+//! pieces out again ([`Ground::set_felled`]). The seed's trees stay held
+//! beside the standing ones ([`Ground::seed_trees_in`]): the plants and
+//! the bearers are placed from them, so nothing but the tree moves when
+//! a tree falls, and what is kept on disk is the seed's alone.
 //!
 //! A `Ground` belongs to one world and one content: the trees it holds
 //! were placed on that world's map with that content's kinds of tree.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use crate::content::Species;
@@ -74,10 +77,18 @@ pub struct Ground {
 /// version bumped between the two is seen as a whole.
 #[derive(Debug)]
 struct Held {
-    /// The trees of a chunk as the seed placed them and the tiles their
-    /// trunks block, the least recently used out first: by chunk alone,
-    /// for no change of men touches a tree yet (see the module's doc).
+    /// The trees of a chunk as the seed placed them, those still standing
+    /// and the tiles their trunks block, the least recently used out
+    /// first: by chunk alone (see the module's doc).
     trees: Lru<ChunkPos, Placed>,
+    /// The trees of the seed men felled, by chunk
+    /// ([`crate::changes::ChunkChanges`]'s `felled`, set as it changes):
+    /// laid over the seed's trees whenever a chunk's are held. Grows with
+    /// what men fell, never with the land.
+    felled: BTreeMap<ChunkPos, BTreeSet<TreeKey>>,
+    /// How many times a felling changed `felled`: walkable pieces worked
+    /// out across one are not held.
+    fellings: u64,
     /// The walkable pieces of a chunk under a set of walkable terrains
     /// ([`Links`]), the least recently used out first: read from the
     /// map's terrain and the trunks, by chunk alone as the trees.
@@ -91,9 +102,10 @@ struct Held {
     /// it: never changed by men, so held by the chunk alone.
     rocks: Lru<ChunkPos, Arc<[Rock]>>,
     /// The trees and plants of a chunk bearing a crop (D45), placed from
-    /// the map, the seed, the content and the trees around: as the rocks,
-    /// held by chunk alone, for no man changes a tree yet. Felling, when
-    /// it comes, places a chunk's bearers and its neighbours' again.
+    /// the map, the seed, the content and the seed's trees around: as the
+    /// rocks, held by chunk alone. A felled tree stays among them and
+    /// bears nothing (D57, amended 27 November 2026): what is left on a
+    /// bearer is asked of the world, which knows the felled trees.
     bearers: Lru<ChunkPos, Arc<[Bearer]>>,
     /// How many times a chunk's bearers were placed into `bearers`, in
     /// all: what the placing cost, read by the vivarium's timing.
@@ -102,19 +114,32 @@ struct Held {
     trees_placed: u64,
 }
 
-/// A chunk's trees as placed, with the tiles their trunks block: made
-/// together, held together, forgotten together.
+/// A chunk's trees as placed, those of them standing, with the tiles
+/// their trunks block: made together, held together, forgotten together.
 #[derive(Debug, Clone)]
 struct Placed {
+    /// As the seed placed them.
+    seed: Arc<[Tree]>,
+    /// Those still standing: the same list while none was felled.
     trees: Arc<[Tree]>,
     trunks: Arc<Trunks>,
 }
 
 impl Placed {
-    fn new(chunk: ChunkPos, trees: Vec<Tree>) -> Self {
+    /// The seed's trees of `chunk` with `felled` taken out.
+    fn new(chunk: ChunkPos, seed: Arc<[Tree]>, felled: Option<&BTreeSet<TreeKey>>) -> Self {
+        let trees: Arc<[Tree]> = match felled {
+            Some(felled) if seed.iter().any(|t| felled.contains(&t.key)) => seed
+                .iter()
+                .filter(|t| !felled.contains(&t.key))
+                .copied()
+                .collect(),
+            _ => Arc::clone(&seed),
+        };
         let trunks = Arc::new(Trunks::of(chunk, &trees));
         Self {
-            trees: trees.into(),
+            seed,
+            trees,
             trunks,
         }
     }
@@ -502,6 +527,8 @@ impl Ground {
         Self {
             held: Mutex::new(Held {
                 trees: Lru::new(capacity),
+                felled: BTreeMap::new(),
+                fellings: 0,
                 links: Lru::new(capacity),
                 versions: BTreeMap::new(),
                 rocks: Lru::new(capacity),
@@ -525,7 +552,54 @@ impl Ground {
         self.lock().versions.insert(chunk, version);
     }
 
-    /// The trees standing in `chunk`: those held, or else placed now ([`trees::trees_in`]) and held. The same trees
+    /// Sets the trees of the seed felled in `chunk` (D57, amended 27
+    /// November 2026): as a tree falls, and as a world is loaded. A
+    /// patch: the chunk's seed trees held stay, those felled are taken
+    /// out of the standing ones, and its trunks and walkable pieces are
+    /// worked out again; nothing is placed anew.
+    pub fn set_felled(&self, chunk: ChunkPos, felled: &BTreeSet<TreeKey>) {
+        let mut held = self.lock();
+        if held.felled.get(&chunk).is_none_or(BTreeSet::is_empty) && felled.is_empty() {
+            return;
+        }
+        if felled.is_empty() {
+            held.felled.remove(&chunk);
+        } else {
+            held.felled.insert(chunk, felled.clone());
+        }
+        held.fellings += 1;
+        if let Some(seed) = held.trees.get(&chunk).map(|p| Arc::clone(&p.seed)) {
+            let placed = Placed::new(chunk, seed, held.felled.get(&chunk));
+            held.trees.insert(chunk, placed);
+        }
+        let stale: Vec<(ChunkPos, u8)> = held
+            .links
+            .keys()
+            .filter(|key| key.0 == chunk)
+            .copied()
+            .collect();
+        for key in stale {
+            held.links.remove(&key);
+        }
+    }
+
+    /// The trees of `chunk` as the seed placed them, the felled ones
+    /// too: what the plants and the bearers are placed from, so that a
+    /// tree felled moves nothing else.
+    #[must_use]
+    pub fn seed_trees_in(
+        &self,
+        map: &Map,
+        species: &[Species],
+        open: &OpenGround,
+        seed: u64,
+        chunk: ChunkPos,
+    ) -> Arc<[Tree]> {
+        self.placed(map, species, open, seed, chunk).seed
+    }
+
+    /// The trees standing in `chunk`: those held, or else placed now ([`trees::trees_in`]) and held, less those
+    /// men felled ([`Ground::set_felled`]). The same trees
     /// either way; a hit copies nothing. Placed with the lock released:
     /// two readers missing the same chunk at once place the same trees,
     /// and the second only replaces the first.
@@ -569,12 +643,20 @@ impl Ground {
         mask: u8,
     ) -> Arc<Links> {
         let key = (chunk, mask);
-        if let Some(links) = self.lock().links.get(&key) {
-            return Arc::clone(links);
-        }
+        let fellings = {
+            let mut held = self.lock();
+            if let Some(links) = held.links.get(&key) {
+                return Arc::clone(links);
+            }
+            held.fellings
+        };
         let trunks = self.trunks_in(map, species, open, seed, chunk);
         let links = Arc::new(Links::of(map, chunk, mask, &trunks));
-        self.lock().links.insert(key, Arc::clone(&links));
+        let mut held = self.lock();
+        // A tree fell meanwhile: these may be of the trunks of before.
+        if held.fellings == fellings {
+            held.links.insert(key, Arc::clone(&links));
+        }
         links
     }
 
@@ -610,8 +692,9 @@ impl Ground {
         if let Some(placed) = self.lock().trees.get(&chunk).cloned() {
             return placed;
         }
-        let placed = Placed::new(chunk, trees::trees_in(map, species, open, seed, chunk));
+        let seed_trees: Arc<[Tree]> = trees::trees_in(map, species, open, seed, chunk).into();
         let mut held = self.lock();
+        let placed = Placed::new(chunk, seed_trees, held.felled.get(&chunk));
         held.trees.insert(chunk, placed.clone());
         held.trees_placed += 1;
         placed
@@ -741,8 +824,8 @@ impl Ground {
         put_u32(&mut out, seeded.len());
         for (chunk, placed) in seeded {
             put_chunk(&mut out, chunk);
-            put_u32(&mut out, placed.trees.len());
-            for tree in placed.trees.iter() {
+            put_u32(&mut out, placed.seed.len());
+            for tree in placed.seed.iter() {
                 out.extend_from_slice(&tree.at.x.to_le_bytes());
                 out.extend_from_slice(&tree.at.y.to_le_bytes());
                 let species = u16::try_from(tree.species).expect("few kinds of tree");
@@ -805,7 +888,7 @@ impl Ground {
         };
         for (chunk, trees) in &trees {
             if let Some(mine) = held.trees.get(chunk) {
-                if *mine.trees != **trees {
+                if *mine.seed != **trees {
                     return Err(Refused::Differs(*chunk));
                 }
                 out.compared += 1;
@@ -821,7 +904,8 @@ impl Ground {
         }
         for (chunk, trees) in trees {
             if !held.trees.contains(&chunk) {
-                held.trees.insert(chunk, Placed::new(chunk, trees));
+                let placed = Placed::new(chunk, trees.into(), held.felled.get(&chunk));
+                held.trees.insert(chunk, placed);
                 out.taken[0] += 1;
             }
         }
@@ -1005,7 +1089,7 @@ mod tests {
         assert_eq!(ground.trees_placed(), 1);
         // An item laid, lifted or picked: the version moves, the trees,
         // trunks and walkable pieces stay as placed (D51, amended 25
-        // November 2026): no change of men touches a tree yet.
+        // November 2026): such a change touches no tree.
         ground.set_version(chunk, 1);
         assert_eq!(ground.version(chunk), 1);
         assert!(ground.holds_trees(chunk), "kept across the change");
@@ -1022,6 +1106,78 @@ mod tests {
         // Another chunk keeps its own version.
         let other = ChunkPos::new(chunk.x + 1, chunk.y);
         assert_eq!(ground.version(other), 0);
+    }
+
+    #[test]
+    fn a_felled_tree_is_taken_out_of_the_trees_held_never_placed_anew() {
+        let (map, species) = valley();
+        let chunk = wooded(&map, &species)[0];
+        let ground = Ground::default();
+        let before = ground.trees_in(&map, &species, &open(), SEED, chunk);
+        let bytes = ground.to_bytes();
+        let tree = *before
+            .iter()
+            .find(|t| t.at.tile().chunk() == chunk)
+            .expect("a trunk in the chunk");
+        // The tile of a tree standing alone on it, to see it freed.
+        let alone = before
+            .iter()
+            .filter(|t| t.at.tile() == tree.at.tile())
+            .count()
+            == 1;
+        let links = ground.links_in(&map, &species, &open(), SEED, chunk, 1);
+        assert!(
+            ground
+                .trunks_in(&map, &species, &open(), SEED, chunk)
+                .blocks(tree.at.tile())
+        );
+        // It falls: a patch over the trees held.
+        let felled: BTreeSet<TreeKey> = [tree.key].into();
+        ground.set_felled(chunk, &felled);
+        let after = ground.trees_in(&map, &species, &open(), SEED, chunk);
+        assert_eq!(after.len(), before.len() - 1);
+        assert!(after.iter().all(|t| t.key != tree.key));
+        assert!(before.iter().filter(|t| t.key != tree.key).eq(after.iter()));
+        assert_eq!(ground.trees_placed(), 1, "never a new placing");
+        // Its trunk blocks its tile no more, and the walkable pieces are
+        // worked out again.
+        let trunks = ground.trunks_in(&map, &species, &open(), SEED, chunk);
+        assert_eq!(trunks.blocks(tree.at.tile()), !alone);
+        assert_eq!(*trunks, Trunks::of(chunk, &after));
+        let again = ground.links_in(&map, &species, &open(), SEED, chunk, 1);
+        assert!(!Arc::ptr_eq(&links, &again), "worked out again");
+        // The seed's trees stay, for the plants and the bearers, and are
+        // what is kept on disk.
+        let seed = ground.seed_trees_in(&map, &species, &open(), SEED, chunk);
+        assert!(Arc::ptr_eq(&seed, &before));
+        assert_eq!(ground.to_bytes(), bytes);
+        // Forgotten and placed again, the chunk still lacks it.
+        let small = Ground::new(1);
+        small.set_felled(chunk, &felled);
+        let other = wooded(&map, &species)[1];
+        for _ in 0..2 {
+            let trees = small.trees_in(&map, &species, &open(), SEED, chunk);
+            assert_eq!(*trees, *after);
+            let _ = small.trees_in(&map, &species, &open(), SEED, other);
+            assert!(!small.holds_trees(chunk));
+        }
+        // Trees taken from bytes are the seed's, the felled laid over.
+        let fresh = Ground::default();
+        fresh.set_felled(chunk, &felled);
+        fresh
+            .take_bytes(&bytes, species.len())
+            .expect("the seed's trees");
+        assert_eq!(
+            *fresh.trees_in(&map, &species, &open(), SEED, chunk),
+            *after
+        );
+        assert_eq!(fresh.trees_placed(), 0);
+        // No tree felled any more (a world loaded anew): all stand.
+        ground.set_felled(chunk, &BTreeSet::new());
+        assert_eq!(
+            *ground.trees_in(&map, &species, &open(), SEED, chunk),
+            *before
+        );
     }
 
     #[test]

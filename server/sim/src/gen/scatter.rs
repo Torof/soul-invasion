@@ -227,9 +227,13 @@ pub(crate) mod purpose {
     /// body whose belief agrees with its mark means to act on it.
     pub(crate) const LEARN_ACT: u64 = 0x0d59_ac75;
 
+    /// A tree's own share of its kind's girth (D57, amended 27 November
+    /// 2026), by where it stands.
+    pub(crate) const TRUNK: u64 = 0x0d57_7a0c;
+
     /// Every purpose, to check that they differ.
     #[cfg(test)]
-    pub(crate) const ALL: [u64; 82] = [
+    pub(crate) const ALL: [u64; 83] = [
         TREE_CELL,
         TREE_GAP,
         TREE_TILE,
@@ -304,6 +308,7 @@ pub(crate) mod purpose {
         FIRE_SEE,
         HANDS_GESTURE,
         HANDS_THING,
+        TRUNK,
         HANDS_HEARD,
         PROBLEM_TRY,
         TRIP_TURN,

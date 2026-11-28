@@ -8,13 +8,32 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
-use sim::brain::{Brains, Deed, HOLLOW, HOME_TILES, News, Way, kind_hollow, kind_material};
+use sim::brain::{
+    Brains, Deed, HOLLOW, HOME_TILES, News, Way, cut_part, cut_species, kind_hollow, kind_material,
+};
 use sim::content::Content;
-use sim::hands::Gesture;
+use sim::hands::{Gesture, Part};
 use sim::memory::{Record, RecordId};
 use sim::{BodyId, Event, World};
 
 use crate::Person;
+
+/// A tree felled (D57, amended 27 November 2026).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Felled {
+    /// The day it fell.
+    pub day: u64,
+    /// Who gave the last cut, and its tribe.
+    pub body: BodyId,
+    /// See `body`.
+    pub tribe: u8,
+    /// Its species.
+    pub species: String,
+    /// How thick its trunk was, in millimetres.
+    pub trunk_mm: u32,
+    /// The log it left, in grams.
+    pub log_g: u32,
+}
 
 /// One tribe's age-year of the hands.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -153,6 +172,18 @@ pub struct HandsProbe {
     /// take it (D57, amended 25 November 2026: no longer chosen; only a
     /// load filled during the gesture lets one fall).
     pub barks_dropped: u32,
+    /// The cuts ended, by the part of the tree cut (D57, amended 27
+    /// November 2026, trees in parts): (ended, something came of it).
+    pub cuts_by_part: BTreeMap<Part, (u32, u32)>,
+    /// The cuts that bit a trunk's living wood, and the chips that fell,
+    /// in grams.
+    pub bites: u32,
+    /// See `bites`.
+    pub chips_g: u64,
+    /// The branches taken off standing trees.
+    pub branches_taken: u32,
+    /// The trees felled, in the order they fell.
+    pub felled: Vec<Felled>,
     /// Who put a thing in a hollow and it held (D57, amended 27 November
     /// 2026: nothing holds by itself): the first day, and its tribe.
     pub put_first: BTreeMap<BodyId, (u64, u8)>,
@@ -213,6 +244,64 @@ impl HandsProbe {
         self.years.entry((tribe, age_year)).or_default()
     }
 
+    /// What an event tells of the trees in parts (D57, amended 27
+    /// November 2026): the cuts by part, the bites and their chips, the
+    /// branches taken, the trees felled.
+    fn trees_event(&mut self, people: &BTreeMap<BodyId, Person>, event: &Event, day: u64) {
+        match event {
+            Event::Gestured {
+                part: Some(part),
+                gave,
+                ..
+            } => {
+                let cuts = self.cuts_by_part.entry(*part).or_default();
+                cuts.0 += 1;
+                cuts.1 += u32::from(gave.is_some());
+                self.branches_taken += u32::from(*part == Part::Branch && gave.is_some());
+            }
+            Event::TreeBitten { chips_g, .. } => {
+                self.bites += 1;
+                self.chips_g += u64::from(*chips_g);
+            }
+            Event::TreeFell {
+                body,
+                species,
+                trunk_mm,
+                log_g,
+                ..
+            } => self.felled.push(Felled {
+                day,
+                body: *body,
+                tribe: tribe(people, *body),
+                species: species.clone(),
+                trunk_mm: *trunk_mm,
+                log_g: *log_g,
+            }),
+            _ => {}
+        }
+    }
+
+    /// The trees' figures as JSON (`docs/10`, `hands.trees`).
+    fn trees_json(&self) -> Value {
+        json!({
+            "cuts": Part::ALL.iter().map(|p| {
+                let (done, gave) = self.cuts_by_part.get(p).copied().unwrap_or_default();
+                (p.key().to_owned(), json!({"done": done, "gave": gave}))
+            }).collect::<serde_json::Map<String, Value>>(),
+            "bites": self.bites,
+            "chips_g": self.chips_g,
+            "branches_taken": self.branches_taken,
+            "felled": self.felled.iter().map(|f| json!({
+                "day": f.day,
+                "body": f.body.0,
+                "tribe": tribe_name(f.tribe),
+                "species": f.species,
+                "trunk_mm": f.trunk_mm,
+                "log_g": f.log_g,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
     /// An event of the world's tick.
     pub fn event(
         &mut self,
@@ -221,6 +310,7 @@ impl HandsProbe {
         event: &Event,
         (day, age_year): (u64, u64),
     ) {
+        self.trees_event(people, event, day);
         match event {
             Event::Gestured {
                 body,
@@ -228,9 +318,11 @@ impl HandsProbe {
                 item,
                 on,
                 into,
+                part,
                 gave,
                 broke,
             } => {
+                let on = &part_named(on, *part);
                 let entry = self.gestures.entry(*gesture).or_default();
                 entry.0 += 1;
                 entry.1 += u32::from(gave.is_some());
@@ -285,10 +377,7 @@ impl HandsProbe {
                     let entry = self.cuts_with.entry(tool).or_default();
                     entry.0 += 1;
                     entry.1 += u32::from(gave.is_some());
-                    self.barks_dropped += u32::from(
-                        gave.and_then(|g| world.item(g))
-                            .is_some_and(|i| i.pos().is_some()),
-                    );
+                    self.barks_dropped += u32::from(dropped(world, content, *gave));
                 }
                 let made = *gesture == Gesture::Fold
                     && gave
@@ -737,6 +826,7 @@ impl HandsProbe {
             "known": self.known,
             "cuts_with": self.cuts_with.iter().map(|(m, (done, gave))| (m.clone(), json!({"done": done, "gave": gave}))).collect::<serde_json::Map<String, Value>>(),
             "barks_dropped": self.barks_dropped,
+            "trees": self.trees_json(),
             "put_in": self.put_in_json(None),
             "tribes": tribes_json,
         })
@@ -763,15 +853,36 @@ fn deed_name(content: &Content, deed: Deed) -> String {
         Gesture::Cut => {
             let tree = content
                 .species
-                .get(usize::from(deed.on))
+                .get(cut_species(deed.on))
                 .map_or("?", |s| s.id.as_str());
-            format!("cut {tree} with {}", material(deed.with))
+            let part = match cut_part(deed.on) {
+                Part::Trunk => "",
+                Part::Branch => " branch",
+            };
+            format!("cut {tree}{part} with {}", material(deed.with))
         }
         Gesture::PutIn => format!("put {} in {}", material(deed.on), material(deed.with)),
         Gesture::Strike => format!("strike {} with {}", material(deed.on), material(deed.with)),
         Gesture::TakeOut => format!("take {} out of {}", material(deed.on), material(deed.with)),
         g => format!("{} {}", g.key(), material(deed.on)),
     }
+}
+
+/// What a cut was done on, as the figures name it: the species, with
+/// its part when it is a branch (D57, amended 27 November 2026).
+fn part_named(on: &str, part: Option<Part>) -> String {
+    match part {
+        Some(Part::Branch) => format!("{on} branch"),
+        _ => on.to_owned(),
+    }
+}
+
+/// Whether what a cut gave fell at the cutter's feet, its load too full
+/// to take it: not the chips, which always fall.
+fn dropped(world: &World, content: &Content, gave: Option<sim::ItemId>) -> bool {
+    let chips = content.needs.hands.trees.as_ref().map(|t| t.chips.as_str());
+    gave.and_then(|g| world.item(g))
+        .is_some_and(|i| i.pos().is_some() && Some(i.material()) != chips)
 }
 
 /// One tribe's age-year as JSON (`docs/10`, `hands.tribes[].years[]`).
@@ -954,6 +1065,7 @@ mod tests {
         let body = BodyId(1);
         let ended = |gesture, on: &str, gave: Option<ItemId>, broke| Event::Gestured {
             into: None,
+            part: (gesture == Gesture::Cut).then_some(Part::Trunk),
             body,
             gesture,
             item: tool,
@@ -992,6 +1104,98 @@ mod tests {
     }
 
     #[test]
+    fn the_trees_figures_count_the_cuts_by_part_the_chips_the_branches_and_the_felled() {
+        // D57, amended 27 November 2026: trees in parts.
+        let content = Content::sample();
+        let mut world = World::new(sim::Calendar::default(), &content);
+        let stone = content.materials[0].id.clone();
+        let tool = world.spawn_item(&stone, 400, sim::Pos::new(1, 1));
+        let people = BTreeMap::new();
+        let mut probe = HandsProbe::default();
+        let body = BodyId(7);
+        let cut = |part, gave: Option<sim::ItemId>| Event::Gestured {
+            body,
+            gesture: Gesture::Cut,
+            item: tool,
+            on: "hazel".to_owned(),
+            into: None,
+            part: Some(part),
+            gave,
+            broke: false,
+        };
+        let chunk = sim::ChunkPos::new(0, 0);
+        let tree = sim::trees::TreeKey::from_bits(8).expect("a key");
+        let bitten = |chips_g, notch_mm2| Event::TreeBitten {
+            body,
+            chunk,
+            tree,
+            chips_g,
+            notch_mm2,
+            section_mm2: 2640,
+            version: 1,
+        };
+        let fell = Event::TreeFell {
+            body,
+            chunk,
+            tree,
+            at: sim::FinePos { x: 500, y: 500 },
+            species: "hazel".to_owned(),
+            trunk_mm: 58,
+            log_g: 5300,
+            version: 2,
+        };
+        for event in [
+            cut(Part::Trunk, Some(tool)),
+            bitten(66, 1320),
+            cut(Part::Branch, Some(tool)),
+            cut(Part::Branch, None),
+            cut(Part::Trunk, Some(tool)),
+            bitten(66, 2640),
+            fell,
+        ] {
+            probe.event((&world, &content), &people, &event, (12, 1));
+        }
+        let json = probe.json(&[], 8, 1);
+        assert_eq!(
+            json["trees"],
+            json!({
+                "cuts": {
+                    "trunk": {"done": 2, "gave": 2},
+                    "branch": {"done": 2, "gave": 1},
+                },
+                "bites": 2,
+                "chips_g": 132,
+                "branches_taken": 1,
+                "felled": [{
+                    "day": 12, "body": 7, "tribe": "A", "species": "hazel",
+                    "trunk_mm": 58, "log_g": 5300,
+                }],
+            })
+        );
+        // A cut on a branch is told apart in what was tried.
+        let tried = json["tried"].as_array().unwrap();
+        assert!(
+            tried
+                .iter()
+                .any(|t| t["on"] == "hazel branch" && t["gave"] == 1)
+        );
+        assert!(tried.iter().any(|t| t["on"] == "hazel" && t["gave"] == 2));
+        // And in a deed's name.
+        let deed = |on| Deed {
+            gesture: Gesture::Cut,
+            on,
+            with: 0,
+        };
+        assert_eq!(deed_name(&content, deed(0)).matches(" branch").count(), 0);
+        assert_eq!(
+            deed_name(&content, deed(sim::brain::BRANCH))
+                .matches(" branch with ")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn the_put_ins_are_counted_from_the_first_hollow_with_the_failures_repeated() {
         let content = Content::sample();
         let mut world = World::new(sim::Calendar::default(), &content);
@@ -1016,6 +1220,7 @@ mod tests {
             item: thing,
             on: "berries".to_owned(),
             into: Some(thing),
+            part: None,
             gave,
             broke: false,
         };

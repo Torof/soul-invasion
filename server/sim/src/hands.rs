@@ -45,6 +45,39 @@ pub enum Gesture {
     Strike,
 }
 
+/// A part of a standing tree a cut is made on (D57, amended 27 November
+/// 2026): what the eye sees of a tree, never what to do with it.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Part {
+    /// Its trunk: the bark, and the living wood under it.
+    #[default]
+    Trunk,
+    /// One of its living branches.
+    Branch,
+}
+
+impl Part {
+    /// Both parts, in a fixed order.
+    pub const ALL: [Part; 2] = [Part::Trunk, Part::Branch];
+
+    /// Its name, as the vivarium writes it.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Part::Trunk => "trunk",
+            Part::Branch => "branch",
+        }
+    }
+
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if
+    fn is_trunk(&self) -> bool {
+        *self == Part::Trunk
+    }
+}
+
 /// A striker breaks a thing up to this many times its own mass (D57,
 /// amended 27 November 2026): a pebble breaks a branch, not a log.
 const STRIKE_MASS: u64 = 10;
@@ -88,6 +121,10 @@ pub struct Making {
     /// The tree it cuts, when it cuts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree: Option<(ChunkPos, TreeKey)>,
+    /// The part of the tree it cuts, when it cuts (amended 27 November
+    /// 2026): the trunk when not said, as every cut of before.
+    #[serde(default, skip_serializing_if = "Part::is_trunk")]
+    pub part: Part,
     /// When it is done.
     pub until: Tick,
 }
@@ -266,13 +303,14 @@ impl World {
         body.making = Some(making);
     }
 
-    /// `id` cuts `tree` with `with` (D57): it takes `with` in hand, the
-    /// thing it held going on it, and is busy the content's minutes.
+    /// `id` cuts `part` of `tree` with `with` (D57): it takes `with` in
+    /// hand, the thing it held going on it, and is busy the content's
+    /// minutes.
     pub(crate) fn cut(
         &mut self,
         id: BodyId,
         with: ItemId,
-        (chunk, tree): (ChunkPos, TreeKey),
+        (chunk, tree, part): (ChunkPos, TreeKey, Part),
         rules: &Content,
         events: &mut Vec<Event>,
     ) {
@@ -316,6 +354,7 @@ impl World {
                 item: with,
                 into: None,
                 tree: Some((chunk, tree)),
+                part,
                 until,
             },
             events,
@@ -352,6 +391,7 @@ impl World {
                 item,
                 into: None,
                 tree: None,
+                part: Part::Trunk,
                 until,
             },
             events,
@@ -388,6 +428,7 @@ impl World {
                 item,
                 into: Some(into),
                 tree: None,
+                part: Part::Trunk,
                 until,
             },
             events,
@@ -443,6 +484,7 @@ impl World {
                 item,
                 into: Some(with),
                 tree: None,
+                part: Part::Trunk,
                 until,
             },
             events,
@@ -539,6 +581,7 @@ impl World {
                 item,
                 into,
                 tree: None,
+                part: Part::Trunk,
                 until,
             },
             events,
@@ -712,9 +755,9 @@ impl World {
 
     /// Moves every gesture on (D57): one whose body walks or sleeps ends
     /// with nothing; one whose time is up ends with what the materials
-    /// give. A cut gives a piece of the tree's bark, on the body (on the
-    /// ground when too heavy for it), when the thing in hand works it
-    /// loose; a fold gives the thing itself a hollow, made now, breaks
+    /// give. A cut gives what the part of the tree cut gives to the thing
+    /// in hand ([`World::cut_gives`]), on the body (on the ground when
+    /// too heavy for it); a fold gives the thing itself a hollow, made now, breaks
     /// it, or does nothing, by what it is. Anything else gives nothing.
     pub(crate) fn make(&mut self, rules: &Content, events: &mut Vec<Event>) {
         for index in 0..self.bodies.len() {
@@ -766,14 +809,20 @@ impl World {
                 item: making.item,
                 on,
                 into: making.into,
+                part: (making.gesture == Gesture::Cut).then_some(making.part),
                 gave,
                 broke,
             });
         }
     }
 
-    /// What a cut gives: the tree's bark, when the thing in hand has an
-    /// edge keen enough for it and is the harder ([`Content::cut_gives`]).
+    /// What a cut gives, by the part of the tree it is made on and what
+    /// the thing in hand is ([`Content::cut_gives`]; amended 27 November
+    /// 2026). On the trunk: a piece of the tree's bark, when the thing
+    /// works it loose; and when it works the living wood under it, it
+    /// bites ([`World::bite`]): chips fall and the tree's notch deepens,
+    /// until the tree falls. On a branch: the branch, when the thing
+    /// works living wood. The bark first, else the chips.
     fn cut_gives(
         &mut self,
         index: usize,
@@ -782,8 +831,7 @@ impl World {
         events: &mut Vec<Event>,
     ) -> Option<ItemId> {
         let (chunk, key) = making.tree?;
-        let body = &self.bodies[index];
-        if body.held != Some(making.item) {
+        if self.bodies[index].held != Some(making.item) {
             return None;
         }
         let tool = rules.material(&self.item(making.item)?.material)?;
@@ -792,12 +840,50 @@ impl World {
             .iter()
             .find(|t| t.key == key)
             .copied()?;
-        let bark = rules.cut_gives(tool, self.species.get(tree.species)?)?;
-        let mass_g = bark.mass_g().max(1);
-        let bark = bark.id.clone();
+        let species = rules.species.get(tree.species)?;
+        let piece = |m: &crate::content::Material| (m.id.clone(), m.mass_g().max(1));
+        match making.part {
+            Part::Branch => {
+                let (wood, mass_g) = rules.cut_gives(tool, species, Part::Branch).map(piece)?;
+                Some(self.gain(index, &wood, mass_g, rules, events))
+            }
+            Part::Trunk => {
+                let bark = species
+                    .bark
+                    .as_deref()
+                    .and_then(|bark| rules.material(bark))
+                    .filter(|bark| tool.works(bark))
+                    .map(piece)
+                    .map(|(bark, mass_g)| self.gain(index, &bark, mass_g, rules, events));
+                let chips = self.bite(index, (chunk, tree), tool, rules, events);
+                bark.or(chips)
+            }
+        }
+    }
+
+    /// The body at `index` gains a piece of `mass_g` grams of `material`,
+    /// made now: carried, or lying at its feet when too heavy for it. The
+    /// thing.
+    fn gain(
+        &mut self,
+        index: usize,
+        material: &str,
+        mass_g: u32,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) -> ItemId {
+        let body = &self.bodies[index];
         let (id, pos) = (body.id, body.pos());
         if body.load_g.saturating_add(mass_g) > body.capacity_g(&rules.movement) {
-            return Some(self.spawn_item(&bark, mass_g, pos));
+            let item = self.spawn_item(material, mass_g, pos);
+            events.push(Event::ItemAdded {
+                item,
+                material: material.to_owned(),
+                mass_g,
+                at: pos,
+                version: self.chunk_version(pos.chunk()),
+            });
+            return item;
         }
         let item = ItemId(self.next_item);
         self.next_item += 1;
@@ -805,7 +891,7 @@ impl World {
             item,
             Item {
                 id: item,
-                material: bark,
+                material: material.to_owned(),
                 mass_g,
                 made: self.tick,
                 place: Place::Carried { body: id },
@@ -815,7 +901,175 @@ impl World {
         );
         self.bodies[index].carried.push(item);
         self.inventory_changed(index, rules, events);
-        Some(item)
+        item
+    }
+
+    /// `mass_g` grams of the loose `material` fall on the ground at
+    /// `pos` (D57, amended 27 November 2026): they join the pile of it
+    /// lying there, told as the pile gone and there again, heavier; else
+    /// they are a new pile. The pile.
+    fn falls(&mut self, material: &str, mass_g: u32, pos: Pos, events: &mut Vec<Event>) -> ItemId {
+        let pile = self
+            .laid_in(pos.chunk())
+            .find(|i| i.pos() == Some(pos) && i.material == material && i.hollow_ml == 0)
+            .map(|i| i.id);
+        let item = match pile {
+            Some(pile) => {
+                self.change(pos.chunk(), |_| {});
+                events.push(Event::ItemRemoved {
+                    item: pile,
+                    at: pos,
+                    version: self.chunk_version(pos.chunk()),
+                });
+                if let Some(thing) = self.items.get_mut(&pile) {
+                    thing.mass_g = thing.mass_g.saturating_add(mass_g);
+                }
+                self.change(pos.chunk(), |_| {});
+                pile
+            }
+            None => self.spawn_item(material, mass_g, pos),
+        };
+        events.push(Event::ItemAdded {
+            item,
+            material: material.to_owned(),
+            mass_g: self.item(item).map_or(mass_g, |i| i.mass_g),
+            at: pos,
+            version: self.chunk_version(pos.chunk()),
+        });
+        item
+    }
+
+    /// How thick the trunk of `tree` is, in millimetres (D57, amended 27
+    /// November 2026): from its kind's height and build and the tree's
+    /// own share ([`crate::content::TreeParts::trunk_mm`]), the same for
+    /// the whole life of the world. `None` where trees have no parts.
+    #[must_use]
+    pub fn trunk_mm(&self, tree: &crate::trees::Tree, rules: &Content) -> Option<u32> {
+        let parts = rules.needs.hands.trees.as_ref()?;
+        let species = rules.species.get(tree.species)?;
+        let roll = crate::r#gen::scatter::roll(
+            self.seed(),
+            crate::r#gen::scatter::purpose::TRUNK,
+            &[
+                u64::from(tree.at.x.cast_unsigned()),
+                u64::from(tree.at.y.cast_unsigned()),
+            ],
+        );
+        Some(parts.trunk_mm(species, roll))
+    }
+
+    /// The section of the trunk of the tree `tree` of `chunk` cut
+    /// through so far, in square millimetres: 0 for a tree no edge bit.
+    #[must_use]
+    pub fn notch_mm2(&self, chunk: ChunkPos, tree: TreeKey) -> u32 {
+        self.changes_in(chunk)
+            .and_then(|c| c.notched.get(&tree).copied())
+            .unwrap_or(0)
+    }
+
+    /// The thing in hand bites the trunk of `tree` (D57, amended 27
+    /// November 2026), when it works the living wood
+    /// ([`Content::bite_mm2`]): it cuts through so much of what is left
+    /// of the trunk's section, the chips of it fall at the cutter's feet
+    /// ([`World::falls`]), and the notch, kept with the chunk's changes,
+    /// deepens by whoever cuts. A trunk cut through falls
+    /// ([`World::fell`]). The chips.
+    fn bite(
+        &mut self,
+        index: usize,
+        (chunk, tree): (ChunkPos, crate::trees::Tree),
+        tool: &crate::content::Material,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) -> Option<ItemId> {
+        let parts = rules.needs.hands.trees.as_ref()?;
+        let bite = rules.bite_mm2(tool)?;
+        let trunk_mm = self.trunk_mm(&tree, rules)?;
+        let section_mm2 = crate::content::TreeParts::section_mm2(trunk_mm);
+        let before = self.notch_mm2(chunk, tree.key).min(section_mm2);
+        let cut = bite.min(section_mm2 - before);
+        let notch_mm2 = before + cut;
+        self.change(chunk, |c| {
+            c.notched.insert(tree.key, notch_mm2);
+        });
+        let chips_g = parts.chips_g(cut);
+        let feet = self.bodies[index].pos();
+        let chips = (chips_g > 0).then(|| self.falls(&parts.chips, chips_g, feet, events));
+        events.push(Event::TreeBitten {
+            body: self.bodies[index].id,
+            chunk,
+            tree: tree.key,
+            chips_g,
+            notch_mm2,
+            section_mm2,
+            version: self.chunk_version(chunk),
+        });
+        if notch_mm2 >= section_mm2 {
+            self.fell(index, (chunk, tree), trunk_mm, rules, events);
+        }
+        chips
+    }
+
+    /// The tree `tree` of `chunk` falls, its trunk cut through (D57,
+    /// amended 27 November 2026): felled for good in its chunk's changes
+    /// (a felled forest never grows back by itself), it stands no more:
+    /// its tile is free, it bears nothing, no cut finds it. Where it
+    /// stood lie its trunk, a log of the trunk's mass, and the branches
+    /// of its crown big enough to be things, of living wood.
+    fn fell(
+        &mut self,
+        index: usize,
+        (chunk, tree): (ChunkPos, crate::trees::Tree),
+        trunk_mm: u32,
+        rules: &Content,
+        events: &mut Vec<Event>,
+    ) {
+        let (Some(parts), Some(species)) = (
+            rules.needs.hands.trees.as_ref(),
+            rules.species.get(tree.species),
+        ) else {
+            return;
+        };
+        self.change(chunk, |c| {
+            c.notched.remove(&tree.key);
+            c.felled.insert(tree.key);
+        });
+        if let Some(felled) = self.changes_in(chunk).map(|c| c.felled.clone()) {
+            self.ground_cache.set_felled(chunk, &felled);
+        }
+        let at = tree.at.tile();
+        let log_g = parts.trunk_g(species, trunk_mm);
+        let branch_g = rules
+            .material(&parts.wood)
+            .map_or(0, crate::content::Material::mass_g);
+        let crown_g = u64::from(log_g) * u64::from(parts.crown_percent) / 100;
+        let branches = if branch_g == 0 || parts.branches_most == 0 {
+            0
+        } else {
+            (crown_g / u64::from(branch_g)).clamp(1, u64::from(parts.branches_most))
+        };
+        let mut lying = vec![(parts.log.as_str(), log_g)];
+        lying.extend((0..branches).map(|_| (parts.wood.as_str(), branch_g)));
+        for (material, mass_g) in lying {
+            let item = self.spawn_item(material, mass_g, at);
+            events.push(Event::ItemAdded {
+                item,
+                material: material.to_owned(),
+                mass_g,
+                at,
+                version: self.chunk_version(at.chunk()),
+            });
+        }
+        events.push(Event::TreeFell {
+            body: self.bodies[index].id,
+            chunk,
+            tree: tree.key,
+            at: tree.at,
+            species: species.id.clone(),
+            trunk_mm,
+            log_g,
+            version: self.chunk_version(chunk),
+        });
     }
 
     /// What a fold gives, and whether it broke the thing
@@ -976,6 +1230,7 @@ mod tests {
         let grams = rules.material(tool).unwrap().mass_g();
         let with = picked(&mut world, rules, id, tool, grams);
         world.queue(Intention::Cut {
+            part: Part::Trunk,
             body: id,
             with,
             chunk,
@@ -1133,6 +1388,7 @@ mod tests {
         let flint = picked(&mut world, &rules, id, "flint", 400);
         assert_ne!(body(&world, id).held(), Some(flint));
         world.queue(Intention::Cut {
+            part: Part::Trunk,
             body: id,
             with: flint,
             chunk,
@@ -1170,6 +1426,7 @@ mod tests {
         let (mut world, id, chunk, tree) = by_a_birch(&rules);
         let pebble = picked(&mut world, &rules, id, "pebble", 600);
         world.queue(Intention::Cut {
+            part: Part::Trunk,
             body: id,
             with: pebble,
             chunk,
@@ -1538,5 +1795,369 @@ mod tests {
                 .collect();
             assert_eq!(seen, expected, "{wanted:?}");
         }
+    }
+
+    /// The rules of [`rules`] with the trees in parts (D57, amended 27
+    /// November 2026), as `content/needs.ron` has them.
+    fn tree_rules() -> Content {
+        let mut rules = rules();
+        rules.needs.hands.trees = Some(crate::content::TreeParts::placeholders());
+        rules.validate().unwrap();
+        rules
+    }
+
+    /// The tree `key` of `chunk`, while it stands.
+    fn standing(world: &World, chunk: ChunkPos, key: TreeKey) -> Option<crate::trees::Tree> {
+        world.trees_in(chunk).iter().find(|t| t.key == key).copied()
+    }
+
+    /// `id` cuts `part` of the tree with `with`: what came of it, as its
+    /// material, and the events of the gesture's last tick.
+    fn cut_part(
+        world: &mut World,
+        rules: &Content,
+        (id, with): (BodyId, ItemId),
+        (chunk, tree, part): (ChunkPos, TreeKey, Part),
+    ) -> (Option<String>, Vec<Event>) {
+        world.queue(Intention::Cut {
+            body: id,
+            with,
+            chunk,
+            tree,
+            part,
+        });
+        let mut events = Vec::new();
+        for _ in 0..30 {
+            events.clear();
+            world.advance(1, rules, &mut events);
+            let ended = events.iter().find_map(|e| match e {
+                Event::Gestured { body, gave, .. } if *body == id => Some(*gave),
+                _ => None,
+            });
+            if let Some(gave) = ended {
+                let gave = gave.map(|g| world.item(g).unwrap().material().to_owned());
+                return (gave, events);
+            }
+        }
+        panic!("no gesture ended");
+    }
+
+    #[test]
+    fn a_trunk_is_as_thick_as_its_kind_is_tall_and_built_each_tree_by_its_own_share() {
+        let rules = tree_rules();
+        let parts = rules.needs.hands.trees.clone().unwrap();
+        let kind = |id: &str| rules.species.iter().find(|s| s.id == id).unwrap();
+        // The kind's own thickness, the middle of the spread: a height
+        // over 80 for a small kind, over 40 for a big one.
+        assert_eq!(parts.trunk_mm(kind("hazel"), 25), 62);
+        assert_eq!(parts.trunk_mm(kind("birch"), 25), 225);
+        assert_eq!(parts.trunk_mm(kind("oak"), 25), 550);
+        // A quarter thinner, a quarter thicker at most.
+        assert_eq!(parts.trunk_mm(kind("birch"), 0), 168);
+        assert_eq!(parts.trunk_mm(kind("birch"), 50), 281);
+        assert_eq!(parts.trunk_mm(kind("birch"), 51), 168);
+        // A tree of the world has its own, the same every time.
+        let (world, _, chunk, key) = by_a(&rules, "birch");
+        let tree = standing(&world, chunk, key).unwrap();
+        let mm = world.trunk_mm(&tree, &rules).unwrap();
+        assert!((168..=281).contains(&mm), "{mm}");
+        assert_eq!(world.trunk_mm(&tree, &rules), Some(mm));
+        let birch = tree.species;
+        let side = i32::try_from(world.map().chunks_wide()).unwrap();
+        let all: std::collections::BTreeSet<u32> = (0..side * side)
+            .flat_map(|n| world.trees_in(ChunkPos::new(n % side, n / side)).to_vec())
+            .filter(|t| t.species == birch)
+            .filter_map(|t| world.trunk_mm(&t, &rules))
+            .collect();
+        assert!(all.len() > 10, "the birches differ: {all:?}");
+        assert!(all.iter().all(|mm| (168..=281).contains(mm)));
+        // Where the content gives trees no parts, no thickness.
+        assert_eq!(world.trunk_mm(&tree, &self::rules()), None);
+        // The log of a trunk: its section, its height, the stem's form,
+        // the living wood's density.
+        assert_eq!(parts.trunk_g(kind("hazel"), 62), 6_113);
+        assert_eq!(parts.trunk_g(kind("birch"), 225), 289_850);
+        assert_eq!(parts.trunk_g(kind("oak"), 550), 2_116_855);
+    }
+
+    #[test]
+    fn felling_with_a_flake_in_the_hand_takes_an_hour_for_a_thin_tree_and_days_for_a_big_oak() {
+        use crate::content::TreeParts;
+        let rules = tree_rules();
+        let stuff = |id: &str| rules.material(id).unwrap();
+        // Keen flint works living wood: 330 mm² for each point of its
+        // edge (9) over the wood's toughness (6), plus one.
+        let bite = rules.bite_mm2(stuff("flint")).unwrap();
+        assert_eq!(bite, 1320);
+        // Nothing else lying about does: an edge under the wood's
+        // toughness, or none.
+        for other in ["quartz", "slate", "pebble", "sandstone", "branch", "bone"] {
+            assert_eq!(rules.bite_mm2(stuff(other)), None, "{other}");
+        }
+        // The gestures to cut a trunk through, ten minutes each: 20
+        // minutes for 5 cm, an hour for 10 cm, 16 hours of work for an
+        // oak of 40 cm, 30 for one of 55 cm.
+        assert_eq!(rules.needs.hands.gesture_minutes, 10);
+        let cuts = |mm: u32| TreeParts::section_mm2(mm).div_ceil(bite);
+        assert_eq!(
+            [50, 100, 225, 400, 550, 700].map(cuts),
+            [2, 6, 31, 96, 180, 292]
+        );
+        // Without parts, nothing bites.
+        assert_eq!(self::rules().bite_mm2(stuff("flint")), None);
+    }
+
+    #[test]
+    fn a_cut_on_a_branch_takes_a_green_branch_off_with_an_edge_that_works_living_wood() {
+        let rules = tree_rules();
+        for (tool, gives) in [("flint", Some("green_branch")), ("quartz", None)] {
+            let (mut world, id, chunk, tree) = by_a(&rules, "hazel");
+            let with = picked(&mut world, &rules, id, tool, 400);
+            let (gave, events) =
+                cut_part(&mut world, &rules, (id, with), (chunk, tree, Part::Branch));
+            assert_eq!(gave.as_deref(), gives, "{tool}");
+            // The gesture says its part; the trunk is not touched.
+            assert!(events.iter().any(|e| matches!(
+                e,
+                Event::Gestured { part: Some(Part::Branch), on, .. } if on == "hazel"
+            )));
+            assert_eq!(world.notch_mm2(chunk, tree), 0);
+            assert!(!events.iter().any(|e| matches!(e, Event::TreeBitten { .. })));
+            if gives.is_some() {
+                let branch = body(&world, id)
+                    .inventory()
+                    .filter_map(|i| world.item(i))
+                    .find(|i| i.material() == "green_branch")
+                    .expect("carried");
+                assert_eq!(branch.mass_g(), 2000);
+            }
+        }
+        // Without parts, a tree has no branch to take.
+        let plain = self::rules();
+        let (mut world, id, chunk, tree) = by_a(&plain, "hazel");
+        let with = picked(&mut world, &plain, id, "flint", 400);
+        let (gave, _) = cut_part(&mut world, &plain, (id, with), (chunk, tree, Part::Branch));
+        assert_eq!(gave, None);
+    }
+
+    #[test]
+    fn an_edge_that_works_living_wood_bites_the_trunk_chips_fall_and_the_notch_lasts() {
+        let rules = tree_rules();
+        let (mut world, id, chunk, tree) = by_a(&rules, "birch");
+        let section = crate::content::TreeParts::section_mm2(
+            world
+                .trunk_mm(&standing(&world, chunk, tree).unwrap(), &rules)
+                .unwrap(),
+        );
+        // Quartz takes the birch's bark, as before, and does not bite.
+        let quartz = picked(&mut world, &rules, id, "quartz", 400);
+        let (gave, events) = cut_part(&mut world, &rules, (id, quartz), (chunk, tree, Part::Trunk));
+        assert_eq!(gave.as_deref(), Some("birch_bark"));
+        assert!(!events.iter().any(|e| matches!(e, Event::TreeBitten { .. })));
+        assert_eq!(world.notch_mm2(chunk, tree), 0);
+        // Flint takes the bark and bites the wood under it: chips, and a
+        // notch of one bite.
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        let (gave, events) = cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+        assert_eq!(gave.as_deref(), Some("birch_bark"));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::TreeBitten { body, chips_g: 66, notch_mm2: 1320, section_mm2, .. }
+                if *body == id && *section_mm2 == section
+        )));
+        assert_eq!(world.notch_mm2(chunk, tree), 1320);
+        // The chips fell at its feet; it carries none.
+        let feet = body(&world, id).pos();
+        let chips = |world: &World| -> Vec<u32> {
+            world
+                .laid_in(feet.chunk())
+                .filter(|i| i.pos() == Some(feet) && i.material() == "wood_chips")
+                .map(Item::mass_g)
+                .collect()
+        };
+        assert_eq!(chips(&world), [66]);
+        assert!(
+            body(&world, id)
+                .inventory()
+                .filter_map(|i| world.item(i))
+                .all(|i| i.material() != "wood_chips")
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::ItemAdded { material, mass_g: 66, at, .. } if material == "wood_chips" && *at == feet
+        )));
+        // Again: the chips join the pile lying there, told gone and
+        // there again, heavier; the notch deepens.
+        let (_, events) = cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+        assert_eq!(chips(&world), [132]);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::ItemRemoved { at, .. } if *at == feet))
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::ItemAdded { material, mass_g: 132, .. } if material == "wood_chips"
+        )));
+        assert_eq!(world.notch_mm2(chunk, tree), 2640);
+        // Another's cuts add to it: the notch is the tree's.
+        let other = world.spawn_body(feet);
+        let its = picked(&mut world, &rules, other, "flint", 400);
+        cut_part(&mut world, &rules, (other, its), (chunk, tree, Part::Trunk));
+        assert_eq!(world.notch_mm2(chunk, tree), 3960);
+        // It is kept with the chunk's changes, and the tree still stands.
+        assert_eq!(world.changes_in(chunk).unwrap().notched[&tree], 3960);
+        assert!(standing(&world, chunk, tree).is_some());
+        // A tree with no bark that comes away gives its chips.
+        let (mut world, id, chunk, tree) = by_a(&rules, "hazel");
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        let (gave, _) = cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+        assert_eq!(gave.as_deref(), Some("wood_chips"));
+    }
+
+    #[test]
+    fn a_tree_falls_when_its_notch_has_cut_its_trunk_through_not_before_and_for_good() {
+        let rules = tree_rules();
+        let parts = rules.needs.hands.trees.clone().unwrap();
+        let (mut world, id, chunk, key) = by_a(&rules, "hazel");
+        let tree = standing(&world, chunk, key).unwrap();
+        let tile = tree.at.tile();
+        let trunk_mm = world.trunk_mm(&tree, &rules).unwrap();
+        let section = crate::content::TreeParts::section_mm2(trunk_mm);
+        let cuts = section.div_ceil(1320);
+        assert!((2..=4).contains(&cuts), "a hazel stem: {cuts} cuts");
+        let placed = world.shared_ground().trees_placed();
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        let mut fell = Vec::new();
+        for n in 1..=cuts {
+            assert!(world.is_trunk(tile), "it stands before cut {n}");
+            assert!(standing(&world, chunk, key).is_some());
+            let (_, events) = cut_part(&mut world, &rules, (id, flint), (chunk, key, Part::Trunk));
+            fell = events;
+            let down = fell.iter().any(|e| matches!(e, Event::TreeFell { .. }));
+            assert_eq!(down, n == cuts, "cut {n} of {cuts}");
+        }
+        // It fell: told, with who, what and how thick.
+        let log_g = parts.trunk_g(&rules.species[tree.species], trunk_mm);
+        assert!(fell.iter().any(|e| matches!(
+            e,
+            Event::TreeFell { body, chunk: c, tree: k, at, species, trunk_mm: mm, log_g: g, .. }
+                if *body == id && *c == chunk && *k == key && *at == tree.at
+                    && species == "hazel" && *mm == trunk_mm && *g == log_g
+        )));
+        // It stands no more: no tree, a free tile, felled in the changes,
+        // its notch gone with it; nothing was placed anew.
+        assert!(standing(&world, chunk, key).is_none());
+        assert!(!world.is_trunk(tile));
+        let changes = world.changes_in(chunk).unwrap();
+        assert!(changes.felled.contains(&key) && !changes.notched.contains_key(&key));
+        assert_eq!(world.shared_ground().trees_placed(), placed);
+        // Where it stood lie its log, of the trunk's mass, and a branch
+        // of its crown, of living wood, each told as an item added.
+        let lying: Vec<(String, u32)> = world
+            .laid_in(tile.chunk())
+            .filter(|i| i.pos() == Some(tile))
+            .map(|i| (i.material().to_owned(), i.mass_g()))
+            .collect();
+        assert_eq!(lying.len(), 2, "{lying:?}");
+        assert!(lying.contains(&("log".to_owned(), log_g)));
+        assert!(lying.contains(&("green_branch".to_owned(), 2000)));
+        let added = fell
+            .iter()
+            .filter(|e| matches!(e, Event::ItemAdded { at, .. } if *at == tile))
+            .count();
+        assert_eq!(added, 2);
+        // A cut of it finds no tree: refused, and nothing comes.
+        let mut events = Vec::new();
+        world.queue(Intention::Cut {
+            body: id,
+            with: flint,
+            chunk,
+            tree: key,
+            part: Part::Trunk,
+        });
+        world.advance(1, &rules, &mut events);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::GestureRefused {
+                gesture: Gesture::Cut,
+                reason: Refusal::Unknown,
+                ..
+            }
+        )));
+        // A body may walk where it stood.
+        assert!(world.map().is_passable(tile));
+    }
+
+    #[test]
+    fn a_big_trunk_leaves_a_log_no_one_carries_and_the_branches_of_its_crown() {
+        let rules = tree_rules();
+        let (mut world, id, chunk, key) = by_a(&rules, "birch");
+        let tree = standing(&world, chunk, key).unwrap();
+        let trunk_mm = world.trunk_mm(&tree, &rules).unwrap();
+        let section = crate::content::TreeParts::section_mm2(trunk_mm);
+        // All but the last bite given already, by whoever: a notch
+        // stored is the tree's, and the next cut ends it.
+        let mut changes = crate::changes::ChunkChanges {
+            version: 1,
+            ..Default::default()
+        };
+        changes.notched.insert(key, section - 1);
+        world.restore_changes(chunk, changes);
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        let (_, events) = cut_part(&mut world, &rules, (id, flint), (chunk, key, Part::Trunk));
+        // The last cut took what was left: a square millimetre, no chip
+        // heavy enough to be a thing.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::TreeBitten { chips_g: 0, notch_mm2, section_mm2, .. } if notch_mm2 == section_mm2
+        )));
+        let tile = tree.at.tile();
+        let lying: Vec<(String, u32)> = world
+            .laid_in(tile.chunk())
+            .filter(|i| i.pos() == Some(tile))
+            .map(|i| (i.material().to_owned(), i.mass_g()))
+            .collect();
+        let log = lying.iter().find(|(m, _)| m == "log").unwrap().1;
+        assert!(
+            (160_000..=460_000).contains(&log),
+            "a birch's trunk: {log} g"
+        );
+        assert!(log > body(&world, id).capacity_g(&rules.movement) * 5);
+        // Eight branches at most are things.
+        assert_eq!(lying.iter().filter(|(m, _)| m == "green_branch").count(), 8);
+        // The log is far too heavy to pick up.
+        let item = world
+            .laid_in(tile.chunk())
+            .find(|i| i.material() == "log")
+            .unwrap()
+            .id();
+        let mut events = Vec::new();
+        world.queue(Intention::PickUp { body: id, item });
+        world.advance(1, &rules, &mut events);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::ActRefused {
+                reason: Refusal::TooHeavy,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn a_world_loaded_with_a_felled_tree_has_it_standing_nowhere() {
+        let rules = tree_rules();
+        let (mut world, _, chunk, key) = by_a(&rules, "birch");
+        let tree = standing(&world, chunk, key).unwrap();
+        let before = world.trees_in(chunk).len();
+        let mut changes = crate::changes::ChunkChanges {
+            version: 3,
+            ..Default::default()
+        };
+        changes.felled.insert(key);
+        world.restore_changes(chunk, changes);
+        assert_eq!(world.trees_in(chunk).len(), before - 1);
+        assert!(standing(&world, chunk, key).is_none());
+        assert!(!world.is_trunk(tree.at.tile()));
     }
 }

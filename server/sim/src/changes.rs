@@ -9,10 +9,11 @@
 //! since the last one, and a client will compare it (D4) to know whether
 //! the chunk it holds is still the one the server has.
 //!
-//! Today the natural items taken off the ground and the crops picked
-//! are the changes the simulation makes. The shape is ready for felled trees, planted trees
-//! and constructions: they are stored and read back, but nothing in the
-//! simulation makes them yet.
+//! Today the natural items taken off the ground, the crops picked, the
+//! notches cut in the trunks and the trees felled (D57, amended 27
+//! November 2026) are the changes the simulation makes. The shape is
+//! ready for planted trees and constructions: they are stored and read
+//! back, but nothing in the simulation makes them yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,6 +34,11 @@ pub struct ChunkChanges {
     /// stumps stand where they stood. A felled forest never grows back by
     /// itself.
     pub felled: BTreeSet<TreeKey>,
+    /// The trees of the seed men cut into, by their placement cell: the
+    /// square millimetres of the trunk's section cut through so far, by
+    /// whoever cut (D57, amended 27 November 2026). A notch lasts; the
+    /// tree whose notch has cut its trunk through falls, and is `felled`.
+    pub notched: BTreeMap<TreeKey, u32>,
     /// The trees men planted, by the placement cell they were planted on.
     pub planted: BTreeMap<TreeKey, Planted>,
     /// What men built in the chunk.

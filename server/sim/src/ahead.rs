@@ -187,11 +187,14 @@ pub(crate) struct Parts<'a> {
 }
 
 impl Parts<'_> {
-    /// The trees standing in `chunk`, placed from the map and the seed
-    /// the first time they are asked for and held ([`Ground::trees_in`]).
+    /// The trees of `chunk` as the seed placed them, placed the first
+    /// time they are asked for and held ([`Ground::seed_trees_in`]): the
+    /// bearers are the seed's, a felled tree among them (D57, amended 27
+    /// November 2026: it bears nothing, [`crate::World::ripe_on`]), so
+    /// that nothing but the tree moves when a tree falls.
     fn trees_in(&self, chunk: ChunkPos) -> Arc<[Tree]> {
         self.ground
-            .trees_in(self.map, self.species, self.open, self.seed, chunk)
+            .seed_trees_in(self.map, self.species, self.open, self.seed, chunk)
     }
 
     /// The trees and plants of `chunk` bearing a crop, placed now: its

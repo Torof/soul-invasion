@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::hands::Part;
 use crate::map::{CHUNK_SIZE, Terrain};
 use crate::time::{Calendar, Season};
 use crate::woods::Habitat;
@@ -1484,6 +1485,150 @@ pub struct Hands {
     /// like it could bend.
     #[serde(default = "Hands::default_supple_seen")]
     pub supple_seen: u8,
+    /// What a standing tree is made of and how it answers a cut (D57,
+    /// amended 27 November 2026, trees in parts). Absent: a tree gives
+    /// its bark only, has no branch to take and never falls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trees: Option<TreeParts>,
+}
+
+/// A standing tree in parts (D57, amended 27 November 2026): a trunk of a
+/// thickness, living branches, green wood under the bark. What the world
+/// answers to a cut on a part is computed from these and from the scales
+/// of the materials named; nothing here says what a tree is for.
+/// Explained, with their sources, in `content/needs.ron`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeParts {
+    /// The living wood: the material of a branch cut off a standing tree,
+    /// and the stuff of the trunk under the bark that an edge must work.
+    pub wood: String,
+    /// What falls from a trunk an edge bites.
+    pub chips: String,
+    /// What a trunk is once it lies.
+    pub log: String,
+    /// A grown tree's height over its trunk's thickness, for a kind that
+    /// is not `big`.
+    pub slender: u32,
+    /// The same for a `big` kind, stouter for its height.
+    pub slender_big: u32,
+    /// How far a tree's thickness lies from its kind's, either way, in
+    /// hundredths: fixed for each tree by the seed and where it stands.
+    pub girth_spread_percent: u32,
+    /// The square millimetres of a trunk's section one gesture cuts
+    /// through, for each point of the tool's edge over the living wood's
+    /// toughness, plus one.
+    pub bite_mm2: u32,
+    /// The grams of chips that fall for each square centimetre cut.
+    pub chips_g_per_cm2: u32,
+    /// A trunk's volume as hundredths of the cylinder of its thickness
+    /// and its tree's height.
+    pub stem_form_percent: u32,
+    /// The mass of a cubic metre of living wood, in kilograms.
+    pub wood_kg_per_m3: u32,
+    /// The crown's branches as hundredths of the trunk's mass.
+    pub crown_percent: u32,
+    /// The branches of a fallen crown big enough to be things, at most.
+    pub branches_most: u32,
+}
+
+impl TreeParts {
+    /// The placeholders of `content/needs.ron` (D30).
+    #[must_use]
+    pub fn placeholders() -> Self {
+        Self {
+            wood: "green_branch".to_owned(),
+            chips: "wood_chips".to_owned(),
+            log: "log".to_owned(),
+            slender: 80,
+            slender_big: 40,
+            girth_spread_percent: 25,
+            bite_mm2: 330,
+            chips_g_per_cm2: 5,
+            stem_form_percent: 45,
+            wood_kg_per_m3: 900,
+            crown_percent: 20,
+            branches_most: 8,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ContentError> {
+        if !(10..=200).contains(&self.slender)
+            || !(10..=200).contains(&self.slender_big)
+            || self.girth_spread_percent > 90
+            || !(1..=1_000_000).contains(&self.bite_mm2)
+            || self.chips_g_per_cm2 > 1000
+            || !(1..=100).contains(&self.stem_form_percent)
+            || !(100..=2000).contains(&self.wood_kg_per_m3)
+            || self.crown_percent > 100
+            || self.branches_most > 64
+        {
+            return Err(ContentError::Needs(
+                "hands.trees: slender and slender_big 10 to 200, girth_spread_percent at most 90, bite_mm2 1 to a million, chips_g_per_cm2 at most 1000, stem_form_percent 1 to 100, wood_kg_per_m3 100 to 2000, crown_percent at most 100, branches_most at most 64",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The thickness of the trunk of a tree of `species`, in millimetres,
+    /// `roll` being the tree's own number: its kind's height over its
+    /// slenderness, the tree's share of the spread either way.
+    #[must_use]
+    // Not generation: the content gives heights in metres, read once.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::float_arithmetic,
+        reason = "a height checked positive and under 100 m; float maths of the simulation, the same result on every run"
+    )]
+    pub fn trunk_mm(&self, species: &Species, roll: u64) -> u32 {
+        let height_mm = (species.height_m * 1000.0).round().clamp(0.0, 100_000.0) as u64;
+        let slender = u64::from(if species.big {
+            self.slender_big
+        } else {
+            self.slender
+        });
+        let spread = u64::from(self.girth_spread_percent);
+        let share = 100 - spread + roll % (2 * spread + 1);
+        u32::try_from(height_mm * share / (slender.max(1) * 100))
+            .unwrap_or(u32::MAX)
+            .max(1)
+    }
+
+    /// The section of a trunk `trunk_mm` thick, in square millimetres:
+    /// what a notch has to cut through for the tree to fall.
+    #[must_use]
+    pub fn section_mm2(trunk_mm: u32) -> u32 {
+        // π / 4 as 355 / 452.
+        let d = u64::from(trunk_mm);
+        u32::try_from(d * d * 355 / 452).unwrap_or(u32::MAX).max(1)
+    }
+
+    /// The mass of the trunk of a tree of `species` `trunk_mm` thick, in
+    /// grams: its section, its kind's height, the stem's form, the living
+    /// wood's density.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::float_arithmetic,
+        reason = "a height checked positive and under 100 m; float maths of the simulation, the same result on every run"
+    )]
+    pub fn trunk_g(&self, species: &Species, trunk_mm: u32) -> u32 {
+        let height_mm = (species.height_m * 1000.0).round().clamp(0.0, 100_000.0) as u64;
+        // mm³, then the form; a cubic metre is 10⁹ mm³, a kilogram 10³ g.
+        let mm3 =
+            u64::from(Self::section_mm2(trunk_mm)) * height_mm * u64::from(self.stem_form_percent)
+                / 100;
+        u32::try_from(mm3 * u64::from(self.wood_kg_per_m3) / 1_000_000)
+            .unwrap_or(u32::MAX)
+            .max(1)
+    }
+
+    /// The grams of chips a cut through `mm2` of a trunk lets fall.
+    #[must_use]
+    pub fn chips_g(&self, mm2: u32) -> u32 {
+        u32::try_from(u64::from(mm2) * u64::from(self.chips_g_per_cm2) / 100).unwrap_or(u32::MAX)
+    }
 }
 
 impl Default for Hands {
@@ -1511,6 +1656,7 @@ impl Hands {
             failures_kept: Self::default_failures_kept(),
             edge_seen: Self::default_edge_seen(),
             supple_seen: Self::default_supple_seen(),
+            trees: None,
         }
     }
 
@@ -1562,6 +1708,9 @@ impl Hands {
             return Err(ContentError::Needs(
                 "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000, failures_kept at most 64",
             ));
+        }
+        if let Some(trees) = &self.trees {
+            trees.validate()?;
         }
         Ok(())
     }
@@ -4057,6 +4206,18 @@ impl Content {
         if self.materials.len() >= usize::from(crate::brain::HOLLOW) {
             return Err(ContentError::Needs("too many materials"));
         }
+        if self.species.len() >= usize::from(crate::brain::BRANCH) {
+            return Err(ContentError::Needs("too many species"));
+        }
+        if let Some(trees) = &self.needs.hands.trees
+            && [&trees.wood, &trees.chips, &trees.log]
+                .iter()
+                .any(|id| !ids.contains(id.as_str()))
+        {
+            return Err(ContentError::Needs(
+                "hands.trees: wood, chips and log name materials",
+            ));
+        }
         for material in &self.materials {
             let invalid = |what| ContentError::InvalidValue {
                 id: material.id.clone(),
@@ -4508,14 +4669,44 @@ impl Content {
         self.materials.iter().find(|m| m.id == id)
     }
 
-    /// The bark a cut of a tree of `species` gives with a piece of `tool`
-    /// in hand (D57, amended 27 November 2026): the tree's bark, when it
-    /// has one that comes away and the tool works it loose
-    /// ([`Material::works`]); nothing otherwise.
+    /// What a cut of a part of a tree of `species` gives with a piece of
+    /// `tool` in hand (D57, amended 27 November 2026). On the trunk: the
+    /// tree's bark, when it has one that comes away and the tool works it
+    /// loose ([`Material::works`]); else the chips of the living wood,
+    /// when the tool bites it ([`Content::bite_mm2`]). On a branch: the
+    /// branch, of living wood, when the tool works that. Nothing
+    /// otherwise.
     #[must_use]
-    pub fn cut_gives(&self, tool: &Material, species: &Species) -> Option<&Material> {
-        let bark = self.material(species.bark.as_deref()?)?;
-        tool.works(bark).then_some(bark)
+    pub fn cut_gives(&self, tool: &Material, species: &Species, part: Part) -> Option<&Material> {
+        let trees = self.needs.hands.trees.as_ref();
+        match part {
+            Part::Trunk => species
+                .bark
+                .as_deref()
+                .and_then(|bark| self.material(bark))
+                .filter(|bark| tool.works(bark))
+                .or_else(|| {
+                    self.bite_mm2(tool)?;
+                    self.material(&trees?.chips)
+                }),
+            Part::Branch => self.material(&trees?.wood).filter(|wood| tool.works(wood)),
+        }
+    }
+
+    /// The square millimetres of a living trunk's section one gesture
+    /// with a piece of `tool` in hand cuts through (D57, amended 27
+    /// November 2026): nothing when the tool does not work the living
+    /// wood; else the content's bite for each point of its edge over the
+    /// wood's toughness, plus one.
+    #[must_use]
+    pub fn bite_mm2(&self, tool: &Material) -> Option<u32> {
+        let trees = self.needs.hands.trees.as_ref()?;
+        let wood = self.material(&trees.wood)?;
+        tool.works(wood).then(|| {
+            trees
+                .bite_mm2
+                .saturating_mul(u32::from(tool.edge - wood.toughness) + 1)
+        })
     }
 
     /// The material of the piece a blow of `with` on `on` breaks off

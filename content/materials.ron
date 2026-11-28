@@ -332,4 +332,18 @@
      kind: stone, mass_kg: 1.2, hardness: 7, edge: 2, toughness: 5,
      breaks_into: Some("flint"),
      flammable: false, food: None, look: (colour: "#8a857a")),
+    // A tree in parts (D57, amended 27 November 2026). Living wood is its
+    // own stuff: softer under an edge than dead wood, wet, more supple
+    // and tougher (a green branch bends where a dead one snaps). A piece
+    // is a branch as thick as a wrist, cut off a standing tree. Chips are
+    // what falls from a trunk an edge bites: bits of wood. Placeholders,
+    // meant plausible for the stuff, none chosen for a use.
+    (id: "green_branch", name: "Green branch",
+     description: "A branch cut from a living tree, heavy with sap, that bends before it breaks.",
+     kind: wood, mass_kg: 2.0, hardness: 2, suppleness: 5, toughness: 6, form: stick,
+     flammable: false, food: None, look: (colour: "#6a7a4a")),
+    (id: "wood_chips", name: "Wood chips",
+     description: "Chips of fresh wood fallen from a cut trunk.",
+     kind: wood, mass_kg: 0.05, hardness: 2, form: bits,
+     flammable: true, food: None, look: (colour: "#d8c8a0")),
 ]

@@ -20,7 +20,7 @@
 
 use crate::content::{Content, Folded, Form};
 use crate::r#gen::scatter::{self, purpose};
-use crate::hands::Gesture;
+use crate::hands::{Gesture, Part};
 use crate::map::{ChunkPos, FinePos, Pos};
 use crate::memory::{Record, Store};
 use crate::trees::TreeKey;
@@ -44,6 +44,28 @@ pub const NOTHING: u16 = u16::MAX;
 /// amended 27 November 2026: the hollow is a form of the thing, no
 /// material of its own).
 pub const HOLLOW: u16 = 0x8000;
+
+/// A cut's tree, as the hands name it: a species' index in the content,
+/// with this bit when the cut is made on a branch and not on the trunk
+/// (D57, amended 27 November 2026: a tree has parts; the part is named
+/// the way a hollow is, a flag on the kind).
+pub const BRANCH: u16 = 0x4000;
+
+/// The species' index of the tree a cut names, its part left out.
+#[must_use]
+pub fn cut_species(on: u16) -> usize {
+    usize::from(on & !BRANCH)
+}
+
+/// The part of the tree a cut names.
+#[must_use]
+pub fn cut_part(on: u16) -> Part {
+    if on != NOTHING && on & BRANCH != 0 {
+        Part::Branch
+    } else {
+        Part::Trunk
+    }
+}
 
 /// The material's index of a kind of thing, its form left out.
 #[must_use]
@@ -72,7 +94,8 @@ pub struct Deed {
     /// The gesture.
     pub gesture: Gesture,
     /// What it is done on: a material's index in the content (take,
-    /// fold), or a tree species' index (cut).
+    /// fold), or a tree species' index (cut), with [`BRANCH`] when the
+    /// cut is on a branch.
     pub on: u16,
     /// The kind in hand it cuts with, or the kind of thing it puts `on`
     /// in; [`NOTHING`] otherwise.
@@ -141,6 +164,8 @@ pub(super) enum HandTarget {
         key: TreeKey,
         at: FinePos,
         with: ItemId,
+        /// The part of the tree it cuts.
+        part: Part,
     },
     /// A thing it carries, to put in another it carries.
     Put {
@@ -434,7 +459,7 @@ pub fn container_deeds(rules: &Content) -> Deeds {
                 continue;
             };
             let Some(bark) = rules
-                .cut_gives(tool, species)
+                .cut_gives(tool, species, Part::Trunk)
                 .and_then(|bark| material_index(rules, &bark.id))
             else {
                 continue;
@@ -505,9 +530,9 @@ fn product(rules: &Content, deed: Deed) -> Option<u16> {
     match deed.gesture {
         Gesture::PickUp => Some(deed.on),
         Gesture::Cut => {
-            let species = rules.species.get(usize::from(deed.on))?;
-            let bark = rules.cut_gives(stuff(rules, deed.with)?, species)?;
-            material_index(rules, &bark.id)
+            let species = rules.species.get(cut_species(deed.on))?;
+            let given = rules.cut_gives(stuff(rules, deed.with)?, species, cut_part(deed.on))?;
+            material_index(rules, &given.id)
         }
         Gesture::Fold => folds_into(rules, deed.on),
         // The piece a blow breaks off, of the struck or of the striker.
@@ -1065,20 +1090,28 @@ impl Plausible {
                 let Ok(on) = u16::try_from(species) else {
                     continue;
                 };
+                // A tree shows its trunk and its branches: a cut is
+                // of one or the other, and nothing says which.
                 for &(with, with_m) in &tools {
-                    let deed = Deed {
-                        gesture: Gesture::Cut,
-                        on,
-                        with: with_m,
-                    };
-                    if !remembered(deed) {
-                        let target = HandTarget::Tree {
-                            chunk,
-                            key,
-                            at,
-                            with,
+                    for part in Part::ALL {
+                        let deed = Deed {
+                            gesture: Gesture::Cut,
+                            on: match part {
+                                Part::Trunk => on,
+                                Part::Branch => on | BRANCH,
+                            },
+                            with: with_m,
                         };
-                        out.cuts.push((target, deed));
+                        if !remembered(deed) {
+                            let target = HandTarget::Tree {
+                                chunk,
+                                key,
+                                at,
+                                with,
+                                part,
+                            };
+                            out.cuts.push((target, deed));
+                        }
                     }
                 }
             }
@@ -1347,20 +1380,17 @@ fn needed(
                     };
                     if let Some(&(chunk, key, at, _)) = trees_near(world, here, near, mind)
                         .iter()
-                        .find(|t| usize::from(deed.on) == t.3 && bark_fits(world, rules, id, deed))
+                        .find(|t| cut_species(deed.on) == t.3 && bark_fits(world, rules, id, deed))
                     {
-                        return Some((
-                            (
-                                HandTarget::Tree {
-                                    chunk,
-                                    key,
-                                    at,
-                                    with,
-                                },
-                                deed,
-                            ),
-                            false,
-                        ));
+                        let part = cut_part(deed.on);
+                        let target = HandTarget::Tree {
+                            chunk,
+                            key,
+                            at,
+                            with,
+                            part,
+                        };
+                        return Some(((target, deed), false));
                     }
                 }
                 Gesture::PickUp => {
@@ -1476,6 +1506,7 @@ fn act_on(
             key,
             at,
             with,
+            part,
         } => {
             let (dx, dy) = (i64::from(body.at().x - at.x), i64::from(body.at().y - at.y));
             if dx * dx + dy * dy > GATHER_REACH_MM * GATHER_REACH_MM || !body.has(with) {
@@ -1487,6 +1518,7 @@ fn act_on(
                 with,
                 chunk,
                 tree: key,
+                part,
             }
         }
     };
@@ -2081,9 +2113,10 @@ mod tests {
         let sharp = [(berries, berries_m), (flint, flint_m)];
         let mut cuts = 0;
         let mut species = BTreeSet::new();
+        let mut parts = BTreeSet::new();
         for day in 0..200 {
             mind.handwork.tries = (day, 0);
-            if let Some((_, deed)) = draw(
+            if let Some((target, deed)) = draw(
                 &world,
                 &rules,
                 (id, here),
@@ -2094,9 +2127,18 @@ mod tests {
             {
                 cuts += 1;
                 assert_eq!(deed.with, flint_m, "only the thing with an edge cuts");
-                species.insert(deed.on);
+                species.insert(deed.on & !BRANCH);
+                // The deed names the part its target is cut on.
+                let HandTarget::Tree { part, .. } = target else {
+                    panic!("a cut is of a tree");
+                };
+                assert_eq!(cut_part(deed.on), part);
+                parts.insert(part);
             }
         }
+        // A tree shows its trunk and its branches: a cut is drawn on one
+        // or the other, and nothing says which (amended 27 November 2026).
+        assert_eq!(parts, Part::ALL.into_iter().collect());
         // Any tree near is tried: whether its bark comes away is not seen.
         let near: BTreeSet<u16> = trees_near(&world, here, 4, mind)
             .iter()
@@ -2167,7 +2209,13 @@ mod tests {
         );
         assert_eq!(product(&rules, cut("birch", "slate")), None);
         assert_eq!(product(&rules, cut("oak", "quartz")), None);
-        assert_eq!(product(&rules, cut("hazel", "flint")), None);
+        // A hazel has no bark that comes away: flint gives the chips of
+        // its wood (amended 27 November 2026, trees in parts).
+        assert_eq!(
+            product(&rules, cut("hazel", "flint")),
+            Some(kind("wood_chips"))
+        );
+        assert_eq!(product(&rules, cut("hazel", "quartz")), None);
     }
 
     #[test]
@@ -2959,5 +3007,66 @@ mod tests {
         assert!(mind.ways.hands.is_empty(), "hearing does not make able");
         assert_eq!(mind.handwork.aim, theirs.hands, "it tries what it heard");
         assert_eq!(mind.trial.map(|t| t.way), Some(Way::Hands));
+    }
+
+    #[test]
+    fn a_cut_names_the_part_of_the_tree_as_a_flag_on_its_kind() {
+        // D57, amended 27 November 2026: trees in parts.
+        let (mut rules, world, mut brains, id, birch) = by_a_birch();
+        rules.needs.hands.trees = Some(crate::content::TreeParts::placeholders());
+        let flint_m = material(&rules, "flint");
+        let trunk = Deed {
+            gesture: Gesture::Cut,
+            on: birch,
+            with: flint_m,
+        };
+        let branch = Deed {
+            on: birch | BRANCH,
+            ..trunk
+        };
+        assert_eq!(
+            (cut_species(trunk.on), cut_part(trunk.on)),
+            (usize::from(birch), Part::Trunk)
+        );
+        assert_eq!(
+            (cut_species(branch.on), cut_part(branch.on)),
+            (usize::from(birch), Part::Branch)
+        );
+        assert_ne!(trunk, branch, "two deeds");
+        // What each gives, as the world computes it: the bark, the branch.
+        assert_eq!(product(&rules, trunk), Some(material(&rules, "birch_bark")));
+        assert_eq!(
+            product(&rules, branch),
+            Some(material(&rules, "green_branch"))
+        );
+        // An edge too blunt for living wood takes no branch; on a trunk
+        // with no bark that comes away, a keen one gives chips.
+        let quartz = Deed {
+            with: material(&rules, "quartz"),
+            ..branch
+        };
+        assert_eq!(product(&rules, quartz), None);
+        let hazel =
+            u16::try_from(rules.species.iter().position(|s| s.id == "hazel").unwrap()).unwrap();
+        let chips = Deed { on: hazel, ..trunk };
+        assert_eq!(product(&rules, chips), Some(material(&rules, "wood_chips")));
+        // Both are seen as plausible on every tree near, with the thing
+        // that shows an edge; a failure remembered on one part sets that
+        // part aside, not the other.
+        let here = world.body(id).unwrap().pos();
+        let mut world = world;
+        let flint = picked(&mut world, &rules, id, "flint");
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let have = [(flint, flint_m)];
+        let seen = Plausible::seen(&world, &rules, here, mind, (&have, 4));
+        let trees = trees_near(&world, here, 4, mind).len();
+        assert!(trees > 0);
+        assert_eq!(seen.cuts.len(), 2 * trees);
+        assert!(seen.cuts.iter().any(|(_, d)| *d == trunk));
+        assert!(seen.cuts.iter().any(|(_, d)| *d == branch));
+        mind.handwork.fail(branch, rules.needs.hands.failures_kept);
+        let seen = Plausible::seen(&world, &rules, here, mind, (&have, 4));
+        assert!(seen.cuts.iter().any(|(_, d)| *d == trunk));
+        assert!(!seen.cuts.iter().any(|(_, d)| *d == branch));
     }
 }

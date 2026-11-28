@@ -1087,6 +1087,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_felled_tree_bears_nothing_and_nothing_else_moves() {
+        // D57, amended 27 November 2026.
+        let (mut world, content, chunk, hazel) = valley_with("hazel");
+        let Source::Tree(key) = hazel.source else {
+            panic!("a hazel is a tree");
+        };
+        run_to(&mut world, &content, 30); // autumn
+        assert_eq!(world.ripe_on(chunk, &hazel).len(), 1, "nuts on it");
+        let bearers = world.bearers_in(chunk);
+        let mut changes = crate::changes::ChunkChanges {
+            version: 1,
+            ..Default::default()
+        };
+        changes.felled.insert(key);
+        world.restore_changes(chunk, changes);
+        assert_eq!(world.ripe_on(chunk, &hazel), []);
+        assert_eq!(
+            world.ripe_of(chunk, hazel.source, hazel.at, "hazel", "hazelnuts"),
+            None
+        );
+        assert_eq!(world.pick(chunk, hazel.source, "hazelnuts", 100), 0);
+        // The bearers are the seed's, placed the same: every other tree
+        // and plant bears as before.
+        assert_eq!(*world.bearers_in(chunk), *bearers);
+        assert!(world.trees_in(chunk).iter().all(|t| t.key != key));
+    }
+
+    #[test]
     fn a_bramble_is_a_plant_known_by_its_place_and_picked_the_same_way() {
         let (mut world, content, chunk, bramble) = valley_with("bramble");
         let Source::Plant(key) = bramble.source else {

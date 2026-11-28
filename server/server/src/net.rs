@@ -1353,6 +1353,16 @@ impl Shared {
         items.changed(chunk, version);
     }
 
+    /// Notes that a tree of `chunk` was cut into or fell (D57, amended 27
+    /// November 2026), the chunk now at `version`: a frame of it made
+    /// from now on carries its trees still standing, and its version.
+    pub fn tree_changed(&self, chunk: ChunkPos, version: Version) {
+        self.items
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .changed(chunk, version);
+    }
+
     /// The fruit phase now ([`sim::crops::fruit_phase`]): which fruit
     /// windows and crops of the trees and the shrubs are open. A frame
     /// made in another phase may show its trees' and shrubs' fruit wrong
@@ -2078,7 +2088,9 @@ impl Shared {
     }
 
     /// The trees standing in `chunk`, placed from the map and the seed
-    /// the first time they are asked for ([`Ground::trees_in`]).
+    /// the first time they are asked for ([`Ground::trees_in`]), less
+    /// those men felled (D57, amended 27 November 2026): a felled tree is
+    /// never framed as standing.
     fn trees_in(&self, chunk: ChunkPos) -> Arc<[sim::trees::Tree]> {
         self.ground.trees_in(
             &self.map,
@@ -2092,13 +2104,14 @@ impl Shared {
     /// The trees of `chunk` and of the eight chunks around it, as the
     /// flora reads them (a plant stands clear of trunks over the chunk's
     /// border too), each chunk's from the shared cache: placed once, read
-    /// nine times.
+    /// nine times. The seed's trees, those felled too
+    /// ([`Ground::seed_trees_in`]): no plant moves when a tree falls.
     fn trees_around(&self, chunk: ChunkPos) -> Vec<sim::trees::Tree> {
         (-1..=1)
             .flat_map(|dy| (-1..=1).map(move |dx| ChunkPos::new(chunk.x + dx, chunk.y + dy)))
             .flat_map(|around| {
                 self.ground
-                    .trees_in(
+                    .seed_trees_in(
                         &self.map,
                         &self.tree_kinds,
                         &self.open_ground,
@@ -4361,7 +4374,7 @@ mod tests {
         }
         // A change to a chunk (an item laid or taken, a crop picked)
         // bumps its version: its frame is made again, its trees are kept
-        // as placed, no change of men touching a tree yet (D51, amended 25
+        // as placed, such a change touching no tree (D51, amended 25
         // November 2026).
         let placed = shared.ground.trees_placed();
         shared.ground.set_version(chunks[0], 1);
@@ -4370,7 +4383,7 @@ mod tests {
             "the trees are kept across the change"
         );
         // Encoded again. The version its frame carries is the one the
-        // events told the network (D4): a felling will come with its own
+        // events told the network (D4): a felling comes with its own
         // event; none came here.
         let again = sent(&shared, chunks[0]).unwrap();
         assert_eq!(
@@ -4379,6 +4392,46 @@ mod tests {
         );
         assert_eq!(protocol::decode_chunk(&again.frame).unwrap().version, 0);
         assert_eq!(shared.ground.trees_placed(), placed, "not placed again");
+    }
+
+    #[test]
+    fn a_felled_tree_is_no_longer_framed_as_standing_and_no_plant_moves() {
+        // D57, amended 27 November 2026: within the protocol as it is, a
+        // chunk's frame made after a tree fell carries the trees still
+        // standing, at the chunk's new version.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let content = crate::content::load(&dir).expect("repository content");
+        let world = World::with_valley(Calendar::default(), &content, 768);
+        let mut shared = Shared::new(&world, &content, 1, 1.0);
+        let chunk = View::window(&shared.map, shared.map.camp().chunk())
+            .into_iter()
+            .find(|&c| {
+                let trees = shared.trees_in(c);
+                trees.iter().filter(|t| t.at.tile().chunk() == c).count() > 1
+            })
+            .expect("a wooded chunk in view");
+        let before = sent(&shared, chunk).unwrap();
+        let plants = shared.plants_in(chunk);
+        let placed = shared.ground.trees_placed();
+        let tree = *shared
+            .trees_in(chunk)
+            .iter()
+            .find(|t| t.at.tile().chunk() == chunk)
+            .unwrap();
+        // It falls, as the simulation tells it: the ground's patch, the
+        // chunk's version, the event's word to the network.
+        shared.ground.set_felled(chunk, &[tree.key].into());
+        shared.ground.set_version(chunk, 1);
+        shared.tree_changed(chunk, 1);
+        let after = sent(&shared, chunk).unwrap();
+        assert_eq!(after.trees.len(), before.trees.len() - 1);
+        assert!(after.trees.iter().all(|t| before.trees.contains(t)));
+        assert_ne!(after.frame, before.frame);
+        assert_eq!(protocol::decode_chunk(&after.frame).unwrap().version, 1);
+        assert_eq!(shared.ground.trees_placed(), placed, "a patch, no placing");
+        // The plants placed again are the same: they read the seed's trees.
+        shared.plants = Mutex::new(Lru::new(4));
+        assert_eq!(shared.plants_in(chunk), plants);
     }
 
     #[test]

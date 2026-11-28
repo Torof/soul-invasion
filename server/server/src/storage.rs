@@ -44,7 +44,8 @@ pub const SNAPSHOT_FORMAT_VERSION: u32 = 21;
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
 /// 2 (16 November 2026): the crops picked (D45), a fifth list.
-pub const CHUNK_CHANGES_FORMAT_VERSION: u32 = 2;
+/// 3 (27 November 2026): the notches cut in the trunks (D57), a sixth.
+pub const CHUNK_CHANGES_FORMAT_VERSION: u32 = 3;
 
 /// Snapshots kept: the latest and two before it. Every one used to be
 /// kept, a full copy of the world each game day (18 MB on the valley).
@@ -447,16 +448,18 @@ impl Storage for Sqlite {
     }
 }
 
-/// A chunk's changes as stored, format 2: five lists, each its length
+/// A chunk's changes as stored, format 3: six lists, each its length
 /// then its entries, every number a LEB128 varint (a byte under 128).
-/// Format 1 was the first four.
+/// Format 1 was the first four, format 2 the first five.
 /// The taken slots and the felled trees' keys ([`TreeKey::bits`]) in
 /// order, each as its distance from the one before: about a byte an
 /// entry. A planted tree: its key, its species' id (length, then UTF-8),
 /// its stage (0 to 3), its day. A construction: its kind's id, its tile
 /// in the chunk (`y × 32 + x`), its day. A crop picked: what bore it (0
 /// and a tree's key, or 1 and a plant's place in millimetres, east then
-/// south), the material's id, the crop's year, the grams taken.
+/// south), the material's id, the crop's year, the grams taken. A notch
+/// (D57, amended 27 November 2026): the tree's key, then the square
+/// millimetres of its trunk's section cut through, in the keys' order.
 fn encode_changes(chunk: ChunkPos, changes: &ChunkChanges) -> Vec<u8> {
     fn varint(out: &mut Vec<u8>, mut value: u64) {
         while value >= 0x80 {
@@ -523,12 +526,17 @@ fn encode_changes(chunk: ChunkPos, changes: &ChunkChanges) -> Vec<u8> {
         varint(&mut out, picked.year);
         varint(&mut out, u64::from(picked.grams));
     }
+    varint(&mut out, changes.notched.len() as u64);
+    for (key, mm2) in &changes.notched {
+        varint(&mut out, u64::from(key.bits()));
+        varint(&mut out, u64::from(*mm2));
+    }
     out
 }
 
 /// The changes [`encode_changes`] wrote for `chunk` at `version`, in
-/// `format` (1 or 2); `None` if the bytes are damaged or the format
-/// unknown.
+/// `format` (1 to 3); `None` if the bytes are damaged or the format
+/// unknown. An older format has no notch: none is read.
 #[allow(
     clippy::too_many_lines,
     reason = "one straight reading, top to bottom; splitting it would scatter the rule"
@@ -648,6 +656,16 @@ fn decode_changes(
             changes
                 .picked
                 .insert((source, gives), Picked { year, grams });
+        }
+    }
+    if format >= 3 {
+        for _ in 0..bytes.count()? {
+            let key = TreeKey::from_bits(u16::try_from(bytes.varint()?).ok()?)?;
+            let mm2 = u32::try_from(bytes.varint()?).ok()?;
+            // A notch is of a tree standing, each tree once.
+            if changes.felled.contains(&key) || changes.notched.insert(key, mm2).is_some() {
+                return None;
+            }
         }
     }
     bytes.0.is_empty().then_some(changes)
@@ -1579,6 +1597,8 @@ mod tests {
                 },
             );
         }
+        a.notched.insert(key(8), 1);
+        a.notched.insert(key(0x0890), u32::MAX);
         a.picked.insert(
             (Source::Tree(key(0x0888)), "hazelnuts".to_owned()),
             Picked {
@@ -1621,7 +1641,9 @@ mod tests {
         // Format 1 was format 2 without its fifth list.
         for (chunk, mut changes) in every_kind_of_change() {
             changes.picked.clear();
+            changes.notched.clear();
             let mut bytes = encode_changes(chunk, &changes);
+            assert_eq!(bytes.pop(), Some(0), "an empty sixth list");
             assert_eq!(bytes.pop(), Some(0), "an empty fifth list");
             let back = decode_changes(chunk, changes.version, 1, &bytes);
             assert_eq!(back.as_ref(), Some(&changes));
@@ -1638,8 +1660,45 @@ mod tests {
             ),
             Picked { year: 0, grams: 1 },
         );
-        let bytes = encode_changes(ChunkPos::new(0, 0), &far);
+        let mut bytes = encode_changes(ChunkPos::new(0, 0), &far);
+        assert_eq!(bytes.pop(), Some(0), "an empty sixth list");
         assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 2, &bytes), None);
+    }
+
+    #[test]
+    fn chunk_changes_of_format_2_are_read_with_no_notch() {
+        // Format 2 was format 3 without its sixth list (D57, amended 27
+        // November 2026): a world stored before the notches is read as it
+        // was, no tree cut into.
+        for (chunk, mut changes) in every_kind_of_change() {
+            assert!(
+                chunk.x < 0 || !changes.notched.is_empty(),
+                "a notch among the changes"
+            );
+            let with = encode_changes(chunk, &changes);
+            changes.notched.clear();
+            let mut bytes = encode_changes(chunk, &changes);
+            assert_eq!(bytes.pop(), Some(0), "an empty sixth list");
+            let back = decode_changes(chunk, changes.version, 2, &bytes);
+            assert_eq!(back.as_ref(), Some(&changes));
+            // The sixth list is not of format 2.
+            if with.len() > bytes.len() + 1 {
+                assert_eq!(decode_changes(chunk, changes.version, 2, &with), None);
+            }
+        }
+        // A notch of a felled tree, or two of one tree, are damage.
+        let key = TreeKey::from_bits(0x0888).unwrap();
+        let mut felled = ChunkChanges::default();
+        felled.felled.insert(key);
+        let mut bytes = encode_changes(ChunkPos::new(0, 0), &felled);
+        assert_eq!(bytes.pop(), Some(0));
+        let (lo, hi) = (0x08_u8 | 0x80, 0x11_u8);
+        bytes.extend([1, lo, hi, 5]);
+        assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 3, &bytes), None);
+        let mut twice = encode_changes(ChunkPos::new(0, 0), &ChunkChanges::default());
+        assert_eq!(twice.pop(), Some(0));
+        twice.extend([2, lo, hi, 5, lo, hi, 6]);
+        assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 3, &twice), None);
     }
 
     #[test]
@@ -1661,10 +1720,13 @@ mod tests {
             let mut longer = bytes.clone();
             longer.push(0);
             assert_eq!(decode_changes(chunk, 1, format, &longer), None);
-            assert_eq!(decode_changes(chunk, 1, 3, &bytes), None, "unknown format");
+            assert_eq!(decode_changes(chunk, 1, 4, &bytes), None, "unknown format");
         }
         let none = ChunkChanges::default();
-        assert_eq!(encode_changes(ChunkPos::new(0, 0), &none), [0, 0, 0, 0, 0]);
+        assert_eq!(
+            encode_changes(ChunkPos::new(0, 0), &none),
+            [0, 0, 0, 0, 0, 0]
+        );
         // Through a database file, closed and opened again.
         let (dir, path) = temp_db("round-trip");
         let mut world = world_at(6);

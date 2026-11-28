@@ -1099,6 +1099,10 @@ pub enum Intention {
         chunk: ChunkPos,
         /// The tree.
         tree: trees::TreeKey,
+        /// The part of the tree it cuts (amended 27 November 2026): its
+        /// trunk when not said.
+        #[serde(default)]
+        part: hands::Part,
     },
     /// Fold the item `item` it carries (D57): a gesture of the content's
     /// minutes, whatever comes of it.
@@ -1366,10 +1370,52 @@ pub enum Event {
         on: String,
         /// The thing it was put in, for a put-in.
         into: Option<ItemId>,
+        /// The part of the tree cut, for a cut (amended 27 November
+        /// 2026).
+        part: Option<hands::Part>,
         /// What came of it, if anything.
         gave: Option<ItemId>,
         /// The thing folded broke: it is gone.
         broke: bool,
+    },
+    /// An edge bit the living wood of a trunk (D57, amended 27 November
+    /// 2026): chips fell and the tree's notch deepened. Seen by all.
+    TreeBitten {
+        /// Who.
+        body: BodyId,
+        /// The chunk of the tree.
+        chunk: ChunkPos,
+        /// The tree.
+        tree: trees::TreeKey,
+        /// The chips that fell, in grams.
+        chips_g: u32,
+        /// The section of its trunk cut through now, in square
+        /// millimetres, by whoever cut.
+        notch_mm2: u32,
+        /// The whole section of its trunk.
+        section_mm2: u32,
+        /// Its chunk's version right after it.
+        version: ground::Version,
+    },
+    /// A tree fell, its trunk cut through (D57, amended 27 November
+    /// 2026): it stands no more, for good. Seen by all.
+    TreeFell {
+        /// Who gave the last cut.
+        body: BodyId,
+        /// The chunk of the tree.
+        chunk: ChunkPos,
+        /// The tree.
+        tree: trees::TreeKey,
+        /// Where it stood.
+        at: FinePos,
+        /// Its species (a content id).
+        species: String,
+        /// How thick its trunk was, in millimetres.
+        trunk_mm: u32,
+        /// The log it left, in grams.
+        log_g: u32,
+        /// Its chunk's version right after it.
+        version: ground::Version,
     },
     /// A body could not begin a gesture (D57). Told to the pilot.
     GestureRefused {
@@ -2023,7 +2069,9 @@ impl World {
 
     /// The trees standing in `chunk`, placed from the map and the seed
     /// ([`trees::trees_in`]) the first time they are asked for and held a
-    /// while ([`ground::Ground`]): the same every time, nothing stored.
+    /// while ([`ground::Ground`]), less those men felled (D57, amended 27
+    /// November 2026): the same every time, nothing stored but the
+    /// felled trees' keys.
     pub fn trees_in(&self, chunk: ChunkPos) -> Arc<[trees::Tree]> {
         self.ground_cache.trees_in(
             &self.map,
@@ -2146,6 +2194,13 @@ impl World {
         at: FinePos,
         crop: usize,
     ) -> Option<(u64, u32)> {
+        // A felled tree bears nothing (D57, amended 27 November 2026):
+        // it stays among the seed's bearers, so that nothing else moves.
+        if let crops::Source::Tree(tree) = source
+            && changes.is_some_and(|c| c.felled.contains(&tree))
+        {
+            return None;
+        }
         let frame = r#gen::scatter::Frame::at(self.map.origin());
         let key = self.crop_keys.get(crop).copied();
         let crop = &self.crops[crop];
@@ -2503,6 +2558,7 @@ impl World {
     /// included: how a world is loaded.
     pub fn restore_changes(&mut self, chunk: ChunkPos, changes: changes::ChunkChanges) {
         self.ground_cache.set_version(chunk, changes.version);
+        self.ground_cache.set_felled(chunk, &changes.felled);
         self.changes.insert(chunk, Arc::new(changes));
     }
 
@@ -3541,7 +3597,8 @@ impl World {
                 with,
                 chunk,
                 tree,
-            } => self.cut(id, with, (chunk, tree), rules, events),
+                part,
+            } => self.cut(id, with, (chunk, tree, part), rules, events),
             Intention::Fold { body: id, item } => self.fold(id, item, rules, events),
             Intention::PutIn { .. } | Intention::TakeOut { .. } | Intention::Strike { .. } => {
                 self.on_carried(intention, rules, events);
