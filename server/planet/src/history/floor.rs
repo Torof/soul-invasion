@@ -133,6 +133,8 @@ pub(super) fn holes_and_gaps(world: &mut World) {
         cool: 0,
         sunk: 0,
         sag: 0,
+        silt: 0,
+        laid: NEVER,
         why: [0; CAUSES],
     };
     let again = |q: usize, m: usize, rock: &[Rock], pending: &[bool]| {
@@ -275,14 +277,25 @@ pub(super) fn holes_and_gaps(world: &mut World) {
             continue;
         }
         let mut left = take;
+        // (Its sediment goes with the width it gives.)
+        let (mut silt, mut laid) = (0_i64, 0_i64);
         for &j in &donors {
             let c = &mut land.cells[j];
             let v = spare(c).min(left);
-            c.area -= (v / i64::from(c.rock.thick).max(1)) as u32;
+            let given = v / i64::from(c.rock.thick).max(1);
+            c.area -= given as u32;
+            silt += given * i64::from(c.rock.silt);
+            laid += given * i64::from(c.rock.silt) * i64::from(c.rock.laid);
             left -= v;
         }
         let made = Rock {
             thick: (take / full) as u16,
+            silt: (silt / full).min(i64::from(u16::MAX)) as u16,
+            laid: if silt > 0 {
+                (laid / silt) as u16
+            } else {
+                NEVER
+            },
             why: [0; CAUSES],
             ..first.rock
         };

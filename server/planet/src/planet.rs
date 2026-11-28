@@ -58,12 +58,11 @@ pub struct Planet {
     pub hotspots: Vec<Hotspot>,
     /// Each cell's height above the sea, m.
     pub elevation: Vec<i32>,
-    /// Today's sea level, in the raw heights' metres: the one that leaves
-    /// the settings' share of land dry.
-    sea: i64,
-    /// How much higher than today's the sea stands at this step, m: it
-    /// follows the ocean floor's age (a young floor is shallow, and the sea
-    /// spills over the continents' edges).
+    /// The sea's level at this step, m above the heights' datum: the
+    /// history's own ([`History::sea_at`]), the level at which the
+    /// planet's water fills the basins of the relief (version 16).
+    pub sea: i64,
+    /// How much higher than today's the sea stands at this step, m.
     pub sea_rise_m: i64,
     /// The hollows: ground below the sea's level that no path of such
     /// ground links to the ocean (version 11). They are land, not sea: a
@@ -91,42 +90,14 @@ pub struct Planet {
     pub mosaic: std::sync::Arc<Mosaic>,
 }
 
-/// Ocean floor older than this, millions of years, sinks no more.
-pub(crate) const FLAT_FLOOR_MY: i64 = 120;
-
-/// How far the ocean floor has sunk at an age, millions of years, m: it
-/// cools, ~350 m per square root of a million years (Parsons and
-/// Sclater), flat past [`FLAT_FLOOR_MY`].
-pub(crate) fn sinking(age: i64) -> i64 {
-    350 * (age.min(FLAT_FLOOR_MY) * 1_000_000).isqrt() / 1000
-}
-
-/// How far the ocean floor has sunk on average at step `t`, m.
-pub(crate) fn floor_sinking(sphere: &Sphere, h: &History, t: usize) -> i64 {
-    let (mut sum, mut area) = (0_i64, 0_i64);
-    for c in 0..CELLS {
-        if h.class[t][c] == history::OCEAN {
-            let a = i64::from(sphere.area_km2[c]);
-            sum += sinking(i64::from(h.age[t][c])) * a;
-            area += a;
-        }
-    }
-    sum / area.max(1)
-}
-
-/// A cell of crust's height above a sea standing at `sea`, m: what it
-/// carries, its home's grain, its pile's lift, its flood basalts.
+/// A cell of crust's height above a sea standing at `sea`, m, with no
+/// water on it: what it carries, its pile's lift, its flood basalts
+/// ([`history::stands`]) and its home's grain.
 pub(crate) fn tile_height(h: &History, tile: &history::Tile, sea: i64) -> i32 {
     let home = tile.home as usize;
-    let pile = (i64::from(tile.thick) - i64::from(history::CONTINENT_THICK)).max(0)
-        * history::ISOSTASY_M
-        / 10;
-    let lip = if tile.margins & history::LIP != 0 {
-        350
-    } else {
-        0
-    };
-    (i64::from(tile.high) + i64::from(h.rough[home]) + i64::from(h.broad[home]) / 2 + pile + lip
+    (history::stands(tile.high, tile.thick, tile.margins)
+        + i64::from(h.rough[home])
+        + i64::from(h.broad[home]) / 2
         - sea)
         .clamp(-11_000, 9_000) as i32
 }
@@ -288,7 +259,7 @@ impl Planet {
         // 2. The history: the supercontinent, its break-up, the drift.
         let history = std::sync::Arc::new(history::run(seed, settings, &sphere, &mosaic));
         let last = history.last();
-        Self::build(seed, settings, sphere, old, mosaic, history, (last, None))
+        Self::build(seed, settings, sphere, old, mosaic, history, last)
     }
 
     /// The planet as it stood at step `t` of its history, drawn as today's
@@ -302,7 +273,7 @@ impl Planet {
             self.old.clone(),
             std::sync::Arc::clone(&self.mosaic),
             std::sync::Arc::clone(&self.history),
-            (t.min(self.history.last()), Some(self.sea)),
+            t.min(self.history.last()),
         )
     }
 
@@ -313,7 +284,7 @@ impl Planet {
         old: Layout,
         mosaic: std::sync::Arc<Mosaic>,
         history: std::sync::Arc<History>,
-        (t, sea): (usize, Option<i64>),
+        t: usize,
     ) -> Self {
         let h = &*history;
         let now_my = ((h.last() - t) as i64 * settings.step_my) as u16;
@@ -421,25 +392,13 @@ impl Planet {
                     let from = home[c] as usize;
                     // A pile of crust floats higher (isostasy), flood
                     // basalts stand as plateaus.
-                    let pile = (i64::from(h.thick_at[t][c]) - i64::from(history::CONTINENT_THICK))
-                        .max(0)
-                        * history::ISOSTASY_M
-                        / 10;
-                    let lip = if h.margins_at[t][c] & history::LIP != 0 {
-                        350
-                    } else {
-                        0
-                    };
-                    return i64::from(h.high_at[t][c])
+                    return history::stands(h.high_at[t][c], h.thick_at[t][c], h.margins_at[t][c])
                         + i64::from(h.rough[from])
-                        + i64::from(h.broad[from]) / 2
-                        + pile
-                        + lip;
+                        + i64::from(h.broad[from]) / 2;
                 }
-                // The floor sinks as it cools: ~2,500 m at a ridge,
-                // ~350 m more per square root of a million years
-                // (Parsons and Sclater), flat past [`FLAT_FLOOR_MY`].
-                let mut e = -2_500 - sinking(i64::from(h.age[t][c])) + i64::from(h.rough[c]);
+                // The floor sinks as it cools and rises with the
+                // sediment laid on it.
+                let mut e = i64::from(h.rough[c]);
                 let (d, src) = near[c];
                 if d != u32::MAX {
                     let d = i64::from(d);
@@ -452,23 +411,19 @@ impl Planet {
                 if let Some((d, age)) = lava[c] {
                     e += 3_800 * bump(d, 130) / 1000 * (TRACK_MYR - age).max(0) / TRACK_MYR;
                 }
-                e
+                history::floor_bed(i64::from(h.age[t][c]), i64::from(h.silt_at[t][c]), e)
             })
             .collect();
-        // The sea level is anchored today: it leaves the settings' share
-        // of land dry. In the past it follows the ocean floor's age: where
-        // the floor was younger than today's on average it stood higher,
-        // and the sea with it (27 November 2026, version 6; a range rising
-        // somewhere never drowns lowlands everywhere).
-        let sea =
-            sea.unwrap_or_else(|| quantile(&sphere, &elevation, 1000 - settings.land_per_mille));
-        let sea_rise_m = (floor_sinking(&sphere, h, h.last()) - floor_sinking(&sphere, h, t))
-            * settings.sea_follows_floor
-            / 1000;
+        // The sea is the history's: the level at which the planet's
+        // water fills the basins of the relief at this step (version 16;
+        // the trenches' deeps and the hotspots' chains drawn above are
+        // the map's only, and hold none of the count).
+        let sea = i64::from(h.sea_at[t]);
+        let sea_rise_m = sea - i64::from(h.sea_at[h.last()]);
         for e in &mut elevation {
-            *e -= sea + sea_rise_m;
+            *e -= sea;
         }
-        let elevation: Vec<i32> = elevation
+        let mut elevation: Vec<i32> = elevation
             .iter()
             .map(|&e| e.clamp(-11_000, 9_000) as i32)
             .collect();
@@ -479,8 +434,15 @@ impl Planet {
             &index,
             &history.pieces_at[t],
             (&continental, &elevation),
-            sea + sea_rise_m,
+            sea,
         );
+        // Under the sea the water's weight pushes the ground down: the
+        // depth drawn is the water's. A closed basin holds no sea.
+        for c in 0..CELLS {
+            if elevation[c] < 0 && !basin[c] {
+                elevation[c] = (-history::depth(-i64::from(elevation[c]))).max(-11_000) as i32;
+            }
+        }
         let mut planet = Self {
             seed,
             sphere,
@@ -530,7 +492,13 @@ impl Planet {
     /// carries, its home's grain, its pile's lift, its flood basalts.
     #[must_use]
     pub fn tile_height(&self, tile: &history::Tile) -> i32 {
-        tile_height(&self.history, tile, self.sea + self.sea_rise_m)
+        tile_height(&self.history, tile, self.sea)
+    }
+
+    /// The water's depth, m, over ground the sea covers `under` m below
+    /// its level as it would stand dry.
+    fn sunk(under: i32) -> i32 {
+        (-history::depth(-i64::from(under))).max(-11_000) as i32
     }
 
     /// Whether a cell of a piece of continent is dry: above the sea's
@@ -564,7 +532,9 @@ impl Planet {
     #[must_use]
     pub fn surface(&self, p: V3) -> (i32, bool) {
         if let Some((k, i)) = self.tile_at(p) {
-            return (self.tile_height(&self.pieces()[k].tiles[i]), true);
+            let e = self.tile_height(&self.pieces()[k].tiles[i]);
+            let wet = e < 0 && !self.basin_tile[k][i];
+            return (if wet { Self::sunk(e) } else { e }, true);
         }
         let c = self.sphere.cell_of(p);
         if !self.continental[c] {

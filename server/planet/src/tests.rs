@@ -54,11 +54,8 @@ fn a_seed_gives_the_same_planet() {
     assert_eq!(a.history.plate, b.history.plate);
     assert_eq!(a.history.age, b.history.age);
     assert_eq!(a.history.orogeny_my, b.history.orogeny_my);
-    let land: i64 = a.lands.iter().map(|l| l.area_km2).sum();
-    assert!(
-        (land * 1000 / 510_000_000 - Settings::default().land_per_mille).abs() < 20,
-        "{land}"
-    );
+    assert_eq!(a.history.sea_at, b.history.sea_at);
+    assert_eq!(a.history.silt_at, b.history.silt_at);
 }
 
 #[test]
@@ -587,4 +584,87 @@ fn an_old_passive_margin_bends_step_after_step_then_gives_way() {
     assert!(sinking(t) > 0);
     // The tear runs on along the margin.
     assert!(sinking((t + 3).min(h.last())) > 2 * sinking(t));
+}
+
+#[test]
+fn the_sea_holds_the_planets_water_and_more_water_leaves_less_land() {
+    let world = made(3);
+    let s = &world.sphere;
+    let whole: i64 = s.area_km2.iter().map(|&a| i64::from(a)).sum();
+    let held = |w: &Planet| {
+        (0..CELLS)
+            .filter(|&c| w.elevation[c] < 0 && !w.basin[c])
+            .map(|c| -i64::from(w.elevation[c]) * i64::from(s.area_km2[c]))
+            .sum::<i64>()
+            / whole
+    };
+    let water = world.settings.water_m;
+    // The maps hold the water the history counted (they draw the
+    // trenches' deeps and the hotspots' chains on top of it).
+    for t in [0, world.history.last() / 2, world.history.last()] {
+        let then = world.at_step(t);
+        assert_eq!(then.sea, i64::from(world.history.sea_at[t]));
+        assert!(
+            (held(&then) - water).abs() * 50 < water,
+            "step {t}: {}",
+            held(&then)
+        );
+    }
+    // A hollow the sea does not reach is not sea.
+    assert!((0..CELLS).all(|c| !world.basin[c] || world.dry(c)));
+    let land = |w: &Planet| w.lands.iter().map(|l| l.area_km2).sum::<i64>();
+    let wetter = Planet::with(
+        3,
+        &Settings {
+            water_m: water + 300,
+            ..Settings::default()
+        },
+    );
+    assert!(wetter.history.sea_at[0] > world.history.sea_at[0] + 150);
+    assert!(wetter.sea > world.sea);
+    assert!(land(&wetter) < land(world));
+}
+
+#[test]
+fn what_wears_is_laid_somewhere() {
+    let h = &made(14).history;
+    let mut waiting = 0;
+    let mut laid = 0;
+    for b in &h.budget {
+        assert_eq!(
+            b.worn + waiting,
+            b.on_land + b.on_shelf + b.on_floor + b.waiting
+        );
+        waiting = b.waiting;
+        laid += b.on_land + b.on_shelf + b.on_floor;
+    }
+    assert!(laid > 0);
+    let last = h.last();
+    // Sediment lies on the continents and on the floor, with its date.
+    for class in [history::CONTINENT, history::OCEAN] {
+        assert!((0..CELLS).any(|c| h.class[last][c] == class && h.silt_at[last][c] > 100));
+    }
+    assert!(
+        (0..CELLS).all(|c| (h.silt_at[last][c] == 0) == (h.laid_at[last][c] == history::NEVER))
+    );
+}
+
+#[test]
+fn the_start_relief_is_the_crusts() {
+    let world = made(14);
+    let (h, m) = (&world.history, &world.mosaic);
+    let whole = history::CONTINENT_THICK;
+    let mut thinned = 0;
+    for c in (0..CELLS).filter(|&c| h.class[0][c] == history::CONTINENT) {
+        let (thick, high) = (h.thick_at[0][c], i64::from(h.high_at[0][c]));
+        if m.kind[c] == Some(OldKind::FailedRift) {
+            let low = i64::from(whole - thick) * history::ISOSTASY_M / 10;
+            assert_eq!(high, history::PLATFORM_M - low);
+            thinned += usize::from(low > 300);
+        } else {
+            assert!(thick >= whole);
+            assert_eq!(high, history::PLATFORM_M);
+        }
+    }
+    assert!(thinned > 100);
 }

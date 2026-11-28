@@ -477,6 +477,14 @@ pub fn planet_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         l.px[i] = rgba(floor_colour(i64::from(h.age_my[c])), 255);
     }
     l.write(dir, &format!("p{seed}-fond.png"));
+    let mut l = Layer::new(PW, PH);
+    let last = h.last();
+    for (i, &c) in cell.iter().enumerate() {
+        if h.silt_at[last][c] > 0 {
+            l.px[i] = rgba(silt_colour(i64::from(h.silt_at[last][c])), 255);
+        }
+    }
+    l.write(dir, &format!("p{seed}-sediments.png"));
     // Data for the readout, on a 512 × 256 grid: a letter per cell for its
     // plate (upper case on land, lower case at sea), and its height in
     // hundreds of metres as one character from U+00A1.
@@ -537,6 +545,25 @@ pub fn floor_colour(age: i64) -> [u8; 3] {
         }
     }
     STOPS[5].1
+}
+
+/// A sediment's colour by its thickness, m: pale under 100 m, ochre at
+/// 1 km, brown at 5 km, dark past 12.
+fn silt_colour(m: i64) -> [u8; 3] {
+    const STOPS: [(i64, [u8; 3]); 5] = [
+        (0, [250, 240, 200]),
+        (100, [240, 215, 140]),
+        (1_000, [215, 160, 70]),
+        (5_000, [150, 90, 40]),
+        (12_000, [70, 35, 20]),
+    ];
+    for w in STOPS.windows(2) {
+        let ((a, ca), (b, cb)) = (w[0], w[1]);
+        if m <= b {
+            return mix(ca, cb, (m - a).max(0) * 1000 / (b - a));
+        }
+    }
+    STOPS[4].1
 }
 
 /// A last mountain building's colour: today red, 100 My orange, 200
@@ -669,6 +696,14 @@ pub fn step_layers(dir: &Path, world: &Planet, zoom: Option<&Zoom>) {
         }
     }
     l.write(dir, &name("fond"));
+    // The sediment lying on the crust and on the floor at this step.
+    let mut l = Layer::new(w, hgt);
+    for (i, &c) in cell.iter().enumerate() {
+        if h.silt_at[t][c] > 0 {
+            l.px[i] = rgba(silt_colour(i64::from(h.silt_at[t][c])), 255);
+        }
+    }
+    l.write(dir, &name("sediments"));
     // The mantle's heat: warm (orange to red) under the large continents,
     // cold (blue) where slabs sink; the plumes as rings.
     let mut l = Layer::new(w, hgt);

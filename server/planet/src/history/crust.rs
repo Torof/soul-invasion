@@ -34,6 +34,14 @@ pub(super) struct Rock {
     /// (`trenches::margins_give_way`). The shore keeps it: silt that
     /// builds the shore out takes it along.
     pub(super) sag: i16,
+    /// The sediment lying on it, m of thickness (version 16): what
+    /// erosion took from higher ground and laid here. On a continent its
+    /// lift is in `high` already; on the ocean floor it raises the bed
+    /// ([`floor_bed`]).
+    pub(super) silt: u16,
+    /// When that sediment was laid, millions of years ago (the mean of
+    /// its layers by thickness); [`NEVER`] with none.
+    pub(super) laid: u16,
     /// What changed its height since the step before, m, by cause (see
     /// [`CAUSES`]).
     pub(super) why: [i16; CAUSES],
@@ -79,6 +87,68 @@ pub(super) const TERRANE_THICK: u16 = 250;
 /// its thickness; 100 until version 14, a third too little).
 pub const ISOSTASY_M: i64 = 150;
 
+/// Flood basalts stand this high on the crust they covered, m.
+pub const LIP_M: i64 = 350;
+/// A ridge's crest lies this far below the heights' datum, m. The datum
+/// is where a continent's whole, cold crust would stand less
+/// [`PLATFORM_M`].
+pub const RIDGE_M: i64 = -2_500;
+/// Ocean floor older than this, millions of years, sinks no more.
+pub const FLAT_FLOOR_MY: i64 = 120;
+/// A continent's whole crust ([`CONTINENT_THICK`]), old and cold, with
+/// nothing on it, stands this high above the datum, m: 3,000 m above a
+/// ridge's crest (the Earth: a ridge's crest lies some 2,600 m under the
+/// sea and its shields stand 200 to 500 m above it).
+pub const PLATFORM_M: i64 = 300;
+/// Sediment raises the ground it is laid on by this much of its
+/// thickness, ‰: its weight pushes its crust down (sediment 2.5 on a
+/// mantle 3.3: 0.8 / 3.3).
+pub const SILT_LIFTS: i64 = 240;
+/// Water weighs on what it covers: ground under the sea is pushed down
+/// by this much of the water's depth, ‰ (water 1.0 on a mantle 3.3).
+/// Every height the history keeps is the ground's as it would stand
+/// with no water on it; where the sea stands `d` m above such ground
+/// the water is [`depth`]`(d)` deep. So when the ocean's basins shrink
+/// the sea rises over the continents by seven tenths of what it would
+/// over a rigid floor.
+pub const WATER_SINKS: i64 = 303;
+
+/// The water's depth where the sea stands `over` m above the ground as
+/// it would be with no water on it ([`WATER_SINKS`]).
+#[must_use]
+pub fn depth(over: i64) -> i64 {
+    over * 1000 / (1000 - WATER_SINKS)
+}
+
+/// How far the ocean floor has sunk at an age, millions of years, m: it
+/// cools, ~350 m per square root of a million years (Parsons and
+/// Sclater), flat past [`FLAT_FLOOR_MY`].
+#[must_use]
+pub fn sinking(age: i64) -> i64 {
+    350 * (age.min(FLAT_FLOOR_MY) * 1_000_000).isqrt() / 1000
+}
+
+/// The ocean floor's bed above the datum, m, as it would stand with no
+/// water on it: a ridge's crest, sunk as its age says, with its grain
+/// (`more`: and what a map draws on it), all of them depths under the
+/// sea standing at the datum, so less the water's push
+/// ([`WATER_SINKS`]); raised by the sediment on it.
+#[must_use]
+pub fn floor_bed(age_my: i64, silt_m: i64, more: i64) -> i64 {
+    (RIDGE_M - sinking(age_my) + more) * (1000 - WATER_SINKS) / 1000 + silt_m * SILT_LIFTS / 1000
+}
+
+/// A continent's crust above the datum, m, without its grain and with
+/// no water on it: the height it carries, what a pile lifts (isostasy),
+/// its flood basalts.
+/// The history's sea and the maps read this one height.
+#[must_use]
+pub fn stands(high: i16, thick: u16, margins: u8) -> i64 {
+    i64::from(high)
+        + (i64::from(thick) - i64::from(CONTINENT_THICK)).max(0) * ISOSTASY_M / 10
+        + if margins & LIP != 0 { LIP_M } else { 0 }
+}
+
 /// A carried height changed by `by` m.
 pub(super) fn lift(high: i16, by: i64) -> i16 {
     (i64::from(high) + by).clamp(-6_000, 8_000) as i16
@@ -99,6 +169,19 @@ pub(super) const BY_LEVEL: usize = 6;
 pub(super) const BY_FILL: usize = 7;
 
 impl Rock {
+    /// Sediment laid on it, `m` of thickness, now: its thickness and the
+    /// mean date of its layers. (A thickness beyond what the record
+    /// holds, 65 km, is not counted: a limit of the arithmetic.)
+    pub(super) fn lay(&mut self, m: i64, now_my: u16) {
+        let had = i64::from(self.silt);
+        let all = (had + m).min(i64::from(u16::MAX));
+        if all > 0 {
+            let then = if had > 0 { i64::from(self.laid) } else { 0 };
+            self.laid = ((then * had + i64::from(now_my) * (all - had)) / all) as u16;
+        }
+        self.silt = all as u16;
+    }
+
     /// Its carried height changes by `by` m, for a cause.
     pub(super) fn rise(&mut self, by: i64, cause: usize) {
         let was = self.high;

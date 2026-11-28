@@ -73,7 +73,13 @@ pub(crate) struct World<'a> {
     /// ‰ of what its section holds (a trough begins where it has lasted).
     pub(super) pulled: [i64; MAXP],
     pub(super) arc_steps: u8,
-    pub(super) silt: [i64; MAXP],
+    /// The sea's level at the last step it was read, m above the datum
+    /// (`wear::level`), and the cells of the grid it reaches.
+    pub(super) sea: i64,
+    pub(super) wet: Vec<bool>,
+    /// Sediment too thin to lay yet (under a metre over its cell), m
+    /// times km², at each cell of the grid: laid with the next step's.
+    pub(super) dust: Vec<i64>,
     // The record: events, then the layers of each step.
     pub(super) rifts: Vec<Rift>,
     pub(super) welds: Vec<Weld>,
@@ -94,6 +100,10 @@ pub(crate) struct World<'a> {
     pub(super) out_orogeny: Vec<Vec<u16>>,
     pub(super) out_thick: Vec<Vec<u16>>,
     pub(super) out_high: Vec<Vec<i16>>,
+    pub(super) out_silt: Vec<Vec<u16>>,
+    pub(super) out_laid: Vec<Vec<u16>>,
+    pub(super) out_sea: Vec<i32>,
+    pub(super) out_budget: Vec<Budget>,
     pub(super) out_cause: Vec<Vec<[i16; CAUSES]>>,
     pub(super) out_shown: Vec<Vec<u8>>,
     pub(super) out_id: Vec<Vec<u32>>,
@@ -171,7 +181,6 @@ impl World<'_> {
             }
             self.alias[p] = p as u8;
             self.pulled[p] = 0;
-            self.silt[p] = 0;
             self.born_t[p] = 0;
             self.omega[p] = [0; 3];
             self.group[p] = p as u8;
@@ -240,6 +249,8 @@ pub(super) struct Step {
     /// Where each bit of floor is drawn.
     pub(super) drawn: Vec<u32>,
     pub(super) built: i64,
+    /// The sediment of the step: what wore, where it was laid.
+    pub(super) budget: Budget,
     /// What the plates do now (`forces::look`).
     pub(super) seen: Look,
     pub(super) margin_of: Vec<u8>,
@@ -271,6 +282,7 @@ impl Step {
             made: 0,
             drawn: Vec::new(),
             built: 0,
+            budget: Budget::default(),
             seen: Look {
                 kind: Vec::new(),
                 margin: Vec::new(),

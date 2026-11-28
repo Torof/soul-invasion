@@ -60,6 +60,26 @@ pub const FAILED_RIFT: u8 = 64;
 /// continent broke.
 pub const LIP: u8 = 128;
 
+/// The sediment of a step, each in m of thickness times km² (a
+/// thousandth of a km³): what wore is laid somewhere, all of it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Budget {
+    /// Worn off the continents: their relief, and their piles' roots.
+    pub worn: i64,
+    /// Laid on a continent's dry ground (a hollow that fills, a plain).
+    pub on_land: i64,
+    /// Laid on a continent's crust under the sea (a shelf, an inland sea).
+    pub on_shelf: i64,
+    /// Laid on the ocean's floor.
+    pub on_floor: i64,
+    /// Too thin to lay yet (under a metre over its cell): what waits at
+    /// the end of the step, to be laid with the next.
+    pub waiting: i64,
+    /// Sediment of the floor that became a shelf: the floor it buried up
+    /// to the sea's level is continent from then on.
+    pub to_shelf: i64,
+}
+
 /// What happened, in the journal of a step ([`History::journal`]): the
 /// plates born and ended with the rule that made or ended them, the
 /// rifts, the collisions, the terranes docked, the islands risen.
@@ -436,8 +456,21 @@ pub struct History {
     pub captures: Vec<Capture>,
     /// Plates born of a large part cut off from its plate.
     pub cut_off: usize,
-    /// Per step, the margins built out of silt since the step before, km².
+    /// Per step, the shelves built out since the step before, km²: floor
+    /// that sediment buried up to the sea's level.
     pub built_km2: Vec<i64>,
+    /// Per step, the sea's level, m above the heights' datum: the level
+    /// at which the planet's water ([`Settings::water_m`]) fills the
+    /// basins of the relief as it stands (version 16). The history wears
+    /// and fills against it and the maps draw it: one sea.
+    pub sea_at: Vec<i32>,
+    /// Per step, the sediment lying on each cell, m of thickness.
+    pub silt_at: Vec<Vec<u16>>,
+    /// Per step, when each cell's sediment was laid, millions of years
+    /// ago (the mean of its layers); [`NEVER`] with none.
+    pub laid_at: Vec<Vec<u16>>,
+    /// Per step, the sediment's budget since the step before.
+    pub budget: Vec<Budget>,
     /// The flood basalts.
     pub lips: Vec<Lip>,
     /// The journal: per step, what happened to the plates since the step
@@ -493,6 +526,8 @@ pub(super) fn write(world: &mut World) {
     let out_orogeny = &mut world.out_orogeny;
     let out_thick = &mut world.out_thick;
     let out_high = &mut world.out_high;
+    let out_silt = &mut world.out_silt;
+    let out_laid = &mut world.out_laid;
     let out_cause = &mut world.out_cause;
     let out_shown = &mut world.out_shown;
     let out_id = &mut world.out_id;
@@ -528,6 +563,20 @@ pub(super) fn write(world: &mut World) {
     out_orogeny.push(rock.iter().map(|r| r.orogeny).collect::<Vec<u16>>());
     out_thick.push(rock.iter().map(|r| r.thick).collect::<Vec<u16>>());
     out_high.push(rock.iter().map(|r| r.high).collect::<Vec<i16>>());
+    out_silt.push(rock.iter().map(|r| r.silt).collect::<Vec<u16>>());
+    out_laid.push(
+        rock.iter()
+            .map(|r| {
+                if r.silt == 0 {
+                    NEVER
+                } else {
+                    r.laid.saturating_sub(now_my)
+                }
+            })
+            .collect::<Vec<u16>>(),
+    );
+    world.out_sea.push(world.sea as i32);
+    world.out_budget.push(world.step.budget);
     out_cause.push(rock.iter().map(|r| r.why).collect::<Vec<[i16; CAUSES]>>());
     out_shown.push(shown_now.clone());
     out_id.push(
@@ -659,6 +708,10 @@ pub(crate) fn finish(world: World) -> History {
         out_orogeny,
         out_thick,
         out_high,
+        out_silt,
+        out_laid,
+        out_sea,
+        out_budget,
         out_cause,
         out_shown,
         out_id,
@@ -705,6 +758,10 @@ pub(crate) fn finish(world: World) -> History {
         orogeny_at: out_orogeny,
         thick_at: out_thick,
         high_at: out_high,
+        silt_at: out_silt,
+        laid_at: out_laid,
+        sea_at: out_sea,
+        budget: out_budget,
         cause_at: out_cause,
         shown_at: out_shown,
         id_at: out_id,

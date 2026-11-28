@@ -30,15 +30,18 @@ pub(super) const TERRANE_MY: (i64, i64) = (20, 250);
 pub(super) const OCEAN_START_MY: i64 = 5;
 pub(super) const OCEAN_START_KM_MY: i64 = 25;
 
-/// The starting supercontinent's relief, m: its shore, how high its
-/// heart stands above it and how far inland it gets there (km); an old
-/// range along the axis of an old mountain belt and an old failed
-/// rift's trough, each as wide as its belt.
-pub(super) const SHORE_M: i64 = -300;
-pub(super) const HEART_M: i64 = 1_800;
-pub(super) const HEART_KM: i64 = 2_000;
-pub(super) const OLD_RANGE_M: i64 = 450;
-pub(super) const OLD_TROUGH_M: i64 = -650;
+/// The starting supercontinent's relief comes from its crust (version
+/// 16; until then a ramp from its edge to its heart, and belts at set
+/// heights): its whole, cold crust stands on the platform
+/// ([`PLATFORM_M`]) everywhere, and a belt stands by its thickness. An
+/// old failed rift's crust was thinned to this on its axis, tenths of a
+/// km, and lies as low as that thinning gives once cooled (a seventh
+/// thinner: 750 m). An old mountain belt had a root this much thicker
+/// than a continent when its building ended (as thick again), of which
+/// the model's own wear ([`Settings::mountain_wear`]) has left what its
+/// age says: 3 km under a belt 500 My old, nothing under one of 1,000.
+pub(super) const OLD_RIFT_THICK: u16 = 300;
+pub(super) const OLD_ROOT: i64 = 350;
 
 /// The world as its history starts: the supercontinent, the plates
 /// under it and around it, the ocean floor, the relief and the records
@@ -166,32 +169,30 @@ pub(crate) fn begin<'a>(
         .map(|&p| (fbm3(relief_seed ^ 0xb0, p, &[(300_000, 2), (120_000, 1)]) - 500) as i16)
         .collect();
     let grain: Vec<i16> = (0..CELLS).map(|c| rough[c] + broad[c] / 2).collect();
-    let high0: Vec<i16> = {
-        let around: Vec<(usize, u32)> =
-            (0..CELLS).filter(|&c| !inside[c]).map(|c| (c, 0)).collect();
-        let (inland, _) = sphere.spread(&around, |_, b| inside[b], 2_000);
-        let old = |c: usize| {
-            i64::from(mosaic.belt[c])
-                * match mosaic.kind[c] {
-                    Some(OldKind::Suture) => OLD_RANGE_M,
-                    Some(OldKind::FailedRift) => OLD_TROUGH_M,
-                    _ => 0,
+    // The crust's thickness at the start, and how far below the
+    // platform its thinning lays it (isostasy, as a rift's stretched
+    // crust once cooled).
+    let whole = i64::from(CONTINENT_THICK);
+    let thick0: Vec<u16> = (0..CELLS)
+        .map(|c| {
+            let belt = i64::from(mosaic.belt[c]);
+            (match mosaic.kind[c] {
+                Some(OldKind::Suture) => {
+                    let mut root = OLD_ROOT * 1_000_000;
+                    for _ in 0..i64::from(mosaic.worked_my[c]) / s.step_my.max(1) {
+                        root = root * (1000 - s.mountain_wear) / 1000;
+                    }
+                    whole + root / 1_000_000 * belt / 1000
                 }
-                / 1000
-        };
-        let raw: Vec<i64> = (0..CELLS)
-            .map(|c| {
-                if inside[c] {
-                    SHORE_M + i64::from(inland[c]).min(HEART_KM) * HEART_M / HEART_KM + old(c)
-                } else {
-                    0
+                Some(OldKind::FailedRift) => {
+                    whole - (whole - i64::from(OLD_RIFT_THICK)) * belt / 1000
                 }
-            })
-            .collect();
-        (0..CELLS)
-            .map(|c| if inside[c] { lift(0, raw[c]) } else { 0 })
-            .collect()
-    };
+                _ => whole,
+            }) as u16
+        })
+        .collect();
+    let thinned = |c: usize| (whole - i64::from(thick0[c])).max(0) * ISOSTASY_M / 10;
+
     // Records at the start.
     let mut rock: Vec<Rock> = (0..CELLS)
         .map(|c| {
@@ -216,11 +217,13 @@ pub(crate) fn begin<'a>(
                     born_my: (total_my + i64::from(mosaic.age_my[c])) as u16,
                     orogeny,
                     home: c as u32,
-                    thick: CONTINENT_THICK,
-                    high: high0[c],
+                    thick: thick0[c],
+                    high: lift(0, PLATFORM_M - thinned(c)),
                     cool: 0,
-                    sunk: 0,
+                    sunk: lift(0, thinned(c)),
                     sag: 0,
+                    silt: 0,
+                    laid: NEVER,
                     why: [0; CAUSES],
                 }
             } else {
@@ -240,6 +243,8 @@ pub(crate) fn begin<'a>(
                     cool: 0,
                     sunk: 0,
                     sag: 0,
+                    silt: 0,
+                    laid: NEVER,
                     why: [0; CAUSES],
                 }
             }
@@ -355,7 +360,6 @@ pub(crate) fn begin<'a>(
     let cut_off = 0;
     let built_km2 = vec![0];
     let mut lips: Vec<Lip> = Vec::new();
-    let silt = [0_i64; MAXP];
     // Collisions in progress: the step of first contact (+1), the mean
     // closing seen last, µm a year, and the front's cells.
     let contact = vec![[0_usize; MAXP]; MAXP];
@@ -522,7 +526,13 @@ pub(crate) fn begin<'a>(
         cut_off,
         built_km2,
         lips,
-        silt,
+        sea: 0,
+        wet: vec![false; CELLS],
+        dust: vec![0; CELLS],
+        out_silt: Vec::with_capacity(s.steps + 1),
+        out_laid: Vec::with_capacity(s.steps + 1),
+        out_sea: Vec::with_capacity(s.steps + 1),
+        out_budget: Vec::with_capacity(s.steps + 1),
         contact,
         troughs,
         pulled: [0; MAXP],

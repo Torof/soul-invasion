@@ -14,9 +14,20 @@ pub struct Settings {
     /// The planet's radius, km. Fixed at the Earth's for now: the grid and
     /// the zoom are measured on it.
     pub radius_km: i64,
-    /// Share left dry by the sea today, per mille (130: an ice-free planet,
-    /// its seas high; the lead's 27 November).
-    pub land_per_mille: i64,
+    /// The planet's water: the depth it would have spread over the whole
+    /// sphere, m (version 16; the Earth's: about 2,600, with two fifths
+    /// of its sphere in continental crust against a quarter here). It
+    /// never changes: at each step the sea stands at the level at which
+    /// this volume fills the basins of the relief as it is
+    /// (`wear::level`), and the share of land is what comes out. 3,650:
+    /// the supercontinent of the start stands whole out of a sea some
+    /// 800 m below its plains; as its pieces part the ocean's floor
+    /// grows younger and shallower and the sea rises some 500 m, to
+    /// stand today 200 to 250 m below the platform, with about a quarter
+    /// of the continents' crust under it (the Earth: a quarter to 30 %)
+    /// and a fifth of the sphere dry. 150 m of water more or less moves
+    /// the sea by some 130 m.
+    pub water_m: i64,
     /// Share of the surface carried by continental crust, per mille: the
     /// supercontinent's size (the land, plus the shelves).
     pub crust_per_mille: i64,
@@ -113,17 +124,13 @@ pub struct Settings {
     /// its root lasts some six times longer than its relief alone
     /// would: it halves in about 140 My (100 until version 14: 33 My).
     pub mountain_wear: i64,
-    /// The sea follows the ocean floor's age: of each metre the floor
-    /// stood higher than today's on average (a younger floor), the sea
-    /// stood this much higher, per mille.
-    pub sea_follows_floor: i64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             radius_km: RADIUS_KM,
-            land_per_mille: 130,
+            water_m: 3_650,
             crust_per_mille: 240,
             supercontinent_warp: 1000,
             supercontinent_fray: 1000,
@@ -151,7 +158,6 @@ impl Default for Settings {
             terrane_cells: (1, 5),
             hotspots: (14, 20),
             mountain_wear: 25,
-            sea_follows_floor: 150,
         }
     }
 }

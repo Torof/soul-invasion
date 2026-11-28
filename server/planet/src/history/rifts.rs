@@ -400,6 +400,8 @@ fn stretch(sphere: &Sphere, land: &mut Land, sources: &[(usize, i64)], record: u
             continue;
         }
         r.thick = (was - thin) as u16;
+        // Its sediment stretches with it.
+        r.silt = (i64::from(r.silt) * (was - thin) / was) as u16;
         c.area = (i64::from(c.area) * was / (was - thin)) as u32;
         let drop = thin * STRETCH_M / (whole - least_thick);
         r.rise(-drop, BY_STRETCH);
@@ -1062,6 +1064,8 @@ mod tests {
             cool: 0,
             sunk: 0,
             sag: 0,
+            silt: 0,
+            laid: NEVER,
             why: [0; CAUSES],
         }
     }

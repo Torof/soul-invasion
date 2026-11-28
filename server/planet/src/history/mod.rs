@@ -132,7 +132,6 @@ pub(super) const P_TERRANE: u64 = 0x0c50_0106;
 pub(super) const P_AGE: u64 = 0x0c50_0107;
 pub(super) const P_OCEAN: u64 = 0x0c50_0108;
 pub(super) const P_ARC: u64 = 0x0c50_010a;
-pub(super) const P_SILT: u64 = 0x0c50_010c;
 
 /// The history of the planet born from `seed`.
 pub fn run(seed: u64, s: &Settings, sphere: &Sphere, mosaic: &Mosaic) -> History {

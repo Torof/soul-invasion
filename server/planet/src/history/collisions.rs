@@ -196,7 +196,8 @@ pub(super) fn meet(world: &mut World) {
             .into_iter()
             .min_by_key(|&k| (land.cells[k].rock.thick, k != j, land.cells[k].id))
             .unwrap_or(j);
-        let vol = i64::from(me.rock.thick) * i64::from(me.area);
+        // (The sediment on it is crust like the rest once piled.)
+        let vol = (i64::from(me.rock.thick) + i64::from(me.rock.silt) / 100) * i64::from(me.area);
         let full = i64::from(land.cells[to].area).max(1);
         let up = &mut land.cells[to].rock;
         up.thick = (i64::from(up.thick) + vol / full).min(i64::from(u16::MAX)) as u16;

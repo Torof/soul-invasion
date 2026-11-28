@@ -292,7 +292,12 @@ fn history_json(world: &Planet) -> serde_json::Value {
         })
         .collect();
     speeds.sort_unstable_by_key(|&(a, _)| std::cmp::Reverse(a));
-    json!({"plates_at_start": h.plates_at_start.1, "continent_plates_at_start": h.plates_at_start.0,
+    // The single sea (version 16): its level at each step, and the land
+    // that comes out at the start and today, per mille of the sphere.
+    let land = |w: &Planet| w.lands.iter().map(|l| l.area_km2).sum::<i64>() * 1000 / 510_064_472;
+    json!({"sea_m": h.sea_at, "water_m": world.settings.water_m,
+        "land_per_mille": [land(&world.at_step(0)), land(world)],
+        "plates_at_start": h.plates_at_start.1, "continent_plates_at_start": h.plates_at_start.0,
         "plates_at_end": alive(last), "terranes": h.terranes,
         "welds": h.welds.iter().map(|w| json!([w.my, w.kept, w.absorbed, w.kept_km2,
             w.absorbed_km2, w.parted])).collect::<Vec<_>>(),
@@ -504,7 +509,7 @@ fn metrics(world: &Planet) -> serde_json::Value {
             before = now;
         }
         let land: i64 = (0..CELLS)
-            .filter(|&c| before.elevation[c] > 0)
+            .filter(|&c| before.dry(c))
             .map(|c| i64::from(s.area_km2[c]))
             .sum();
         land_share.push(land * 1000 / 510_064_472);

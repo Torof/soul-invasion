@@ -26,6 +26,7 @@
 //! seconds a planet takes while the other cores work too; for a planet's
 //! time alone, `PLANET_THREADS=1`.
 
+#![recursion_limit = "256"]
 #![allow(
     clippy::print_stdout,
     clippy::cast_precision_loss,
@@ -218,8 +219,15 @@ struct Count {
     born_km2: u64,
     // Version 15. Counts added over the planets ([`STOPPED`]...), and
     // lists of a value a planet or an event ([`LASTED`]...).
-    tally: [u64; 6],
-    lists: [Vec<i64>; 10],
+    tally: [u64; 22],
+    // Shelves built out, km2.
+    built: u64,
+    // What moves the sea, at the five quarters of the history, a value
+    // a planet: how far the ocean floor has sunk below a ridge's crest
+    // on average, m (0 to 4), and the ocean floor's share of the
+    // sphere, per mille (5 to 9).
+    causes: [Vec<i64>; 10],
+    lists: [Vec<i64>; 28],
 }
 
 /// [`Count::tally`]: collisions their pile stopped, collisions still
@@ -250,6 +258,47 @@ const PULL: usize = 7;
 const THICKEST: usize = 8;
 /// How long each collision between two continents lasted, My.
 const LASTED_BIG: usize = 9;
+/// Version 16, [`Count::lists`], a value a planet. The land, per mille
+/// of the sphere: at the start, the mean of the steps, today, the least
+/// and the most of its history. The sea's level, m above the datum: at
+/// the five quarters of the history ([`SEA_Q`] and the four after), its
+/// lowest and highest. Today's sediment on the continents' crust: the
+/// median and the most of the cells that carry any, m, and their share,
+/// per mille; the most on the ocean floor, m. The shelf's width today,
+/// km. The water the map holds today, m over the whole sphere.
+const LAND_START: usize = 10;
+const LAND_MEAN: usize = 11;
+const LAND_TODAY: usize = 12;
+const LAND_LEAST: usize = 13;
+const LAND_MOST: usize = 14;
+const SEA_Q: usize = 15;
+const SEA_LOW: usize = 20;
+const SEA_HIGH: usize = 21;
+const SILT_MEDIAN: usize = 22;
+const SILT_MOST: usize = 23;
+const SILT_SHARE: usize = 24;
+const SILT_FLOOR: usize = 25;
+const SHELF_KM: usize = 26;
+const MAP_WATER: usize = 27;
+/// [`Count::tally`], version 16. The sediment, km3: worn, laid on dry
+/// land, on crust under the sea, on the ocean floor, waiting at the
+/// end, floor become shelf; standing today on the floor and on the
+/// continents. Cells of crust below the sea's level: reached by the sea
+/// (at the start, through the history, today) and in closed basins (the
+/// same three).
+const WORN: usize = 6;
+const ON_LAND: usize = 7;
+const ON_SHELF: usize = 8;
+const ON_FLOOR: usize = 9;
+const WAITING: usize = 10;
+const TO_SHELF: usize = 11;
+const FLOOR_NOW: usize = 12;
+const CRUST_NOW: usize = 13;
+const REACHED: usize = 14;
+const CLOSED: usize = 17;
+/// Inland water linked to the ocean and closed basins today, km2.
+const LINKED_NOW: usize = 20;
+const HOLLOW_NOW: usize = 21;
 /// A plate with less continent than this, km2, carries a crumb.
 const CRUMB_KM2: i64 = 1_000_000;
 /// A range still stands where the crust is thicker than this, tenths of
@@ -322,7 +371,13 @@ impl Count {
             lists,
             born_step,
             born_km2,
+            built,
+            causes,
         } = o;
+        self.built += built;
+        for (mine, theirs) in self.causes.iter_mut().zip(causes) {
+            mine.extend(theirs);
+        }
         self.steps += steps;
         self.planets += planets;
         self.followed += followed;
@@ -407,6 +462,7 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
     let mut volume0 = 0_i64;
     let mut sea_before = world.at_step(0).sea_rise_m;
     let mut moving: Option<i64> = None;
+    let mut lands: Vec<i64> = Vec::new();
     let mut first_t = [usize::MAX; MAXP];
     let mut last_t = [0_usize; MAXP];
     for t in 0..=last {
@@ -416,7 +472,7 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
         let vol: i64 = pieces
             .iter()
             .flat_map(|p| &p.tiles)
-            .map(|x| i64::from(x.thick) * i64::from(x.area_km2))
+            .map(|x| (i64::from(x.thick) * 100 + i64::from(x.silt)) * i64::from(x.area_km2))
             .sum();
         if t == 0 {
             volume0 = vol;
@@ -465,11 +521,75 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
         let wet = (0..CELLS)
             .filter(|&c| h.class[t][c] != OCEAN && !now.dry(c))
             .count() as u64;
+        let below = |basin: bool| {
+            (0..CELLS)
+                .filter(|&c| {
+                    h.class[t][c] != OCEAN && now.elevation[c] <= 0 && now.basin[c] == basin
+                })
+                .count() as u64
+        };
         for (k, counted) in [t == 0, true, t == last].into_iter().enumerate() {
             if counted {
                 n.crust[k] += crust;
                 n.wet[k] += wet;
+                n.tally[REACHED + k] += below(false);
+                n.tally[CLOSED + k] += below(true);
             }
+        }
+        // The land and the sea (version 16): the share of land is a
+        // result, the sea's level follows the basins.
+        let whole: i64 = sphere.area_km2.iter().map(|&a| i64::from(a)).sum();
+        let land = now.lands.iter().map(|l| l.area_km2).sum::<i64>() * 1000 / whole;
+        lands.push(land);
+        let b = h.budget[t];
+        for (k, v) in [b.worn, b.on_land, b.on_shelf, b.on_floor, 0, b.to_shelf]
+            .into_iter()
+            .enumerate()
+        {
+            n.tally[WORN + k] += (v / 1000) as u64;
+        }
+        for k in 0..5 {
+            if t == last * k / 4 {
+                n.lists[SEA_Q + k].push(now.sea);
+                let (mut sunk, mut km2) = (0_i64, 0_i64);
+                for c in (0..CELLS).filter(|&c| h.class[t][c] == OCEAN) {
+                    let a = i64::from(sphere.area_km2[c]);
+                    sunk += history::sinking(i64::from(h.age[t][c])) * a;
+                    km2 += a;
+                }
+                n.causes[k].push(sunk / km2.max(1));
+                n.causes[5 + k].push(km2 * 1000 / whole);
+            }
+        }
+        if t == last {
+            n.tally[WAITING] += (b.waiting / 1000) as u64;
+            let mut silt: Vec<i64> = (0..CELLS)
+                .filter(|&c| h.class[t][c] != OCEAN && h.silt_at[t][c] > 0)
+                .map(|c| i64::from(h.silt_at[t][c]))
+                .collect();
+            silt.sort_unstable();
+            n.lists[SILT_MEDIAN].push(silt.get(silt.len() / 2).copied().unwrap_or(0));
+            n.lists[SILT_MOST].push(silt.last().copied().unwrap_or(0));
+            n.lists[SILT_SHARE].push((silt.len() as u64 * 1000 / crust.max(1)) as i64);
+            let mut on_floor = 0_i64;
+            let mut most = 0_i64;
+            for c in (0..CELLS).filter(|&c| h.class[t][c] == OCEAN) {
+                let m = i64::from(h.silt_at[t][c]);
+                on_floor += m * i64::from(sphere.area_km2[c]);
+                most = most.max(m);
+            }
+            n.lists[SILT_FLOOR].push(most);
+            n.tally[FLOOR_NOW] += (on_floor / 1000) as u64;
+            n.tally[CRUST_NOW] += pieces
+                .iter()
+                .flat_map(|p| &p.tiles)
+                .map(|x| u64::from(x.silt) * u64::from(x.area_km2) / 1000)
+                .sum::<u64>();
+            let held: i64 = (0..CELLS)
+                .filter(|&c| now.elevation[c] < 0 && !now.basin[c])
+                .map(|c| -i64::from(now.elevation[c]) * i64::from(sphere.area_km2[c]))
+                .sum();
+            n.lists[MAP_WATER].push(held / whole);
         }
         if t == last {
             // Today's ocean floor and today's relief.
@@ -540,6 +660,27 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
             if water[c] == 2 {
                 n.linked_km2 += u64::from(sphere.area_km2[c]);
             }
+            if t == last && (water[c] == 1 || water[c] == 2) {
+                n.tally[if water[c] == 2 {
+                    LINKED_NOW
+                } else {
+                    HOLLOW_NOW
+                }] += u64::from(sphere.area_km2[c]);
+            }
+        }
+        if t == last {
+            // The shelf's width: from each dry cell of crust on the
+            // sea's shore to the ocean's floor.
+            let mut wide: Vec<i64> = (0..CELLS)
+                .filter(|&c| {
+                    h.class[t][c] != OCEAN
+                        && now.dry(c)
+                        && links[c].iter().any(|&(m, _)| !now.dry(m as usize))
+                })
+                .map(|c| i64::from(from_ocean[c].min(2_000)))
+                .collect();
+            wide.sort_unstable();
+            n.lists[SHELF_KM].push(wide.get(wide.len() / 2).copied().unwrap_or(0));
         }
         // Every cell of crust, followed by its name in its piece.
         let d_sea = now.sea_rise_m - sea_before;
@@ -565,7 +706,7 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
                     far: now.near[cell].0 > FAR_KM,
                     under: x.under,
                     high: i64::from(x.high),
-                    pile: (i64::from(x.thick) - 350).max(0) * 10,
+                    pile: (i64::from(x.thick) - 350).max(0) * history::ISOSTASY_M / 10,
                     lip: i64::from(x.margins & history::LIP != 0) * 350,
                     pos,
                     own: x.own,
@@ -666,6 +807,14 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
             n.lives[[1, 3, 9].iter().filter(|&&k| life > k).count()] += 1;
         }
     }
+    n.built += h.built_km2.iter().sum::<i64>() as u64;
+    n.lists[LAND_START].push(lands[0]);
+    n.lists[LAND_MEAN].push(lands.iter().sum::<i64>() / lands.len() as i64);
+    n.lists[LAND_TODAY].push(lands[last]);
+    n.lists[LAND_LEAST].push(lands.iter().copied().min().unwrap_or(0));
+    n.lists[LAND_MOST].push(lands.iter().copied().max().unwrap_or(0));
+    n.lists[SEA_LOW].push(h.sea_at.iter().map(|&v| i64::from(v)).min().unwrap_or(0));
+    n.lists[SEA_HIGH].push(h.sea_at.iter().map(|&v| i64::from(v)).max().unwrap_or(0));
     // The rigid pieces.
     for (k, span) in [1_usize, 5, 20].into_iter().enumerate() {
         for t in 0..=last.saturating_sub(span) {
@@ -877,6 +1026,69 @@ fn main() {
                 pc(n.wet[1], n.crust[1]),
                 pc(n.wet[2], n.crust[2]),
             ],
+        },
+        "12 the sea and the sediment": {
+            "the planet's water, m over the whole sphere (a setting)": settings.water_m,
+            "the water the map holds today, m over the whole sphere (the trenches' deeps and the hotspots' chains are drawn, not counted): least, median, most": spread(&mut n.lists[MAP_WATER]),
+            "land, per mille of the sphere, at the start: least, median, most": spread(&mut n.lists[LAND_START]),
+            "land, the mean of a planet's steps: least, median, most": spread(&mut n.lists[LAND_MEAN]),
+            "land today: least, median, most": spread(&mut n.lists[LAND_TODAY]),
+            "the least land a planet had in its history: least, median, most": spread(&mut n.lists[LAND_LEAST]),
+            "the most land a planet had in its history: least, median, most": spread(&mut n.lists[LAND_MOST]),
+            "the sea's level, m above the datum, at steps 0, 1/4, 1/2, 3/4 of the history and today: each least, median, most": [
+                spread(&mut n.lists[SEA_Q]),
+                spread(&mut n.lists[SEA_Q + 1]),
+                spread(&mut n.lists[SEA_Q + 2]),
+                spread(&mut n.lists[SEA_Q + 3]),
+                spread(&mut n.lists[SEA_Q + 4]),
+            ],
+            "what moves it. How far the ocean floor has sunk below a ridge's crest on average, m, at the same steps: each least, median, most": [
+                spread(&mut n.causes[0]),
+                spread(&mut n.causes[1]),
+                spread(&mut n.causes[2]),
+                spread(&mut n.causes[3]),
+                spread(&mut n.causes[4]),
+            ],
+            "the ocean floor's share of the sphere, per mille, at the same steps: each least, median, most": [
+                spread(&mut n.causes[5]),
+                spread(&mut n.causes[6]),
+                spread(&mut n.causes[7]),
+                spread(&mut n.causes[8]),
+                spread(&mut n.causes[9]),
+            ],
+            "a planet's lowest sea: least, median, most": spread(&mut n.lists[SEA_LOW]),
+            "a planet's highest sea: least, median, most": spread(&mut n.lists[SEA_HIGH]),
+            "crust below the sea's level and reached by the sea, % of the crust's cells: at the start, through the history, today": [
+                pc(n.tally[REACHED], n.crust[0]),
+                pc(n.tally[REACHED + 1], n.crust[1]),
+                pc(n.tally[REACHED + 2], n.crust[2]),
+            ],
+            "crust below the sea's level in a closed basin (not sea), % of the crust's cells: the same three": [
+                pc(n.tally[CLOSED], n.crust[0]),
+                pc(n.tally[CLOSED + 1], n.crust[1]),
+                pc(n.tally[CLOSED + 2], n.crust[2]),
+            ],
+            "today: inland water the sea reaches (over 300 km from the ocean's floor), k km2 per planet": per(n.tally[LINKED_NOW] / 1000, n.planets),
+            "today: closed basins, k km2 per planet": per(n.tally[HOLLOW_NOW] / 1000, n.planets),
+            "the shelf's width today, km (from a dry shore to the ocean's floor, each planet's median): least, median, most": spread(&mut n.lists[SHELF_KM]),
+            "worn off the continents, k km3 per step and planet": per(n.tally[WORN] / 1000, n.steps),
+            "laid on dry land (hollows, plains), % of the worn": pc(n.tally[ON_LAND], n.tally[WORN]),
+            "laid on crust under the sea (shelves, inland seas), % of the worn": pc(n.tally[ON_SHELF], n.tally[WORN]),
+            "laid on the ocean floor, % of the worn": pc(n.tally[ON_FLOOR], n.tally[WORN]),
+            "laid or waiting to be laid, per mille of the worn (must be 1000)": per(
+                1000 * (n.tally[ON_LAND] + n.tally[ON_SHELF] + n.tally[ON_FLOOR] + n.tally[WAITING]),
+                n.tally[WORN],
+            ),
+            "of the sediment laid on the ocean floor: % still on it today, % become shelf (floor buried to the sea's level), the rest gone with the floor (sunk at a trench, or covered)": [
+                pc(n.tally[FLOOR_NOW], n.tally[ON_FLOOR]),
+                pc(n.tally[TO_SHELF], n.tally[ON_FLOOR]),
+            ],
+            "sediment on the continents today, k km3 per planet": per(n.tally[CRUST_NOW] / 1000, n.planets),
+            "cells of crust that carry sediment today, per mille: least, median, most": spread(&mut n.lists[SILT_SHARE]),
+            "its thickness there, m, each planet's median: least, median, most": spread(&mut n.lists[SILT_MEDIAN]),
+            "the thickest sediment on a continent today, m: least, median, most": spread(&mut n.lists[SILT_MOST]),
+            "the thickest sediment on the ocean floor today, m: least, median, most": spread(&mut n.lists[SILT_FLOOR]),
+            "shelves built out, k km2 per planet": per(n.built / 1000, n.planets),
         },
         "7 rifts, per planet": {
             "started (a trough)": per(n.rifts[0], n.planets),

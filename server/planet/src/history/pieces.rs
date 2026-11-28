@@ -28,6 +28,8 @@ pub struct Tile {
     pub thick: u16,
     /// The height it carries, m (as [`History::high_at`]).
     pub high: i16,
+    /// The sediment lying on it, m of thickness.
+    pub silt: u16,
     /// Where it was at the start, or was born: its relief's grain.
     pub home: u32,
     /// The area it stands for, km².
@@ -603,6 +605,7 @@ impl Land {
                 margins: c.rock.margins,
                 thick: c.rock.thick,
                 high: c.rock.high,
+                silt: c.rock.silt,
                 home: c.rock.home,
                 area_km2: c.area,
                 why: c.rock.why,

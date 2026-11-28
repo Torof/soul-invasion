@@ -265,15 +265,7 @@ fn main() {
     let grid = clock.elapsed();
     let reports = par::par_map(&chosen, par::threads(), |&&(name, what, write)| {
         let clock = Instant::now();
-        let mut written = write(&sphere);
-        // The sea leaves the lower half of the scene's continents under
-        // water (a shelf), whatever their size.
-        let crust: i64 = (0..CELLS)
-            .filter(|&c| written.scene.continent[c])
-            .map(|c| i64::from(sphere.area_km2[c]))
-            .sum();
-        let whole: i64 = sphere.area_km2.iter().map(|&a| i64::from(a)).sum();
-        written.settings.land_per_mille = crust * 550 / whole;
+        let written = write(&sphere);
         let h = history::run_scene(1, &written.settings, &sphere, &written.scene);
         let ran = clock.elapsed();
         let path = out.join(format!("banc-{name}.png"));

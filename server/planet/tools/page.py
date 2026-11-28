@@ -52,7 +52,8 @@ def texts(numbers, version):
         f"≈ {sp(lands[0]['span_km'])} km d'un bout à l'autre. Plaques : {len(plates)}, la plus grande "
         f"{round(max(plates) / 1e6)} M km².</p>"
         "<p>Les plaques sont nées des rifts (vue « histoire »). Les taches couleur sable sont des cuvettes sous le niveau "
-        "de la mer sans lien avec l'océan : des terres. Les chiffres de cette graine : "
+        "de la mer sans lien avec l'océan : des terres. Couche « Sédiments » : ce que l'érosion a pris aux hauteurs et "
+        "déposé plus bas. Les chiffres de cette graine : "
         f"<code>donnees-v{version}/graine-{seed}.json</code>.</p>"
     )
     # A rift's row: when it began, its plate, the plate born, the continent's
@@ -75,8 +76,15 @@ def texts(numbers, version):
             f" Le premier fossé (trait rouge) apparaît il y a {first[0]} Ma, s'allonge, et la plaque se coupe il y a "
             f"{first[5]} Ma : {first[0] - first[5]} Ma de fossé avant la mer."
         )
+    sea, land = h["sea_m"], h["land_per_mille"]
     histoire += (
         f" {len(h['collisions'])} collisions, {len(h['welds'])} soudures.</p>"
+        f"<p><b>Une seule mer.</b> La planète a une quantité d'eau fixe ({sp(h['water_m'])} m si on l'étalait sur toute "
+        "la sphère) ; à chaque étape la mer est au niveau où cette eau remplit les bassins du relief tel qu'il est, et "
+        "les cartes montrent ce niveau-là. La part de terres n'est plus imposée : c'est un résultat. Ici : terres "
+        f"{fr(land[0] / 10)} % de la sphère au début, {fr(land[1] / 10)} % aujourd'hui ; la mer monte de "
+        f"{sp(sea[-1] - sea[0])} m en tout (le fond des océans rajeunit et remonte quand le supercontinent se "
+        "disperse).</p>"
         "<p>Les taches couleur sable sont des cuvettes sous le niveau de la mer que l'océan n'atteint pas : des terres.</p>"
     )
     return planete, histoire
