@@ -1472,15 +1472,26 @@ pub struct Hands {
     #[serde(default = "Hands::default_loose_g_per_litre")]
     pub loose_g_per_litre: u32,
     /// The gestures that gave nothing, or broke the thing, a body
-    /// remembers, at most (D57, amended 27 November 2026): the oldest
-    /// goes when one more comes. 0: none remembered.
+    /// remembers, at most (D57, amended 27 November 2026). Since 28
+    /// November 2026 (third round) this memory lasts and the value is a
+    /// guard no life reaches: beyond it the oldest goes. 0: none
+    /// remembered.
     #[serde(default = "Hands::default_failures_kept")]
     pub failures_kept: u32,
     /// The deeds a body remembers having seen give a thing in its own
     /// hands, without keeping them, at most (D57, amended 28 November
-    /// 2026: seen is not kept): the oldest goes when one more comes.
+    /// 2026: seen is not kept). Since the third round of that day this
+    /// memory lasts and the value is a guard no life reaches: beyond it
+    /// the oldest goes.
     #[serde(default = "Hands::default_seen_kept")]
     pub seen_kept: u32,
+    /// The chance, in per mille a journée, that a body is ready to take
+    /// up again one deed whose result it knows and that brought it
+    /// nothing (D57, amended 28 November 2026, third round: "one can
+    /// take it up again later"), drawn from the seed for that body, that
+    /// journée and that deed. 0: never.
+    #[serde(default = "Hands::default_again_permille")]
+    pub again_permille: u32,
     /// The things on which a deed done for what it gives did not give it
     /// into its hands that a body remembers, at most (D57, amended 28
     /// November 2026: "told bark, here it gave no bark"): the oldest goes
@@ -1713,6 +1724,7 @@ impl Hands {
             loose_g_per_litre: Self::default_loose_g_per_litre(),
             failures_kept: Self::default_failures_kept(),
             seen_kept: Self::default_seen_kept(),
+            again_permille: Self::default_again_permille(),
             amiss_kept: Self::default_amiss_kept(),
             laid_kept: Self::default_laid_kept(),
             edge_seen: Self::default_edge_seen(),
@@ -1730,11 +1742,15 @@ impl Hands {
     }
 
     fn default_failures_kept() -> u32 {
-        16
+        1024
     }
 
     fn default_seen_kept() -> u32 {
-        32
+        1024
+    }
+
+    fn default_again_permille() -> u32 {
+        10
     }
 
     fn default_amiss_kept() -> u32 {
@@ -1776,13 +1792,14 @@ impl Hands {
             || self.edge_seen > 10
             || self.supple_seen > 10
             || !(1..=2000).contains(&self.loose_g_per_litre)
-            || self.failures_kept > 64
-            || self.seen_kept > 64
+            || self.failures_kept > 4096
+            || self.seen_kept > 4096
+            || self.again_permille > 1000
             || self.amiss_kept > 64
             || self.laid_kept > 64
         {
             return Err(ContentError::Needs(
-                "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000, failures_kept, seen_kept, amiss_kept and laid_kept at most 64",
+                "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000, failures_kept and seen_kept at most 4096, again_permille at most 1000, amiss_kept and laid_kept at most 64",
             ));
         }
         if let Some(trees) = &self.trees {

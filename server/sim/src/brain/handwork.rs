@@ -41,6 +41,20 @@
 //! hold beside the gesture's own things is laid at its feet, a thing a
 //! thought ([`act_on`]); its hands idle again, it takes up what it still
 //! wants of them, by what it prefers ([`take_back`]).
+//!
+//! Amended the same day, third round (the project lead: "one tries, and
+//! if it does not work and brings nothing, one stops. One can take it up
+//! again later... I cut wood, for now it is useless, I stop. Three weeks
+//! later, a year later, fire is found, and fire needs wood, and I know
+//! that cutting a tree gives wood: it is in my memory"). **A known
+//! result is not tried again**: a deed whose result a body knows from
+//! before the trial under way, and that it does not keep, is no aim of a
+//! tale heard and is set aside by the draw ([`Handwork::knows`],
+//! [`sift`], [`Plausible::seen`]), but for a rare chance to take it up
+//! again ([`Again`]). **The memory of results lasts**: what gave a thing
+//! ([`Handwork::seen`]) and what gave nothing ([`Handwork::failed`]) are
+//! one entry a deed, never pushed out by a newer one in a life. **The
+//! link by what a deed gives** works from that memory ([`wanted`]).
 
 use crate::content::{Content, Folded, Form};
 use crate::r#gen::scatter::{self, purpose};
@@ -308,18 +322,26 @@ pub struct Handwork {
     /// heard names (D57, amended 25 November 2026).
     pub(super) fetch: Option<ItemId>,
     /// The gestures that gave nothing or broke the thing in its hands
-    /// (D57, amended 27 November 2026), the oldest first, at most the
-    /// content's `failures_kept`: not drawn again while remembered.
+    /// (D57, amended 27 November 2026), the oldest first: "this gives
+    /// nothing". A result known, as lasting as [`Handwork::seen`]
+    /// (amended 28 November 2026, third round): not drawn nor aimed at
+    /// again, but for the rare chance ([`Again`]). A deed is in one of
+    /// the two lists at most; the content's `failures_kept` is a guard
+    /// no life reaches.
     pub failed: Vec<Deed>,
     /// The deeds a kept trial of its own left it: something came of them
     /// that served.
     pub kept: Vec<Deed>,
     /// The deeds it saw give a thing in its own hands and does not keep
     /// (D57, amended 28 November 2026: seen is not kept): a memory,
-    /// "this gives that", the oldest first, at most the content's
-    /// `seen_kept`. Its hands do not practise them; one is done again
-    /// only when a deed it keeps, or one its trial is after, needs what
-    /// it gives ([`wanted`]).
+    /// "this gives that, and it brought me nothing", the oldest first.
+    /// It lasts (third round, the project lead: "it is in my memory a
+    /// year later"): one entry a deed, six bytes, never pushed out by a
+    /// newer one in a life; the content's `seen_kept` is a guard no life
+    /// reaches. Its hands do not practise them, and one seen before the
+    /// trial under way is neither drawn nor aimed at again, but for the
+    /// rare chance ([`Again`]); it is done again when a deed it keeps,
+    /// or one its trial is after, needs what it gives ([`wanted`]).
     pub seen: Vec<Deed>,
     /// Of them, and of the deeds it keeps, those that gave a thing in
     /// the trial of its hands under way: what the trial's end may keep.
@@ -371,10 +393,23 @@ impl Handwork {
         self.failed.contains(&deed)
     }
 
-    /// `deed` gave nothing or broke the thing: remembered, the oldest
-    /// forgotten beyond `most`.
+    /// Whether it knows what `deed` gives from before the trial under
+    /// way, and does not keep it (D57, amended 28 November 2026, third
+    /// round: a known result is not tried again): it saw it give a thing
+    /// that brought it nothing, or give nothing. A deed that gave a
+    /// thing in the trial under way is not yet judged: that trial's end
+    /// says whether it served.
+    #[must_use]
+    pub fn knows(&self, deed: Deed) -> bool {
+        self.failed(deed) || (self.saw(deed) && !self.trial_seen.contains(&deed))
+    }
+
+    /// `deed` gave nothing or broke the thing: remembered, unless it
+    /// remembers that it gives a thing (one result a deed: that one
+    /// failed for the moment's sake). `most` is a guard, the oldest
+    /// forgotten beyond it.
     fn fail(&mut self, deed: Deed, most: u32) {
-        if self.failed.contains(&deed) {
+        if self.failed.contains(&deed) || self.seen.contains(&deed) {
             return;
         }
         self.failed.push(deed);
@@ -392,10 +427,12 @@ impl Handwork {
         self.seen.contains(&deed)
     }
 
-    /// `deed` gave a thing in a trial of its hands: remembered as seen,
-    /// the oldest forgotten beyond `most`, and noted of the trial under
-    /// way. True when it is the first time in this trial.
+    /// `deed` gave a thing in a trial of its hands: remembered as seen
+    /// (`most` is a guard, the oldest forgotten beyond it), no longer as
+    /// a gesture that gives nothing, and noted of the trial under way.
+    /// True when it is the first time in this trial.
     pub(super) fn see(&mut self, deed: Deed, most: u32) -> bool {
+        self.failed.retain(|d| *d != deed);
         if !self.seen.contains(&deed) {
             self.seen.push(deed);
             let most = usize::try_from(most).unwrap_or(usize::MAX);
@@ -560,6 +597,15 @@ pub(super) fn aim_at(mind: &mut Mind, deeds: &[(Deed, u32)], day: u64) {
     mind.handwork.drop_aim();
     for &(deed, _) in deeds {
         mind.handwork.aim.add(deed);
+    }
+    note_heard(mind, deeds, day);
+}
+
+/// The heard `deeds` are noted as weighed by `mind` on `day`, tried or
+/// set aside as known: the extra chance does not come back to them until
+/// they are heard again.
+pub(super) fn note_heard(mind: &mut Mind, deeds: &[(Deed, u32)], day: u64) {
+    for &(deed, _) in deeds {
         match mind
             .handwork
             .tried_heard
@@ -570,6 +616,105 @@ pub(super) fn aim_at(mind: &mut Mind, deeds: &[(Deed, u32)], day: u64) {
             None => mind.handwork.tried_heard.push((deed, day)),
         }
     }
+}
+
+/// The rare chance that a body takes up again, on one journée, a deed
+/// whose result it knows and that brought it nothing (D57, amended 28
+/// November 2026, third round, the project lead: "one tries, and if it
+/// does not work and brings nothing, one stops. One can take it up again
+/// later"): the content's `again_permille`, drawn from the run's seed for
+/// that body, that journée and that deed, so the same all that journée
+/// whether the deed is heard at the fire or met in a draw.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Again {
+    seed: u64,
+    body: BodyId,
+    day: u64,
+    permille: u32,
+}
+
+impl Again {
+    /// The chance of `body` on `day`.
+    pub(super) fn of(rules: &Content, seed: u64, body: BodyId, day: u64) -> Self {
+        Self {
+            seed,
+            body,
+            day,
+            permille: rules.needs.hands.again_permille,
+        }
+    }
+
+    /// No chance: a deed known is set aside.
+    #[cfg(test)]
+    fn never() -> Self {
+        Self {
+            seed: 0,
+            body: BodyId(0),
+            day: 0,
+            permille: 0,
+        }
+    }
+
+    /// Whether it would take `deed` up again that journée.
+    fn takes(self, deed: Deed) -> bool {
+        self.permille > 0
+            && scatter::roll(
+                self.seed,
+                purpose::HANDS_AGAIN,
+                &[
+                    u64::from(self.body.0),
+                    self.day,
+                    deed.gesture as u64,
+                    u64::from(deed.on),
+                    u64::from(deed.with),
+                ],
+            ) % 1000
+                < u64::from(self.permille)
+    }
+}
+
+/// The deeds heard, sifted by what the listener already knows of them
+/// ([`sift`]).
+#[derive(Debug, Default)]
+pub(super) struct Sifted {
+    /// Those it may aim at: the deeds whose result it does not know, and
+    /// those of `again`.
+    pub new: Vec<(Deed, u32)>,
+    /// Of `new`, the deeds whose result it knows and takes up again by
+    /// the rare chance.
+    pub again: Vec<Deed>,
+    /// The deeds set aside: it knows what they give, and that it brought
+    /// it nothing.
+    pub known: u32,
+}
+
+/// The heard `deeds` sifted (D57, amended 28 November 2026, third round:
+/// a known result is not tried again): a deed whose result `mind` knows
+/// ([`Handwork::knows`]) is no aim, but for the rare chance of `again`.
+/// A tale left with nothing new opens no trial.
+pub(super) fn sift(mind: &Mind, again: Again, deeds: &[(Deed, u32)]) -> Sifted {
+    let mut out = Sifted::default();
+    for &(deed, tellers) in deeds {
+        if !mind.handwork.knows(deed) {
+            out.new.push((deed, tellers));
+        } else if again.takes(deed) {
+            out.new.push((deed, tellers));
+            out.again.push(deed);
+        } else {
+            out.known += 1;
+        }
+    }
+    out
+}
+
+/// The news that `id` takes up again the deeds of `again`, heard told.
+pub(super) fn again_news(id: BodyId, again: &[Deed], at: u64) -> impl Iterator<Item = News> + '_ {
+    again.iter().map(move |&deed| News::TakenUpAgain {
+        body: id,
+        deed,
+        heard: true,
+        at,
+    })
 }
 
 /// The extra chance, in per mille, that `mind` sets out on `day` to try
@@ -1187,14 +1332,19 @@ fn hands_think(
 
 /// What its hands no longer know is let go, one thing a thought: a
 /// trial given up leaves what it brought. Food, the things a deed it
-/// keeps uses or gives, and the kinds that served it stay.
+/// keeps uses or gives, those of the deeds it remembers that feed them
+/// ([`wanted`]), and the kinds that served it stay.
 fn let_go(
     rules: &Content,
     id: BodyId,
     mind: &mut Mind,
     have: &[(ItemId, u16)],
 ) -> Option<Decision> {
-    let known: Vec<Deed> = mind.ways.hands.iter().collect();
+    // The deeds it keeps, and those it remembers that feed them (amended
+    // 28 November 2026, third round): the tool of a cut seen long ago
+    // that a kept deed needs the product of is not let go, else it was
+    // taken up for the cut and let go again without end.
+    let known = wanted(rules, mind, false);
     let keep = used(rules, &known);
     let food = |m: u16| stuff(rules, m).is_some_and(|m| m.food.is_some());
     let served = &mind.handwork;
@@ -1405,8 +1555,11 @@ fn take_back(
 /// content's tries a day. Only what a body sees makes a gesture plausible
 /// ([`cuts_to_the_eye`], [`bends_to_the_eye`], [`holds_to_the_eye`];
 /// amended 27 November 2026): the world may still answer nothing, or
-/// break the thing. A gesture it remembers gave nothing in its hands is
-/// set aside (the news counts them). No suggestion of which gesture.
+/// break the thing. A gesture whose result it knows from before this
+/// trial, nothing or a thing that brought it nothing, is set aside (the
+/// news counts them; amended 28 November 2026, third round), but for the
+/// rare chance to take it up again ([`Again`]). No suggestion of which
+/// gesture.
 fn draw(
     world: &World,
     rules: &Content,
@@ -1438,12 +1591,12 @@ fn draw(
     // what is put on it, it does not see: it tries, and the world answers
     // (amended 27 November 2026). The gesture stays drawn at random among
     // the plausible: nothing says which.
-    let plausible = Plausible::seen(world, rules, here, mind, (have, near));
-    let things = things_near(world, here, near, mind);
+    let again = Again::of(rules, seed, id, day);
+    let plausible = Plausible::seen(world, rules, here, mind, (have, near), again);
     let open: Vec<Gesture> = Gesture::ALL
         .into_iter()
         .filter(|g| match g {
-            Gesture::PickUp => !things.is_empty(),
+            Gesture::PickUp => !plausible.picks.is_empty(),
             Gesture::Cut => !plausible.cuts.is_empty(),
             Gesture::Fold => !plausible.folds.is_empty(),
             Gesture::PutIn => !plausible.puts.is_empty(),
@@ -1451,44 +1604,46 @@ fn draw(
             Gesture::Strike => !plausible.strikes.is_empty(),
         })
         .collect();
-    if plausible.skipped > 0 {
+    if plausible.skipped > 0 || plausible.known > 0 {
         news.push(News::Skipped {
             body: id,
             deeds: plausible.skipped,
+            known: plausible.known,
             at: world.tick().0,
         });
     }
     let n = u64::try_from(open.len()).ok().filter(|&n| n > 0)?;
     let gesture = open[usize::try_from(r % n).unwrap_or(0)];
-    match gesture {
-        Gesture::PickUp => {
-            let &(thing, pos, material) = things.get(pick(things.len()))?;
-            let on = material_index(rules, material)?;
-            Some((
-                HandTarget::Item(thing, pos),
-                Deed {
-                    gesture,
-                    on,
-                    with: NOTHING,
-                },
-            ))
-        }
-        Gesture::Cut => plausible.cuts.get(pick(plausible.cuts.len())).copied(),
-        Gesture::Fold => plausible.folds.get(pick(plausible.folds.len())).copied(),
-        Gesture::PutIn => plausible.puts.get(pick(plausible.puts.len())).copied(),
-        Gesture::TakeOut => plausible.takes.get(pick(plausible.takes.len())).copied(),
-        Gesture::Strike => plausible
-            .strikes
-            .get(pick(plausible.strikes.len()))
-            .copied(),
+    let among = match gesture {
+        Gesture::PickUp => &plausible.picks,
+        Gesture::Cut => &plausible.cuts,
+        Gesture::Fold => &plausible.folds,
+        Gesture::PutIn => &plausible.puts,
+        Gesture::TakeOut => &plausible.takes,
+        Gesture::Strike => &plausible.strikes,
+    };
+    let drawn = among.get(pick(among.len())).copied()?;
+    if plausible.again.contains(&drawn.1) {
+        news.push(News::TakenUpAgain {
+            body: id,
+            deed: drawn.1,
+            heard: false,
+            at: world.tick().0,
+        });
     }
+    Some(drawn)
 }
 
-/// The cuts, folds and put-ins a body sees as plausible where it stands,
-/// those it remembers gave nothing in its hands set aside (D57, amended
-/// 27 November 2026).
+/// The gestures a body sees as plausible where it stands, those whose
+/// result it knows set aside (D57, amended 27 and 28 November 2026): a
+/// gesture it remembers gave nothing in its hands, or gave a thing that
+/// brought it nothing, before the trial under way ([`Handwork::knows`]),
+/// but for the rare chance to take it up again ([`Again`]). True of the
+/// six gestures alike, the taking up of a thing among them.
 #[derive(Default)]
 struct Plausible {
+    /// The taking up of each thing lying near.
+    picks: Vec<(HandTarget, Deed)>,
     /// A cut of each tree near with each thing carried that shows an
     /// edge.
     cuts: Vec<(HandTarget, Deed)>,
@@ -1504,6 +1659,11 @@ struct Plausible {
     strikes: Vec<(HandTarget, Deed)>,
     /// The different gestures set aside for a failure remembered.
     skipped: u32,
+    /// The different gestures set aside because it knows the thing they
+    /// give, which brought it nothing.
+    known: u32,
+    /// The gestures of a known result left in by the rare chance.
+    again: Vec<Deed>,
 }
 
 impl Plausible {
@@ -1513,16 +1673,27 @@ impl Plausible {
         here: Pos,
         mind: &Mind,
         (have, near): (&[(ItemId, u16)], i32),
+        again: Again,
     ) -> Self {
         let mut out = Self::default();
         let mut aside: Vec<Deed> = Vec::new();
+        let mut back: Vec<Deed> = Vec::new();
         let mut remembered = |deed: Deed| {
-            let failed = mind.handwork.failed(deed);
-            if failed && !aside.contains(&deed) {
+            if !mind.handwork.knows(deed) {
+                return false;
+            }
+            if again.takes(deed) {
+                if !back.contains(&deed) {
+                    back.push(deed);
+                }
+                return false;
+            }
+            if !aside.contains(&deed) {
                 aside.push(deed);
             }
-            failed
+            true
         };
+        out.picks = picks(world, rules, (here, near), mind, &mut remembered);
         let tools: Vec<(ItemId, u16)> = have
             .iter()
             .copied()
@@ -1590,25 +1761,11 @@ impl Plausible {
             }
         }
         out.strikes = strikes(world, rules, have, &mut remembered);
-        // What lies in a thing it carries is seen there, and may be taken
-        // out again (amended 27 November 2026).
-        for &(item, on) in have {
-            let Some(hollow) = world.item(item).and_then(crate::Item::within) else {
-                continue;
-            };
-            let Some(&(_, with)) = have.iter().find(|(i, _)| *i == hollow) else {
-                continue;
-            };
-            let deed = Deed {
-                gesture: Gesture::TakeOut,
-                on,
-                with,
-            };
-            if !remembered(deed) {
-                out.takes.push((HandTarget::Take { item }, deed));
-            }
-        }
-        out.skipped = u32::try_from(aside.len()).unwrap_or(u32::MAX);
+        out.takes = takes_out(world, have, &mut remembered);
+        let failed = aside.iter().filter(|d| mind.handwork.failed(**d)).count();
+        out.skipped = u32::try_from(failed).unwrap_or(u32::MAX);
+        out.known = u32::try_from(aside.len() - failed).unwrap_or(u32::MAX);
+        out.again = back;
         out
     }
 }
@@ -1628,6 +1785,61 @@ fn bends_to_the_eye(rules: &Content, kind: u16) -> bool {
         && stuff(rules, kind).is_some_and(|m| {
             m.form == Form::Sheet || m.suppleness >= rules.needs.hands.supple_seen.max(1)
         })
+}
+
+/// The takings out a body sees as plausible (D57, amended 27 November
+/// 2026): what lies in a thing it carries is seen there, and may be
+/// taken out again; those `remembered` as a known result set aside.
+fn takes_out(
+    world: &World,
+    have: &[(ItemId, u16)],
+    remembered: &mut impl FnMut(Deed) -> bool,
+) -> Vec<(HandTarget, Deed)> {
+    let mut out = Vec::new();
+    for &(item, on) in have {
+        let Some(hollow) = world.item(item).and_then(crate::Item::within) else {
+            continue;
+        };
+        let Some(&(_, with)) = have.iter().find(|(i, _)| *i == hollow) else {
+            continue;
+        };
+        let deed = Deed {
+            gesture: Gesture::TakeOut,
+            on,
+            with,
+        };
+        if !remembered(deed) {
+            out.push((HandTarget::Take { item }, deed));
+        }
+    }
+    out
+}
+
+/// The takings up a body sees as plausible (D57): of each thing lying
+/// within its hands' sight, those `remembered` as a known result set
+/// aside (amended 28 November 2026, third round).
+fn picks(
+    world: &World,
+    rules: &Content,
+    (here, near): (Pos, i32),
+    mind: &Mind,
+    remembered: &mut impl FnMut(Deed) -> bool,
+) -> Vec<(HandTarget, Deed)> {
+    let mut out = Vec::new();
+    for (thing, pos, material) in things_near(world, here, near, mind) {
+        let Some(on) = material_index(rules, material) else {
+            continue;
+        };
+        let deed = Deed {
+            gesture: Gesture::PickUp,
+            on,
+            with: NOTHING,
+        };
+        if !remembered(deed) {
+            out.push((HandTarget::Item(thing, pos), deed));
+        }
+    }
+    out
 }
 
 /// The blows a body sees as plausible (D57, amended 27 November 2026):
@@ -1704,38 +1916,39 @@ fn holds_to_the_eye(rules: &Content, kind: u16) -> bool {
 /// Whether `id` at `here` could begin a gesture its hands do not know
 /// (D50 and D57, amended 26 November 2026): among the gestures the things
 /// around allow, as [`draw`] sees them, one whose deed is not among its
-/// ways. Nothing is drawn, no try spent: a trial from a problem waits for
-/// such a moment.
+/// ways, those whose result it knows set aside as the draw sets them
+/// aside (amended 28 November 2026, third round); or, the link by what a
+/// deed gives, a deed it remembers that answers a lived problem, or one
+/// that feeds it, that it could do here ([`wanted`], [`needed`]). Nothing
+/// is drawn, no try spent: a trial from a problem waits for such a
+/// moment.
 pub(super) fn something_new(
     world: &World,
     rules: &Content,
     (id, here): (BodyId, Pos),
     mind: &Mind,
+    again: Again,
 ) -> bool {
     let near = i32::try_from(rules.needs.hands.near_tiles).unwrap_or(4);
     let have = carried(world, rules, id);
     let new = |deed: Deed| !mind.ways.hands.contains(deed);
-    let take = things_near(world, here, near, mind)
-        .iter()
-        .any(|&(_, _, m)| {
-            material_index(rules, m).is_some_and(|on| {
-                new(Deed {
-                    gesture: Gesture::PickUp,
-                    on,
-                    with: NOTHING,
-                })
-            })
-        });
-    if take {
+    let plausible = Plausible::seen(world, rules, here, mind, (&have, near), again);
+    if [
+        &plausible.picks,
+        &plausible.folds,
+        &plausible.puts,
+        &plausible.cuts,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|&(_, deed)| new(deed))
+    {
         return true;
     }
-    // The cuts, folds and put-ins it sees as plausible here, those it
-    // remembers failed set aside (amended 27 November 2026).
-    let plausible = Plausible::seen(world, rules, here, mind, (&have, near));
-    [&plausible.folds, &plausible.puts, &plausible.cuts]
-        .into_iter()
-        .flatten()
-        .any(|&(_, deed)| new(deed))
+    mind.handwork.seen.iter().any(|d| answers(rules, *d)) && {
+        let deeds = wanted_in(rules, mind, (true, true));
+        needed(world, rules, (id, here), (&deeds, &have, near), mind).is_some()
+    }
 }
 
 /// Whether what `deed` gives is what one of `wanted` is done on, with or
@@ -1775,14 +1988,26 @@ fn answers(rules: &Content, deed: Deed) -> bool {
 ///   to try that have not yet given a thing in this trial, and the deeds
 ///   that gave one in this trial and answer a problem ([`answers`]): what
 ///   the trial is after;
+/// - in a trial of its hands begun from a problem it lives, the deeds
+///   it remembers having seen that answer a problem (amended 28 November
+///   2026, third round, the link from its lasting memory: "fire needs
+///   wood, and I know that cutting a tree gives wood");
 /// - and, step by step back from those, the deeds it only saw or heard
-///   whose product one of them is done on, with or in ([`feeds`]).
+///   whose product one of them is done on, with or in ([`feeds`]),
+///   however long ago it saw them.
 ///
 /// A deed only seen whose product serves none of them is not among them:
 /// nobody works for a thing that leads nowhere (the run of seed 41: 8,239
 /// cuts of 9,678 were a cut once seen done again for chips that fall to
 /// the ground).
 fn wanted(rules: &Content, mind: &Mind, trying: bool) -> Vec<Deed> {
+    let problem = trying && mind.trial.is_some_and(|t| t.problem.is_some());
+    wanted_in(rules, mind, (trying, problem))
+}
+
+/// [`wanted`], in a trial of its hands or not (`trying`), begun from a
+/// lived problem or not (`problem`).
+fn wanted_in(rules: &Content, mind: &Mind, (trying, problem): (bool, bool)) -> Vec<Deed> {
     let hands = &mind.handwork;
     let mut out: Vec<Deed> = mind.ways.hands.iter().collect();
     let mut left: Vec<Deed> = hands.seen.clone();
@@ -1795,6 +2020,9 @@ fn wanted(rules: &Content, mind: &Mind, trying: bool) -> Vec<Deed> {
             }
         }
         out.extend(hands.trial_seen.iter().filter(|d| answers(rules, **d)));
+    }
+    if problem {
+        out.extend(hands.seen.iter().filter(|d| answers(rules, **d)));
     }
     left.retain(|d| !out.contains(d));
     out.sort_unstable();
@@ -3096,6 +3324,9 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         let have = [(oak, oak_m)];
         let mut news = Vec::new();
+        // The rare chance to take it up again left out of this test.
+        let mut rules = rules;
+        rules.needs.hands.again_permille = 0;
         for seed in 0..200 {
             mind.handwork.tries = (day, 0);
             let drawn = draw(
@@ -3117,23 +3348,467 @@ mod tests {
     }
 
     #[test]
-    fn the_failures_remembered_are_a_bounded_list_the_oldest_forgotten() {
+    fn the_memory_of_results_lasts_one_entry_a_deed() {
+        // The project lead, 28 November 2026: "it is in my memory a year
+        // later". Before, what gave a thing was a list of 32 and what
+        // gave nothing a list of 16, the oldest pushed out.
         let deed = |on| Deed {
             gesture: Gesture::Fold,
             on,
             with: NOTHING,
         };
+        let hands_of = Content::sample().needs.hands;
+        let (seen_most, failed_most) = (hands_of.seen_kept, hands_of.failures_kept);
+        assert_eq!((seen_most, failed_most), (1024, 1024), "guards, far off");
         let mut hands = Handwork::default();
-        for on in 0..3 {
-            hands.fail(deed(on), 2);
-            hands.fail(deed(on), 2);
+        // Two hundred results of each kind, each lived twice: all are
+        // still there, the first as the last, one entry each.
+        for on in 0..200 {
+            for _ in 0..2 {
+                hands.see(deed(on), seen_most);
+                hands.fail(deed(1000 + on), failed_most);
+            }
         }
-        assert_eq!(hands.failed, [deed(1), deed(2)]);
-        assert!(!hands.failed(deed(0)), "the oldest is forgotten");
-        // None kept: none remembered.
-        hands.fail(deed(7), 0);
-        assert_eq!(hands.failed, []);
-        assert_eq!(Content::sample().needs.hands.failures_kept, 16);
+        hands.trial_seen.clear();
+        assert_eq!((hands.seen.len(), hands.failed.len()), (200, 200));
+        assert!(hands.saw(deed(0)) && hands.failed(deed(1000)), "the oldest");
+        assert!(hands.knows(deed(0)) && hands.knows(deed(1000)));
+        assert!(!hands.knows(deed(5000)), "never done");
+        // Six bytes a deed: 2,400 bytes for these four hundred.
+        assert_eq!(std::mem::size_of::<Deed>(), 6);
+        // A result known is a result known, one a deed: "gives nothing"
+        // and "gives a thing that brought me nothing" stay apart. A deed
+        // seen to give a thing that fails one day is not forgotten as
+        // giving it; a gesture that gave nothing and gives a thing at
+        // last is known by the thing.
+        hands.fail(deed(0), failed_most);
+        assert!(hands.saw(deed(0)) && !hands.failed(deed(0)));
+        hands.see(deed(1000), seen_most);
+        assert!(hands.saw(deed(1000)) && !hands.failed(deed(1000)));
+        assert_eq!((hands.seen.len(), hands.failed.len()), (201, 199));
+        // What gave a thing in the trial under way is not yet a result
+        // that brought nothing: its trial has not ended.
+        assert!(!hands.knows(deed(1000)), "seen in this trial");
+        hands.trial_seen.clear();
+        assert!(hands.knows(deed(1000)));
+        // The guards still bound both lists, the oldest going; none
+        // kept, none remembered.
+        let mut small = Handwork::default();
+        for on in 0..3 {
+            small.fail(deed(on), 2);
+            small.see(deed(100 + on), 2);
+        }
+        assert_eq!(small.failed, [deed(1), deed(2)]);
+        assert_eq!(small.seen, [deed(101), deed(102)]);
+        small.fail(deed(7), 0);
+        assert_eq!(small.failed, []);
+    }
+
+    /// A deed told as a novelty by `teller`: its record.
+    fn told(brains: &mut Brains, rules: &Content, teller: u32, deed: Deed) -> Access {
+        let (record, _) = brains.memory.intern(Record::Deed {
+            body: BodyId(teller),
+            day: 1,
+            deed,
+            made: material(rules, "birch_bark"),
+            will: 50,
+        });
+        Access {
+            record,
+            by: BodyId(teller),
+            day: 2,
+        }
+    }
+
+    #[test]
+    fn a_deed_whose_result_it_knows_is_set_aside_by_the_draw_and_is_no_aim_of_a_tale() {
+        // The project lead, 28 November 2026: "one tries, and if it does
+        // not work and brings nothing, one stops". In the run of seed 42,
+        // 875 of 996 trunk cuts were made in 424 trials begun on a tale
+        // by people who lived no problem: a cut already seen was aimed at
+        // again each time it was told again, and drawn again in each
+        // trial.
+        let (mut rules, mut world, mut brains, id, birch) = by_a_birch();
+        rules.needs.hands.again_permille = 0;
+        let here = world.body(id).unwrap().pos();
+        let flint = picked(&mut world, &rules, id, "flint");
+        let flint_m = material(&rules, "flint");
+        let stone = laid(&mut world, &rules, id, "quartz");
+        let cut = Deed {
+            gesture: Gesture::Cut,
+            on: birch,
+            with: flint_m,
+        };
+        let branch = Deed {
+            on: birch | BRANCH,
+            ..cut
+        };
+        let take = Deed {
+            gesture: Gesture::PickUp,
+            on: material(&rules, "quartz"),
+            with: NOTHING,
+        };
+        let day = today(&world);
+        let have = [(flint, flint_m)];
+        let most = rules.needs.hands.seen_kept;
+        // In an earlier trial it saw that the cut gives bark and that
+        // the stone can be taken up, which brought it nothing, and that
+        // the cut of a branch gave nothing.
+        let mind = brains.minds.get_mut(&id).unwrap();
+        in_a_trial(mind, &[], day);
+        let all = Plausible::seen(&world, &rules, here, mind, (&have, 4), Again::never());
+        assert!(all.cuts.iter().any(|(_, d)| *d == cut));
+        assert!(
+            all.picks
+                .iter()
+                .any(|(t, d)| *d == take && t.barred() == Barred::Item(stone))
+        );
+        mind.handwork.see(cut, most);
+        mind.handwork.see(take, most);
+        mind.handwork.fail(branch, rules.needs.hands.failures_kept);
+        // Still that trial: what it has just seen is not yet judged, and
+        // may be drawn again.
+        let now = Plausible::seen(&world, &rules, here, mind, (&have, 4), Again::never());
+        assert!(now.cuts.iter().any(|(_, d)| *d == cut) && now.known == 0);
+        assert!(!keep_what_served(&rules, mind) && mind.handwork.saw(cut));
+        mind.handwork.drop_aim();
+        mind.trial = None;
+        // A later trial: none of the three is drawn, true of the taking
+        // up as of the cuts, and the draw says what it set aside.
+        in_a_trial(mind, &[], day);
+        let mut news = Vec::new();
+        for seed in 0..200 {
+            mind.handwork.tries = (day, 0);
+            let drawn = draw(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (seed, &have, 4),
+                &mut news,
+            );
+            assert!(
+                drawn.is_none_or(|(_, d)| ![cut, branch, take].contains(&d)),
+                "{drawn:?}"
+            );
+        }
+        assert!(
+            news.len() == 200
+                && news.iter().all(|n| matches!(
+                    n,
+                    News::Skipped { body, deeds: 1, known: 2, .. } if *body == id
+                )),
+            "{:?}",
+            news.first()
+        );
+    }
+
+    #[test]
+    fn a_tale_whose_every_deed_it_knows_opens_no_trial_one_with_something_new_does() {
+        // "A deed heard is tried more readily" (25 November 2026) stays
+        // true of a deed whose result the listener does not know.
+        let (mut rules, world, mut brains, id, birch) = by_a_birch();
+        rules.needs.hands.again_permille = 0;
+        let cut = Deed {
+            gesture: Gesture::Cut,
+            on: birch,
+            with: material(&rules, "flint"),
+        };
+        let fold = Deed {
+            gesture: Gesture::Fold,
+            on: material(&rules, "birch_bark"),
+            with: NOTHING,
+        };
+        let take = Deed {
+            gesture: Gesture::PickUp,
+            on: material(&rules, "quartz"),
+            with: NOTHING,
+        };
+        // The cut told at the fire again, which it saw give bark in an
+        // earlier trial, as it saw a stone taken up: every deed of the
+        // tale is known to it, no trial is begun, and the tale is
+        // weighed until told again.
+        let first = told(&mut brains, &rules, 101, cut);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.handwork.seen.extend([cut, take]);
+        mind.heard_ways.push(first);
+        let heard = heard_deeds(&brains.memory, mind);
+        assert_eq!(heard, [(cut, 1)]);
+        let mut news = Vec::new();
+        super::super::weigh_tale(&world, &rules, 7, (id, 3, 0), mind, (&heard, &mut news));
+        assert!(
+            matches!(news[..], [News::TaleKnown { body, deeds: 1, .. }] if body == id),
+            "{news:?}"
+        );
+        assert!(mind.trial.is_none() && mind.handwork.aim.is_empty());
+        assert_eq!(heard_deeds(&brains.memory, mind), Vec::new());
+        // Told again with something new to it, the fold: a trial, aimed
+        // at the fold alone.
+        let mut again = told(&mut brains, &rules, 101, cut);
+        again.day = 4;
+        let mut new = told(&mut brains, &rules, 102, fold);
+        new.day = 4;
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.heard_ways.extend([again, new]);
+        let heard = heard_deeds(&brains.memory, mind);
+        assert_eq!(heard.len(), 2);
+        let mut news = Vec::new();
+        super::super::weigh_tale(&world, &rules, 7, (id, 5, 0), mind, (&heard, &mut news));
+        assert!(
+            matches!(
+                news[..],
+                [News::Trying {
+                    way: Way::Hands,
+                    heard: true,
+                    ..
+                }]
+            ),
+            "{news:?}"
+        );
+        assert!(mind.handwork.aim.contains(fold) && !mind.handwork.aim.contains(cut));
+        // The link: the fold it is after needs bark, and it remembers
+        // that the cut gives bark. The stone feeds nothing: left alone.
+        let deeds = wanted(&rules, mind, true);
+        assert!(deeds.contains(&cut) && deeds.contains(&fold) && !deeds.contains(&take));
+    }
+
+    #[test]
+    fn a_deed_known_is_taken_up_again_by_a_rare_chance_drawn_from_the_seed() {
+        // "One can take it up again later": the content's
+        // `again_permille`, 10: one journée in a hundred for a person and
+        // a deed.
+        let (mut rules, mut world, mut brains, id, birch) = by_a_birch();
+        assert_eq!(rules.needs.hands.again_permille, 10);
+        let here = world.body(id).unwrap().pos();
+        let flint = picked(&mut world, &rules, id, "flint");
+        let flint_m = material(&rules, "flint");
+        let cut = Deed {
+            gesture: Gesture::Cut,
+            on: birch,
+            with: flint_m,
+        };
+        // Over 10,000 journées: about a hundred, the same at each
+        // asking, others for another seed, another body or another deed.
+        let days = |seed: u64, body: BodyId, deed: Deed| -> Vec<u64> {
+            (0..10_000)
+                .filter(|&day| Again::of(&rules, seed, body, day).takes(deed))
+                .collect()
+        };
+        let open_days = days(7, id, cut);
+        assert!((60..=140).contains(&open_days.len()), "{}", open_days.len());
+        assert_eq!(open_days, days(7, id, cut), "from the seed alone");
+        assert_ne!(open_days, days(8, id, cut));
+        assert_ne!(open_days, days(7, BodyId(id.0 + 1), cut));
+        let branch = Deed {
+            on: birch | BRANCH,
+            ..cut
+        };
+        assert_ne!(open_days, days(7, id, branch));
+        // Heard on such a journée, a known deed is an aim again, and the
+        // news says so; on another it is not.
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.handwork.seen.push(cut);
+        let open = open_days[0];
+        let shut = (0..10_000u64).find(|d| !open_days.contains(d)).unwrap();
+        let sifted = sift(mind, Again::of(&rules, 7, id, open), &[(cut, 1)]);
+        assert_eq!(
+            (sifted.new, sifted.again, sifted.known),
+            (vec![(cut, 1)], vec![cut], 0)
+        );
+        let sifted = sift(mind, Again::of(&rules, 7, id, shut), &[(cut, 1)]);
+        assert_eq!(
+            (sifted.new, sifted.again, sifted.known),
+            (vec![], vec![], 1)
+        );
+        let mut news = Vec::new();
+        super::super::weigh_tale(
+            &world,
+            &rules,
+            7,
+            (id, open, 0),
+            mind,
+            (&[(cut, 1)], &mut news),
+        );
+        assert!(
+            matches!(
+                news[..],
+                [
+                    News::Trying { heard: true, .. },
+                    News::TakenUpAgain {
+                        deed,
+                        heard: true,
+                        ..
+                    }
+                ] if deed == cut
+            ),
+            "{news:?}"
+        );
+        assert!(mind.handwork.aim.contains(cut));
+        mind.handwork.drop_aim();
+        mind.trial = None;
+        // Drawn in a trial: with the chance at one in two for the test,
+        // the cut is drawn for some seeds, each time said in the news,
+        // and never on a seed whose chance says no.
+        rules.needs.hands.again_permille = 500;
+        let day = today(&world);
+        let have = [(flint, flint_m)];
+        in_a_trial(mind, &[], day);
+        let mut taken = 0;
+        for seed in 0..400 {
+            mind.handwork.tries = (day, 0);
+            let mut news = Vec::new();
+            let drawn = draw(
+                &world,
+                &rules,
+                (id, here),
+                mind,
+                (seed, &have, 4),
+                &mut news,
+            );
+            if drawn.is_some_and(|(_, d)| d == cut) {
+                taken += 1;
+                assert!(Again::of(&rules, seed, id, day).takes(cut));
+                assert!(
+                    news.iter().any(|n| matches!(
+                        n,
+                        News::TakenUpAgain { deed, heard: false, .. } if *deed == cut
+                    )),
+                    "{news:?}"
+                );
+            } else {
+                assert!(!news.iter().any(|n| matches!(n, News::TakenUpAgain { .. })));
+            }
+        }
+        assert!(taken > 0, "taken up again at times");
+        // Never, when the content says never.
+        rules.needs.hands.again_permille = 0;
+        assert!((0..10_000).all(|day| !Again::of(&rules, 7, id, day).takes(cut)));
+    }
+
+    #[test]
+    fn a_cut_seen_long_ago_is_made_again_when_a_deed_it_keeps_needs_what_it_gives() {
+        // The project lead, 28 November 2026: "I cut wood, for now it is
+        // useless, I stop. Three weeks later, a year later, fire is
+        // found, and fire needs wood, and I know that cutting a tree
+        // gives wood: it is in my memory."
+        let (rules, mut world, mut brains, id, birch) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let flint = picked(&mut world, &rules, id, "flint");
+        let cut = Deed {
+            gesture: Gesture::Cut,
+            on: birch,
+            with: material(&rules, "flint"),
+        };
+        let fold = Deed {
+            gesture: Gesture::Fold,
+            on: material(&rules, "birch_bark"),
+            with: NOTHING,
+        };
+        // Long ago, in a trial, it saw that this cut gives bark. The
+        // bark brought it nothing; it has seen a hundred other things
+        // since (the memory held 32 before, the oldest pushed out).
+        let most = rules.needs.hands.seen_kept;
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.handwork.see(cut, most);
+        for on in 0..100 {
+            let other = Deed {
+                gesture: Gesture::TakeOut,
+                on: 1000 + on,
+                with: NOTHING,
+            };
+            mind.handwork.see(other, most);
+        }
+        mind.handwork.drop_aim();
+        assert!(mind.handwork.saw(cut) && mind.handwork.seen.len() == 101);
+        // No trial, no tale, nothing it keeps: beside the birch, its
+        // flint in hand, there is nothing its hands would do. Nobody
+        // works for a thing that leads nowhere.
+        assert!(mind.trial.is_none() && mind.heard_ways.is_empty());
+        assert_eq!(wanted(&rules, mind, false), []);
+        // Much later a deed it keeps needs bark: the fold. It remembers
+        // what gives bark, and goes and cuts, with no tale and no trial;
+        // and it does not let go of the flint that cut is made with.
+        assert!(mind.ways.hands.add(fold));
+        assert_eq!(wanted(&rules, mind, false), [cut, fold]);
+        assert!(mind.handwork.aim.is_empty());
+        let HandsTurn::Decide(Some(decision)) = thinks(&mut world, &rules, &mut brains, id) else {
+            panic!("the cut again");
+        };
+        assert!(
+            matches!(decision.intention, Intention::Cut { with, .. } if with == flint),
+            "{decision:?}"
+        );
+        done(&mut world, &rules, &mut brains, id, &decision);
+        // The bark in hand, the deed it keeps is done on it.
+        let HandsTurn::Decide(Some(decision)) = thinks(&mut world, &rules, &mut brains, id) else {
+            panic!("the fold");
+        };
+        assert!(
+            matches!(decision.intention, Intention::Fold { .. }),
+            "{decision:?}"
+        );
+        let mind = &brains.minds[&id];
+        assert!(mind.trial.is_none() && mind.handwork.saw(cut));
+        assert!(!mind.ways.hands.contains(cut), "seen, not kept");
+        let _ = here;
+    }
+
+    #[test]
+    fn a_body_living_its_problem_remakes_from_memory_the_chain_whose_end_answers_it() {
+        // The same link, from a lived problem: it once saw food hold in
+        // a hollow, the fold that gives the hollow and the cut that gives
+        // the bark, at a time its arms were not full, so nothing was
+        // kept. Its arms full one day, its trial does not wait for a
+        // draw: it remembers.
+        let (rules, mut world, mut brains, id, birch) = by_a_birch();
+        let _flint = picked(&mut world, &rules, id, "flint");
+        let bark = material(&rules, "birch_bark");
+        let cut = Deed {
+            gesture: Gesture::Cut,
+            on: birch,
+            with: material(&rules, "flint"),
+        };
+        let fold = Deed {
+            gesture: Gesture::Fold,
+            on: bark,
+            with: NOTHING,
+        };
+        let put = Deed {
+            gesture: Gesture::PutIn,
+            on: material(&rules, "berries"),
+            with: bark | HOLLOW,
+        };
+        assert!(answers(&rules, put));
+        let most = rules.needs.hands.seen_kept;
+        let day = today(&world);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        for deed in [cut, fold, put] {
+            mind.handwork.see(deed, most);
+        }
+        mind.handwork.drop_aim();
+        // A trial on no problem: the three are known, none is done.
+        in_a_trial(mind, &[], day);
+        assert_eq!(again(&mut world, &rules, &mut brains, id), HandsTurn::Free);
+        // A trial from its full arms: the chain is what it is after.
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.handwork.drop_aim();
+        in_a_trial_of_full_arms(&rules, mind, day, 16);
+        let deeds = wanted(&rules, mind, true);
+        assert!(
+            [cut, fold, put].iter().all(|d| deeds.contains(d)),
+            "{deeds:?}"
+        );
+        let turn = again(&mut world, &rules, &mut brains, id);
+        assert!(
+            matches!(
+                turn,
+                HandsTurn::Decide(Some(Decision {
+                    intention: Intention::Cut { .. },
+                    ..
+                }))
+            ),
+            "{turn:?}"
+        );
     }
 
     /// Carries a birch bark folded into a hollow: the hollow.
@@ -3891,7 +4566,14 @@ mod tests {
             by: BodyId(99),
             day: 1,
         });
-        let news = start_trial(&world, &rules, (&brains.memory, 7), id, &mut mind, 2);
+        let news = start_trial(
+            &world,
+            &rules,
+            (&brains.memory, 7),
+            id,
+            &mut mind,
+            (2, &mut Vec::new()),
+        );
         assert!(
             matches!(
                 news,
@@ -3957,14 +4639,14 @@ mod tests {
         let flint = picked(&mut world, &rules, id, "flint");
         let mind = brains.minds.get_mut(&id).unwrap();
         let have = [(flint, flint_m)];
-        let seen = Plausible::seen(&world, &rules, here, mind, (&have, 4));
+        let seen = Plausible::seen(&world, &rules, here, mind, (&have, 4), Again::never());
         let trees = trees_near(&world, here, 4, mind).len();
         assert!(trees > 0);
         assert_eq!(seen.cuts.len(), 2 * trees);
         assert!(seen.cuts.iter().any(|(_, d)| *d == trunk));
         assert!(seen.cuts.iter().any(|(_, d)| *d == branch));
         mind.handwork.fail(branch, rules.needs.hands.failures_kept);
-        let seen = Plausible::seen(&world, &rules, here, mind, (&have, 4));
+        let seen = Plausible::seen(&world, &rules, here, mind, (&have, 4), Again::never());
         assert!(seen.cuts.iter().any(|(_, d)| *d == trunk));
         assert!(!seen.cuts.iter().any(|(_, d)| *d == branch));
     }
@@ -4016,22 +4698,40 @@ mod tests {
             with: material(&rules, "flint"),
         };
         let day = today(&world);
+        // The tree, as a draw sees it while the cut is unknown to it:
+        // once seen, the cut is set aside by the draws of a later trial
+        // (third round of 28 November 2026).
+        let have = carried(&world, &rules, id);
+        let target = Plausible::seen(
+            &world,
+            &rules,
+            here,
+            &brains.minds[&id],
+            (&have, 4),
+            Again::never(),
+        )
+        .cuts
+        .into_iter()
+        .find(|(_, deed)| *deed == cut)
+        .expect("the cut is plausible")
+        .0;
+        let HandTarget::Tree { chunk, key, .. } = target else {
+            panic!("a tree");
+        };
         for heard in [false, true] {
-            // Drawn in a trial on no tale, then tried in one begun on
-            // the tale of that very cut.
+            // Drawn in a trial on no tale, then tried in one aimed at
+            // that very cut (as the rare chance aims at a known deed).
             let mind = brains.minds.get_mut(&id).unwrap();
             let tale = [cut];
             in_a_trial(mind, if heard { &tale } else { &[] }, day);
-            let have = carried(&world, &rules, id);
-            let target = Plausible::seen(&world, &rules, here, mind, (&have, 4))
-                .cuts
-                .into_iter()
-                .find(|(_, deed)| *deed == cut)
-                .expect("the cut is plausible")
-                .0;
-            let HandTarget::Tree { chunk, key, .. } = target else {
-                panic!("a tree");
-            };
+            if heard {
+                let have = carried(&world, &rules, id);
+                let seen = Plausible::seen(&world, &rules, here, mind, (&have, 4), Again::never());
+                assert!(
+                    !seen.cuts.iter().any(|(_, deed)| *deed == cut) && seen.known == 1,
+                    "seen in an earlier trial, the cut is set aside by the draw"
+                );
+            }
             if heard {
                 // Heard and not yet tried: its hands go to it by
                 // themselves, once.
@@ -4086,7 +4786,7 @@ mod tests {
         let here = world.body(id).unwrap().pos();
         let mind = brains.minds.get_mut(&id).unwrap();
         let have = carried(world, rules, id);
-        let seen = Plausible::seen(world, rules, here, mind, (&have, 4));
+        let seen = Plausible::seen(world, rules, here, mind, (&have, 4), Again::never());
         let target = [seen.strikes, seen.cuts, seen.folds, seen.puts]
             .into_iter()
             .flatten()

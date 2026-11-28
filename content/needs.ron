@@ -995,22 +995,38 @@
     //                       heaped, not packed), once they are put in it:
     //                       nothing holds by being carried (27 November
     //                       2026). A thing with no hollow holds nothing.
-    // What a body remembers of what failed (27 November 2026):
-    // failures_kept:   16 — the gestures that gave nothing or broke the
+    // The memory of results (27 and 28 November 2026; it lasts since the
+    // third round of the 28th, the project lead: "it is in my memory a
+    // year later"): one entry a deed, six bytes, in one list or the
+    // other, never pushed out by a newer one in a life. The two values
+    // are guards no life reaches (the most seen in a run of four cycles:
+    // 50 deeds for one person); beyond them the oldest goes.
+    // failures_kept: 1024 — the gestures that gave nothing or broke the
     //                       thing (the gesture, on what kind, with or in
-    //                       what kind) a body remembers, the oldest going
-    //                       when one more comes; it does not draw such a
-    //                       gesture again while it remembers it (0: none
-    //                       remembered).
-    // What a body remembers of what gave a thing (28 November 2026):
-    // seen_kept:       32 — the deeds a body remembers having seen give
+    //                       what kind) a body remembers: "this gives
+    //                       nothing" (0: none remembered).
+    // seen_kept:     1024 — the deeds a body remembers having seen give
     //                       a thing in its own hands without keeping
-    //                       them ("this gives that"), the oldest going
-    //                       when one more comes. Its hands do not
-    //                       practise them: a deed is kept only when it
-    //                       belongs to a chain that relieved a problem
-    //                       the body lived, and only a kept deed is done
-    //                       again for its product's sake.
+    //                       them: "this gives that, and it brought me
+    //                       nothing". Its hands do not practise them: a
+    //                       deed is kept only when it belongs to a chain
+    //                       that relieved a problem the body lived, and
+    //                       a deed seen is done again only when a deed
+    //                       kept, or the chain in hand, needs what it
+    //                       gives.
+    // A known result is not tried again (28 November 2026): a deed of
+    // one list or the other, known from before the trial under way, is
+    // not drawn, and hearing it told again does not aim at it; a tale
+    // with nothing new to the listener opens no trial. Except rarely:
+    // again_permille:  10 — each journée, for each person and each deed
+    //                       whose result it knows, 10 chances in 1,000
+    //                       that it is ready to take that deed up again
+    //                       that journée (if it then draws it in a
+    //                       trial, or hears it told that evening): one
+    //                       journée in 100 for a given person and deed,
+    //                       a cycle and a half of 64 journées; a person
+    //                       who knows 26 results has one of them open
+    //                       about one journée in four (0: never).
     // What a body remembers of a deed that did not give what was told (28
     // November 2026):
     // amiss_kept:      32 — the things (this tree, this piece) on which a
@@ -1039,8 +1055,9 @@
         tries_per_day: 4,
         fold_suppleness: 5,
         loose_g_per_litre: 500,
-        failures_kept: 16,
-        seen_kept: 32,
+        failures_kept: 1024,
+        seen_kept: 1024,
+        again_permille: 10,
         amiss_kept: 32,
         laid_kept: 32,
         edge_seen: 3,

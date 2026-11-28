@@ -211,11 +211,12 @@ fn stopped_full(
             p.looked = None;
         }
     }
-    if free(body) && handwork::something_new(world, rules, (id, body.pos()), mind) {
+    let again = handwork::Again::of(rules, seed, id, day);
+    if free(body) && handwork::something_new(world, rules, (id, body.pos()), mind, again) {
         news.extend(begin(
             world,
             rules,
-            memory,
+            (memory, seed),
             (id, day, now),
             kind,
             mind,
@@ -305,7 +306,7 @@ pub(super) fn push(
 pub(super) fn free_moment(
     world: &World,
     rules: &Content,
-    memory: &Store,
+    (memory, seed): (&Store, u64),
     (id, here, day, now): (BodyId, Pos, u64, u64),
     mind: &mut Mind,
 ) -> Vec<News> {
@@ -325,8 +326,17 @@ pub(super) fn free_moment(
     {
         return Vec::new();
     }
-    if handwork::something_new(world, rules, (id, here), mind) {
-        return begin(world, rules, memory, (id, day, now), p.kind, mind, true);
+    let again = handwork::Again::of(rules, seed, id, day);
+    if handwork::something_new(world, rules, (id, here), mind, again) {
+        return begin(
+            world,
+            rules,
+            (memory, seed),
+            (id, day, now),
+            p.kind,
+            mind,
+            true,
+        );
     }
     // Nothing new around: back below the top.
     let mut p = mind.problems.remove(top);
@@ -338,13 +348,16 @@ pub(super) fn free_moment(
 
 /// `id` begins on `day` a trial of its hands from the problem `kind`
 /// (D50, amended 26 November 2026): counted against the season, aimed
-/// first at the deeds told at the fire with the same problem, else its
-/// gestures drawn as any trial of the hands; its time `gives_up_seasons`
-/// from today. `later`: at a free moment after it was lived. The news.
+/// first at the deeds told at the fire with the same problem, those
+/// whose result it knows left out (D57, amended 28 November 2026: its
+/// memory brings them back when a deed aimed at needs what they give),
+/// else its gestures drawn as any trial of the hands; its time
+/// `gives_up_seasons` from today. `later`: at a free moment after it was
+/// lived. The news.
 fn begin(
     world: &World,
     rules: &Content,
-    memory: &Store,
+    (memory, seed): (&Store, u64),
     (id, day, now): (BodyId, u64, u64),
     kind: u8,
     mind: &mut Mind,
@@ -365,11 +378,13 @@ fn begin(
     }
     let before = mind.ways;
     let told = told_with(memory, mind, kind);
-    if told.is_empty() {
+    let sifted = handwork::sift(mind, handwork::Again::of(rules, seed, id, day), &told);
+    if sifted.new.is_empty() {
         mind.handwork.drop_aim();
     } else {
-        handwork::aim_at(mind, &told, day);
+        handwork::aim_at(mind, &sifted.new, day);
     }
+    handwork::note_heard(mind, &told, day);
     mind.trial = Some(Trial {
         way: Way::Hands,
         before,
@@ -385,8 +400,8 @@ fn begin(
         }),
     });
     mind.changed_day = Some(day);
-    let heard = !told.is_empty();
-    vec![
+    let heard = !sifted.new.is_empty();
+    let mut news = vec![
         News::Trying {
             body: id,
             way: Way::Hands,
@@ -401,7 +416,9 @@ fn begin(
             step: ProblemStep::Began { heard, later },
             at: now,
         },
-    ]
+    ];
+    news.extend(handwork::again_news(id, &sifted.again, now));
+    news
 }
 
 /// The deeds of the hands told at the fire with the problem `kind`, kept,
@@ -935,7 +952,7 @@ mod tests {
         let news = free_moment(
             &world,
             &rules,
-            &brains.memory,
+            (&brains.memory, 0),
             (id, world.body(id).unwrap().pos(), 0, 0),
             mind,
         );
@@ -975,7 +992,7 @@ mod tests {
         let news = free_moment(
             &world,
             &rules,
-            &brains.memory,
+            (&brains.memory, 0),
             (id, world.body(id).unwrap().pos(), 0, 0),
             mind,
         );
@@ -987,7 +1004,7 @@ mod tests {
         let news = free_moment(
             &world,
             &rules,
-            &brains.memory,
+            (&brains.memory, 0),
             (id, world.body(id).unwrap().pos(), 0, 0),
             mind,
         );
@@ -1006,7 +1023,7 @@ mod tests {
         let news = free_moment(
             &world,
             &rules,
-            &brains.memory,
+            (&brains.memory, 0),
             (id, world.body(id).unwrap().pos(), 0, 0),
             mind,
         );
@@ -1052,16 +1069,16 @@ mod tests {
         push(&world, &rules, mind, 0, (here, 0));
         let kinds = |mind: &Mind| mind.problems.iter().map(|p| p.kind).collect::<Vec<_>>();
         assert_eq!(kinds(mind), [0, 1]);
-        let news = free_moment(&world, &rules, &brains.memory, (id, here, 0, 0), mind);
+        let news = free_moment(&world, &rules, (&brains.memory, 0), (id, here, 0, 0), mind);
         assert_eq!(news.len(), 0);
         assert_eq!(kinds(mind), [1, 0]);
         // Bark laid here: the same place the same day it does not look
         // again; another day, at a free moment, it begins.
         world.spawn_item("birch_bark", 200, here);
         let mind = brains.minds.get_mut(&id).unwrap();
-        let news = free_moment(&world, &rules, &brains.memory, (id, here, 0, 0), mind);
+        let news = free_moment(&world, &rules, (&brains.memory, 0), (id, here, 0, 0), mind);
         assert_eq!(news.len(), 0);
-        let news = free_moment(&world, &rules, &brains.memory, (id, here, 1, 0), mind);
+        let news = free_moment(&world, &rules, (&brains.memory, 0), (id, here, 1, 0), mind);
         assert!(matches!(
             steps(&news)[..],
             [ProblemStep::Began { later: true, .. }]

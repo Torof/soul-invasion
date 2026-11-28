@@ -135,6 +135,36 @@ pub struct ToldHands {
     pub missed: u32,
 }
 
+impl KnownResults {
+    /// As JSON (`docs/10`, `hands.work.known_results`).
+    fn json(&self) -> Value {
+        let mut sizes: Vec<u32> = self
+            .held
+            .iter()
+            .map(|(seen, failed)| seen + failed)
+            .collect();
+        sizes.sort_unstable();
+        let mut seen: Vec<u32> = self.held.iter().map(|h| h.0).collect();
+        seen.sort_unstable();
+        let middle = |v: &[u32]| v.get(v.len().saturating_sub(1) / 2).copied();
+        json!({
+            "tales_all_known": self.tales_all_known,
+            "set_aside_at_draws": self.set_aside,
+            "taken_up_again_heard": self.again_heard,
+            "taken_up_again_drawn": self.again_drawn,
+            "memory": {
+                "people": sizes.len(),
+                "median": middle(&sizes),
+                "max": sizes.last(),
+                "gave_a_thing_median": middle(&seen),
+                "gave_a_thing_max": seen.last(),
+                "bytes_median": middle(&sizes).map(|n| n * 6),
+                "bytes_max": sizes.last().map(|n| n * 6),
+            },
+        })
+    }
+}
+
 /// What the vivarium measures of the hands (D57).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandsProbe {
@@ -230,6 +260,30 @@ pub struct HandsProbe {
     /// Free hands (D57, amended 28 November 2026): the things laid at
     /// the feet for a gesture.
     pub free_hands: FreeHands,
+    /// A known result is not tried again (D57, amended 28 November
+    /// 2026, third round).
+    pub results: KnownResults,
+}
+
+/// What the memory of results did (D57, amended 28 November 2026, third
+/// round): the tales that opened no trial, the gestures set aside, the
+/// rare takings up again, and the memory's size.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KnownResults {
+    /// Tales of the hands that would have opened a trial and did not:
+    /// the listener knew what every deed of them gives.
+    pub tales_all_known: u32,
+    /// Gestures set aside at a draw as giving a thing that brought the
+    /// body nothing, summed over the draws.
+    pub set_aside: u32,
+    /// Deeds of a known result taken up again by the rare chance: as an
+    /// aim, heard told.
+    pub again_heard: u32,
+    /// The same, drawn in a trial.
+    pub again_drawn: u32,
+    /// The results each living person remembers at the last age-year's
+    /// end: (gave a thing that brought nothing, gave nothing).
+    pub held: Vec<(u32, u32)>,
 }
 
 /// What became of the things laid at the feet to free the hands for a
@@ -400,6 +454,10 @@ impl HandsProbe {
                 self.trying.remove(body);
             }
             News::NotAsTold { .. } => self.not_as_told += 1,
+            News::TaleKnown { .. } => self.results.tales_all_known += 1,
+            News::Skipped { known, .. } => self.results.set_aside += known,
+            News::TakenUpAgain { heard: true, .. } => self.results.again_heard += 1,
+            News::TakenUpAgain { heard: false, .. } => self.results.again_drawn += 1,
             News::Laid { .. } => self.free_hands.laid += 1,
             News::LaidBack { late, .. } => {
                 self.free_hands.taken_back += 1;
@@ -461,6 +519,7 @@ impl HandsProbe {
             "trials_kept": self.trials_judged.0,
             "trials_not_kept": self.trials_judged.1,
             "not_as_told": self.not_as_told,
+            "known_results": self.results.json(),
             "free_hands": {
                 "laid": self.free_hands.laid,
                 "taken_back": self.free_hands.taken_back,
@@ -786,12 +845,18 @@ impl HandsProbe {
         self.known.clear();
         self.known_by.clear();
         self.put_knowers.clear();
+        self.results.held.clear();
         for b in world.bodies() {
             if world.is_infant(b, content) || b.condition().vitality.points() == 0 {
                 continue;
             }
             let mut served = false;
             if let Some(mind) = brains.mind(b.id()) {
+                let hands = mind.handwork();
+                let n = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+                self.results
+                    .held
+                    .push((n(hands.seen.len()), n(hands.failed.len())));
                 let mut hollows: Vec<u16> = Vec::new();
                 for deed in mind.ways().hands.iter() {
                     let food = content
@@ -1469,6 +1534,35 @@ mod tests {
         assert_eq!(empty["put_in"]["same_failure_repeated"], Value::Null);
     }
     #[test]
+    fn the_memory_of_results_is_counted_with_what_it_set_aside() {
+        let results = KnownResults {
+            tales_all_known: 4,
+            set_aside: 30,
+            again_heard: 1,
+            again_drawn: 2,
+            held: vec![(3, 1), (10, 2), (40, 9)],
+        };
+        assert_eq!(
+            results.json(),
+            json!({
+                "tales_all_known": 4,
+                "set_aside_at_draws": 30,
+                "taken_up_again_heard": 1,
+                "taken_up_again_drawn": 2,
+                "memory": {
+                    "people": 3,
+                    "median": 12,
+                    "max": 49,
+                    "gave_a_thing_median": 10,
+                    "gave_a_thing_max": 40,
+                    "bytes_median": 72,
+                    "bytes_max": 294,
+                },
+            })
+        );
+    }
+
+    #[test]
     fn the_work_of_the_hands_is_counted_in_a_trial_and_outside_with_what_led_to_food() {
         // 28 November 2026, "seen is not kept": the figures a run of the
         // round is judged on.
@@ -1552,6 +1646,7 @@ mod tests {
                 "trials_kept": 2,
                 "trials_not_kept": 5,
                 "not_as_told": 7,
+                "known_results": KnownResults::default().json(),
                 "free_hands": {
                     "laid": 9,
                     "taken_back": 6,

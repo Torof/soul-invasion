@@ -202,6 +202,9 @@ pub(crate) mod purpose {
     pub(crate) const HANDS_THING: u64 = 0x0d57_7419;
     /// The extra chance to try a deed heard (D57, 25 November 2026).
     pub(crate) const HANDS_HEARD: u64 = 0x0d57_4ea2;
+    /// The rare chance to take up again a deed whose result is known
+    /// (D57, amended 28 November 2026).
+    pub(crate) const HANDS_AGAIN: u64 = 0x0d57_a9a1;
     /// The chance to begin a trial of the hands where a problem was just
     /// lived (D50, amended 26 November 2026).
     pub(crate) const PROBLEM_TRY: u64 = 0x0d50_9b1e;

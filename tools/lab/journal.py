@@ -137,7 +137,17 @@ def gestures(path, top):
     wanted = (
         '"gestured"', "tree_fell", "bark_lifted", "Trying {", "way: Hands", "Untried", '"carry"',
         "step: Began", "work_stopped", "DeedSeen", "DeedKept", "NotAsTold", "Laid",
+        "TaleKnown", "TakenUpAgain", "Skipped",
     )
+    # A known result is not tried again (28 November 2026, third round):
+    # the tales that opened no trial because the listener knew what every
+    # deed of them gives, the gestures set aside at a draw for the same
+    # reason, the rare takings up again, and what each person remembers
+    # having seen give a thing without keeping it.
+    known = Counter()
+    saw, keeps = defaultdict(set), defaultdict(set)
+    deed_of = re.compile(r"deed: (Deed \{[^}]*\})")
+    known_of = re.compile(r"known: (\d+)")
     # Free hands and "not as told" (28 November 2026): the things laid at
     # the feet for a gesture and what became of them; the deeds done for
     # what they give on a thing that did not give it.
@@ -162,6 +172,13 @@ def gestures(path, top):
                 food.add(what["gives"])
         elif what.startswith("NotAsTold"):
             amiss[body] += 1
+        elif what.startswith("TaleKnown"):
+            known["tales"] += 1
+        elif what.startswith("TakenUpAgain"):
+            known["again, heard" if "heard: true" in what else "again, drawn"] += 1
+        elif what.startswith("Skipped"):
+            found = known_of.search(what)
+            known["set aside"] += int(found.group(1)) if found else 0
         elif what.startswith("Laid"):
             name = what.split(" ", 1)[0]
             if name == "LaidBack" and "late: true" in what:
@@ -171,8 +188,10 @@ def gestures(path, top):
             laid[name] += 1
         elif what.startswith("DeedSeen"):
             seen[body] += 1
+            saw[body].add(deed_of.search(what).group(1))
         elif what.startswith("DeedKept"):
             (kept_own if "own: true" in what else kept_left)[body] += 1
+            keeps[body].add(deed_of.search(what).group(1))
         elif what.startswith("Trying"):
             # One trial at a time: another begun cuts short the one under
             # way (a move followed), unjudged.
@@ -283,6 +302,18 @@ def gestures(path, top):
     print(
         f"not as told (a deed done for what it gives, on a thing that did not give it): "
         f"{sum(amiss.values())} by {len(amiss)} people"
+    )
+    held = sorted(len(saw[body] - keeps[body]) for body in saw)
+    print(
+        f"known results: {known['tales']} tales opened no trial (every deed known to the listener), "
+        f"{known['set aside']} gestures set aside at draws as giving a thing that brought nothing, "
+        f"taken up again by the rare chance: {known['again, heard']} heard, {known['again, drawn']} drawn"
+    )
+    print(
+        f"results remembered (deeds seen give a thing and not kept, by person, over the run; "
+        f"those that gave nothing are in the run's JSON, hands.work.known_results.memory): "
+        f"median {held[(len(held) - 1) // 2] if held else 0}, max {held[-1] if held else 0}, "
+        f"{6 * (held[-1] if held else 0)} bytes at most"
     )
     print(f"\npeople with a gesture: {len(people)}; person-journées seen in the events: {len(days)}")
     trials = [s for body in spans for s in spans[body]]

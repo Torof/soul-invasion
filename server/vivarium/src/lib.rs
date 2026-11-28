@@ -3516,6 +3516,8 @@ pub fn run_watched(
                 | News::DeedSeen { .. }
                 | News::DeedKept { .. }
                 | News::NotAsTold { .. }
+                | News::TaleKnown { .. }
+                | News::TakenUpAgain { .. }
                 | News::Laid { .. }
                 | News::LaidBack { .. }
                 | News::LaidLeft { .. }
