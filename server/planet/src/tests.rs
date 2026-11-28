@@ -110,6 +110,26 @@ fn continental_crust_is_kept_through_the_history() {
 }
 
 #[test]
+fn a_continents_edge_folds_above_a_trench_and_its_crust_is_kept() {
+    // Version 19. Where a continent is pushed on its trench its edge
+    // folds: some crust is folded in a history, far less than the
+    // continents hold (the Central Andes: 300 km of a margin in 35 My),
+    // and what is folded is piled, not lost: the continents' volume is
+    // the test above.
+    for seed in [1, 9] {
+        let h = &made(seed).history;
+        assert_eq!(h.folded_km2.len(), h.continental_km2.len());
+        let folded: i64 = h.folded_km2.iter().sum();
+        assert!(folded > 0, "seed {seed}: no margin folded");
+        assert!(
+            folded * 4 < h.continental_km2[0],
+            "seed {seed}: {folded} km2 folded of {}",
+            h.continental_km2[0]
+        );
+    }
+}
+
+#[test]
 fn a_continent_carries_its_relief() {
     // Followed by its home from step to step, a crust keeps its height
     // unless something happens to it: little of it crosses the level

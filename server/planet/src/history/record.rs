@@ -295,6 +295,13 @@ pub struct Accretion {
     pub km2: i64,
 }
 
+/// See [`Collision::end`].
+pub const ENDED_PARTED: u8 = 1;
+/// See [`Collision::end`].
+pub const ENDED_APART: u8 = 2;
+/// See [`Collision::end`].
+pub const ENDED_TAKEN: u8 = 3;
+
 /// A collision between two continents, from their first contact.
 #[derive(Debug, Clone, Copy)]
 pub struct Collision {
@@ -315,6 +322,18 @@ pub struct Collision {
     pub ended_my: u16,
     /// See `ended_my`.
     pub stopped: bool,
+    /// Whether what made them one plate was their suture: the forces
+    /// would have parted them, with less than the crust that joins them
+    /// holds (version 19). Else it was their pile, which held all the
+    /// forces pressed them with.
+    pub held: bool,
+    /// How it ended otherwise: the two plates parted along their front
+    /// ([`ENDED_PARTED`]), their continents touch no more (the smaller
+    /// one was run under whole, or they slid past each other:
+    /// [`ENDED_APART`]), or one of the plates was taken by another or cut
+    /// by a rift ([`ENDED_TAKEN`]); 0 while it goes on or once they are
+    /// one plate.
+    pub end: u8,
     /// The middle of its front when it was last seen (the suture's
     /// place, on the planet as it lay then), and the way it squeezed
     /// there: the unit vector from plate `a` toward plate `b`.
@@ -443,6 +462,10 @@ pub struct History {
     /// Per step, continental crust lost to collisions since the step
     /// before, km² (shortening).
     pub shortened_km2: Vec<i64>,
+    /// Per step, continental crust folded at the edge of a continent
+    /// above a trench since the step before, km² (a margin's shortening,
+    /// `trenches::margins_fold`; version 19).
+    pub folded_km2: Vec<i64>,
     /// Per step, island-arc crust made since the step before, km².
     pub made_km2: Vec<i64>,
     /// The rifts, in order of their beginning.
@@ -728,6 +751,7 @@ pub(crate) fn finish(world: World) -> History {
         out_rifts,
         continental_km2,
         shortened_km2,
+        folded_km2,
         made_km2,
         rifts,
         welds,
@@ -780,6 +804,7 @@ pub(crate) fn finish(world: World) -> History {
         turned_at: out_turned,
         continental_km2,
         shortened_km2,
+        folded_km2,
         made_km2,
         rifts,
         rifts_at: out_rifts,

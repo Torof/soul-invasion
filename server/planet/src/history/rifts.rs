@@ -451,6 +451,7 @@ pub(super) fn troughs(world: &mut World) {
             suction: &edges_last.1,
             ridge: &edges_last.2,
             piles: &[],
+            sutures: &[],
             bridges: &[],
         },
     );

@@ -414,6 +414,7 @@ pub(crate) fn begin<'a>(
     let out_rifts = Vec::with_capacity(s.steps + 1);
     let continental_km2 = Vec::with_capacity(s.steps + 1);
     let shortened_km2 = vec![0];
+    let folded_km2 = vec![0];
     let made_km2 = vec![0];
     let first = drive(
         sphere,
@@ -426,6 +427,7 @@ pub(crate) fn begin<'a>(
             suction: &[],
             ridge: &[],
             piles: &[],
+            sutures: &[],
             bridges: &[],
         },
         None,
@@ -453,6 +455,7 @@ pub(crate) fn begin<'a>(
             suction: &seen.suction,
             ridge: &seen.ridge,
             piles: &[],
+            sutures: &[],
             bridges: &[],
         },
         None,
@@ -563,6 +566,7 @@ pub(crate) fn begin<'a>(
         out_rifts,
         continental_km2,
         shortened_km2,
+        folded_km2,
         made_km2,
         omega,
         group,

@@ -212,6 +212,9 @@ pub(super) struct Crust {
     /// Whether the planet's grid drew it at the step before.
     pub(super) shown: bool,
     pub(super) dead: bool,
+    /// At the edge of a continent above a trench: how far its margin has
+    /// been squeezed and not yet folded, km (`trenches::margins_fold`).
+    pub(super) squeezed: u16,
     /// Where it is on the planet now and the grid's cell there, read from
     /// its frame's turn at each step.
     pub(super) pos: V3,
@@ -363,6 +366,7 @@ impl Land {
             switch: 0,
             shown: false,
             dead: false,
+            squeezed: 0,
             pos: [0; 3],
             cell: 0,
         });

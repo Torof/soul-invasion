@@ -11,6 +11,76 @@ use super::*;
 /// that plate it lies.
 pub(super) const PILE_REACH: usize = 4;
 
+/// Crust piled on a plate: `vol` (m of thickness times km²) thickens the
+/// crust of the plate of the cell of crust `j` within [`PILE_REACH`]
+/// cells of it, `j` itself or not (`on_it`), the thinnest first: it is
+/// shared so that the thinnest cells there rise to one thickness, as
+/// water fills the low ground first. Where the pile already stands high
+/// it is less work to thicken the plain next to it, so a range that goes
+/// on being squeezed widens (a plateau), and no ceiling is set on its
+/// thickness. (Until version 19 the whole of a cell's crust went to the
+/// one thinnest cell, 35 km at once: a range was a scatter of towers
+/// among plains, each with its full height as relief, and wear took a
+/// third of a pile in its first step.) The volume is kept: each cell
+/// rises by its share of the crust's volume over the area it stands
+/// for. Gives the cells that took it; none where no crust of that plate
+/// lies within reach.
+pub(super) fn pile(
+    land: &mut Land,
+    sphere: &Sphere,
+    j: usize,
+    on_it: bool,
+    vol: i64,
+) -> Vec<usize> {
+    let plate = land.cells[j].plate;
+    let fits = |k: usize| {
+        let o = &land.cells[k];
+        !o.dead && !o.under && o.plate == plate
+    };
+    // The crust there and, where other pieces of its plate lie against
+    // it (a docked terrane, a welded continent), their crust at the same
+    // place and around it.
+    let mut near = vec![j];
+    let mut seen = std::collections::HashSet::from([j]);
+    for k in land.beside(sphere, j) {
+        if fits(k) && seen.insert(k) {
+            near.push(k);
+        }
+    }
+    let mut ring = 0..near.len();
+    for _ in 0..PILE_REACH {
+        for a in ring.clone() {
+            let from = near[a];
+            for (k, _) in land.kin(sphere, from) {
+                if fits(k) && seen.insert(k) {
+                    near.push(k);
+                }
+            }
+        }
+        ring = ring.end..near.len();
+    }
+    near.retain(|&k| on_it || k != j);
+    near.sort_unstable_by_key(|&k| (land.cells[k].rock.crust_m(), land.cells[k].id));
+    // The thickness the thinnest of them rise to.
+    let (mut km2, mut held, mut level, mut takers) = (0_i64, 0_i64, 0_i64, 0);
+    for (n, &k) in near.iter().enumerate() {
+        let c = &land.cells[k];
+        if n > 0 && level <= c.rock.crust_m() {
+            break;
+        }
+        km2 += i64::from(c.area).max(1);
+        held += i64::from(c.area).max(1) * c.rock.crust_m();
+        level = (vol + held) / km2;
+        takers = n + 1;
+    }
+    near.truncate(takers);
+    for &k in &near {
+        let r = &mut land.cells[k].rock;
+        r.thicken(level - r.crust_m(), BY_DOCK);
+    }
+    near
+}
+
 /// Step 2. A collision the pile has stopped: the forces press its two
 /// plates together no harder than the thickened crust pushes back
 /// (`forces::drive_from`), so they turn as one. Two plates with one turn
@@ -34,7 +104,7 @@ pub(super) fn stopped(world: &mut World) {
     let group = &mut world.group;
     let now_my = world.step.now_my;
     let cont_of = &mut world.step.cont_of;
-    for (a, b) in std::mem::take(&mut world.locked) {
+    for (a, b, held) in std::mem::take(&mut world.locked) {
         let (a, b) = (a as usize, b as usize);
         if contact[a][b] == 0 || alias[a] != a as u8 || alias[b] != b as u8 || omega[a] != omega[b]
         {
@@ -51,6 +121,7 @@ pub(super) fn stopped(world: &mut World) {
             r.welded_my = now_my;
             r.ended_my = now_my;
             r.stopped = true;
+            r.held = held;
             at = r.at;
         }
         journal.push(Event::plates(
@@ -142,56 +213,23 @@ pub(super) fn meet(world: &mut World) {
             }
         }
         // The crust run under thickens the crust above, or the thinnest
-        // crust of that plate within [`PILE_REACH`] cells of it: where
-        // the pile already stands high it is less work to thicken the
-        // plain next to it, so a range that goes on being squeezed
-        // widens (a plateau), and no ceiling is set on its thickness.
-        // The volume is kept: the pile rises by the crust's volume over
-        // the area the taker stands for.
-        let fits = |k: usize| {
-            let o = &land.cells[k];
-            !o.dead && !o.under && o.plate == above.plate
-        };
-        // The crust above and, where other pieces of its plate lie
-        // against it (a docked terrane, a welded continent), their crust
-        // at the same place and around it.
-        let mut near = vec![j];
-        let mut seen = std::collections::HashSet::from([j]);
-        for k in land.beside(sphere, j) {
-            if fits(k) && seen.insert(k) {
-                near.push(k);
-            }
-        }
-        let mut ring = 0..near.len();
-        for _ in 0..PILE_REACH {
-            for a in ring.clone() {
-                let from = near[a];
-                for (k, _) in land.kin(sphere, from) {
-                    if fits(k) && seen.insert(k) {
-                        near.push(k);
-                    }
-                }
-            }
-            ring = ring.end..near.len();
-        }
-        let to = near
-            .into_iter()
-            .min_by_key(|&k| (land.cells[k].rock.thick, k != j, land.cells[k].id))
-            .unwrap_or(j);
-        // (The sediment on it is crust like the rest once piled.)
+        // crust of that plate near it ([`pile`]). (The sediment on it is
+        // crust like the rest once piled.)
         let vol = (me.rock.crust_m() + i64::from(me.rock.silt)) * i64::from(me.area);
-        let full = i64::from(land.cells[to].area).max(1);
-        let up = &mut land.cells[to].rock;
-        up.thicken(vol / full, BY_DOCK);
+        let takers = pile(land, sphere, j, true, vol);
         if above.plate != me.plate {
-            up.orogeny = now_my;
+            for to in takers {
+                land.cells[to].rock.orogeny = now_my;
+            }
         }
         *shortened += i64::from(me.area);
         land.kill(i);
     }
 }
 /// Step 19. Collisions begin, last and end; the piles at their fronts,
-/// whose weight pushes back on the plates at the next step.
+/// whose weight pushes back on the plates at the next step, and their
+/// sutures, which hold the two plates together against a pull
+/// (`forces::drive_from`).
 pub(super) fn progress(world: &mut World) {
     let journal = &mut world.journal;
     let piles = &mut world.step.piles;
@@ -241,6 +279,9 @@ pub(super) fn progress(world: &mut World) {
     let solid =
         |r: &Rock| r.class == CONTINENT || (r.class == TERRANE && r.margins & ACCRETED != 0);
     let mut sides: Vec<Pile> = Vec::new();
+    let mut seams: Vec<Suture> = Vec::new();
+    let heat = &world.heat;
+    let hold = |c: usize| holds(heat[c], &rock[c], now_my, s.slab_age_my);
     for c in 0..CELLS {
         if !solid(&rock[c]) {
             continue;
@@ -269,6 +310,15 @@ pub(super) fn progress(world: &mut World) {
                 pile_weight(i64::from(thick)),
                 false,
             ));
+            // The section that joins the two continents there holds as
+            // the weaker of its two sides.
+            match seams.last_mut() {
+                Some(f) if f.0 == c && f.2 == pm as u8 => {
+                    f.3 = add(f.3, normal);
+                    f.4 = f.4.min(hold(m));
+                }
+                _ => seams.push((c, pc as u8, pm as u8, normal, hold(c).min(hold(m)))),
+            }
         }
     }
     for a in 0..MAXP {
@@ -297,6 +347,8 @@ pub(super) fn progress(world: &mut World) {
                         stopped: false,
                         at,
                         squeeze: [0; 3],
+                        held: false,
+                        end: 0,
                         thick: 0,
                         closed_km: 0,
                         front_cells: 0,
@@ -312,7 +364,13 @@ pub(super) fn progress(world: &mut World) {
                 r.thick = r.thick.max(most[a][b]);
             } else if contact[a][b] != 0 {
                 if record_of[a][b] != usize::MAX {
-                    collisions[record_of[a][b]].ended_my = now_my;
+                    let r = &mut collisions[record_of[a][b]];
+                    r.ended_my = now_my;
+                    r.end = if cnt[a][b] > 0 {
+                        ENDED_PARTED
+                    } else {
+                        ENDED_APART
+                    };
                 }
                 contact[a][b] = 0;
                 record_of[a][b] = usize::MAX;
@@ -324,6 +382,7 @@ pub(super) fn progress(world: &mut World) {
     for (k, r) in collisions.iter_mut().enumerate() {
         if r.ended_my == NEVER && record_of[r.a as usize][r.b as usize] != k {
             r.ended_my = now_my;
+            r.end = ENDED_TAKEN;
         }
     }
     // A pile pushes back wherever two plates' continents touch, a
@@ -334,4 +393,69 @@ pub(super) fn progress(world: &mut World) {
         f.5 = contact[f.1 as usize][f.2 as usize] != 0;
     }
     *piles = sides;
+    // A suture: the front of a collision that has closed. The crust of
+    // one continent has run under the other's there and is piled on it:
+    // one crust joins the two plates across it.
+    seams.retain(|f| {
+        let k = record_of[f.1 as usize][f.2 as usize];
+        contact[f.1 as usize][f.2 as usize] != 0 && k != usize::MAX && collisions[k].closed_km > 0
+    });
+    for f in &mut seams {
+        f.3 = normalize(f.3);
+    }
+    world.step.sutures = seams;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn piled_crust_fills_the_thinnest_crust_first_and_keeps_its_volume() {
+        let sphere = Sphere::new();
+        // A cell of crust and its six neighbours, one of them stretched
+        // to 20 km.
+        let mut land = Land::new();
+        let frame = land.frame(IDENTITY);
+        let middle = 1_000;
+        let mut at = vec![middle];
+        at.extend(sphere.links[middle as usize].iter().map(|&(n, _)| n));
+        for (k, &a) in at.iter().enumerate() {
+            let thick = if k == 1 { 200 } else { CONTINENT_THICK };
+            land.add(
+                &sphere,
+                (frame, a),
+                0,
+                Rock::plain(CONTINENT, thick),
+                k as u32,
+            );
+        }
+        let volume = |land: &Land| -> i64 {
+            land.cells
+                .iter()
+                .map(|c| c.rock.crust_m() * i64::from(c.area))
+                .sum()
+        };
+        let (was, km2) = (volume(&land), i64::from(land.cells[0].area));
+        // A cell's worth of crust, 35 km of it, piled there: the thin
+        // cell rises first, then all of them together; no tower.
+        let vol = 35_000 * km2;
+        let takers = pile(&mut land, &sphere, 0, true, vol);
+        assert_eq!(takers.len(), land.cells.len());
+        let thick: Vec<i64> = land.cells.iter().map(|c| c.rock.crust_m()).collect();
+        let (least, most) = (*thick.iter().min().unwrap(), *thick.iter().max().unwrap());
+        assert!(most - least <= 1, "{thick:?}");
+        assert!((37_000..39_000).contains(&most), "{thick:?}");
+        let all: i64 = land.cells.iter().map(|c| i64::from(c.area)).sum();
+        assert!(
+            (volume(&land) - was - vol).abs() <= all,
+            "the volume is kept to the metre"
+        );
+        // A little crust goes to the thinnest only; and not to the cell
+        // it comes from when that cell is the one folded.
+        land.cells[2].rock.thicken(-5_000, BY_STRETCH);
+        assert_eq!(pile(&mut land, &sphere, 0, true, 1_000 * km2), vec![2]);
+        land.cells[0].rock.thicken(-9_000, BY_STRETCH);
+        assert!(!pile(&mut land, &sphere, 0, false, 1_000 * km2).contains(&0));
+    }
 }

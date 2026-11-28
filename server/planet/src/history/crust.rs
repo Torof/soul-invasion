@@ -436,6 +436,7 @@ pub(super) fn compact(world: &mut World) {
     let plate = &mut world.plate;
     let rock = &mut world.rock;
     let shortened_km2 = &mut world.shortened_km2;
+    let folded_km2 = &mut world.folded_km2;
     let made_km2 = &mut world.made_km2;
     let shown_now = &mut world.shown_now;
     let hidden_now = &mut world.hidden_now;
@@ -510,16 +511,16 @@ pub(super) fn compact(world: &mut World) {
     }
     *hidden_now = hidden;
     shortened_km2.push(*shortened);
+    folded_km2.push(world.step.folded);
     made_km2.push(*made);
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn crust(thick: u16) -> Rock {
+impl Rock {
+    /// A plain crust of a class and a thickness, for the tests.
+    pub(super) fn plain(class: u8, thick: u16) -> Rock {
         Rock {
-            class: CONTINENT,
+            class,
             piece: 0,
             margins: 0,
             rift: 0,
@@ -534,6 +535,15 @@ mod tests {
             laid: NEVER,
             why: [0; CAUSES],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn crust(thick: u16) -> Rock {
+        Rock::plain(CONTINENT, thick)
     }
 
     #[test]

@@ -52,6 +52,12 @@ pub(super) type Front = (usize, u8, u8, V3, i64);
 /// their pile, and stay two).
 pub(super) type Pile = (usize, u8, u8, V3, i64, bool);
 
+/// A cell on a suture, the front of a collision that has closed: the
+/// cell, its plate, the plate it is joined to, the normal toward it, and
+/// what the section of crust that joins them there holds of a pull
+/// ([`holds`], the weaker of its two sides).
+pub(super) type Suture = (usize, u8, u8, V3, i64);
+
 /// How hard thickened crust pushes back on the plates that thicken it, ‰
 /// of the push of a crust twice a continent's thickness: a column of
 /// crust `thick` (tenths of a km) stands higher and reaches deeper than
@@ -70,6 +76,10 @@ pub(super) fn pile_weight(thick: i64) -> i64 {
 /// normal from the first toward the second, and whether the two are in
 /// a collision.
 type PileFront = ((usize, usize), V3, Vec<(V3, V3)>, bool);
+
+/// The suture between two plates: the pair, each of its cells' place and
+/// normal from the first toward the second, and what its section holds.
+type Seam = ((usize, usize), Vec<(V3, V3)>, i64);
 
 /// How a pair of plates is held by the crust that still joins them: a
 /// matrix on their relative turn.
@@ -108,9 +118,10 @@ pub(super) struct Drive {
     /// Each plate's group, named by its least id: plates whose continents
     /// have not parted move as one while the forces press them together.
     pub(super) group: [u8; MAXP],
-    /// The pairs of plates a collision has stopped: its pile holds all
-    /// the forces press them together with, and they turn as one.
-    pub(super) locked: Vec<(u8, u8)>,
+    /// The pairs of plates a collision has made one: its pile holds all
+    /// the forces press them together with, or (the third: true) its
+    /// suture holds all they would part with; they turn as one.
+    pub(super) locked: Vec<(u8, u8, bool)>,
 }
 
 /// The forces at the plates' edges, read at the last step: the slabs
@@ -122,6 +133,7 @@ pub(super) struct Edges<'a> {
     pub(super) suction: &'a [Spot],
     pub(super) ridge: &'a [Spot],
     pub(super) piles: &'a [Pile],
+    pub(super) sutures: &'a [Suture],
     pub(super) bridges: &'a [Bridge],
 }
 
@@ -346,7 +358,22 @@ pub(super) fn drive_from(
     // plates go on closing, slower, and the pile grows. Once the pile
     // holds all they press with, nothing moves the two plates against
     // each other across their front: one balance of forces turns them
-    // both, as one.
+    // both, as one. The closing is read on the speeds the plates reach
+    // against the mantle's drag (`dragged`), as they will turn (version
+    // 19; until then on the turns before the drag, which slows a fast
+    // plate more than a slow one: a pile that held less than the forces
+    // pressed with could send a small fast plate back from the large
+    // slow one it was closing on, and the two parted. Most collisions of
+    // two true continents ended so).
+    let (v0, top) = (s.mantle_drag_mm * 1000, s.speed_mm.1 * 1000);
+    let alone = |w: V3| {
+        let u = norm(w);
+        if u > 0 {
+            w.map(|v| v * dragged(u, v0).min(top) / u)
+        } else {
+            w
+        }
+    };
     let before = up;
     let mut back: Vec<(usize, usize, V3, V3)> = Vec::new();
     loop {
@@ -384,12 +411,13 @@ pub(super) fn drive_from(
             };
             let da = tq.map(|v| -v * 1000 / rs[a].max(1));
             let db = tq.map(|v| v * 1000 / rs[b].max(1));
-            let pressed = closing(w[a], w[b]);
-            let held = -closing(da, db);
+            let pressed = closing(alone(w[a]), alone(w[b]));
+            let left = closing(alone(add(w[a], da)), alone(add(w[b], db)));
+            let held = pressed - left;
             if pressed <= 0 || held <= 0 {
                 continue;
             }
-            if held < pressed {
+            if left > 0 {
                 back.push((a, b, da, db));
             } else if met {
                 let (ra, rb) = (root(&up, a as u8), root(&up, b as u8));
@@ -409,18 +437,88 @@ pub(super) fn drive_from(
         }
         (w, rs) = turns(&up);
     }
+    // A suture holds (version 19). Where a collision has closed, the
+    // crust of one continent lies under and on the other's: one crust
+    // joins the two plates across their front, and they part again only
+    // by tearing it, as a continent is torn by a rift. So the measure is
+    // the rifts' own (`parting`, `tension`): each of the two turns as the
+    // forces on it alone would turn it; where they would part, the force
+    // that must cross the suture for them to go on as one is that speed
+    // times the drag they share, and the suture holds what its section
+    // holds (`holds`: young, warm, seamed crust, a tenth of a shield's,
+    // by its thickness). While it holds they turn as one, and are one
+    // plate: a long front holds, two continents that touch by a point
+    // tear apart. Nothing holds them against closing: pressed, they go
+    // on closing against their pile. Until version 19 nothing held two
+    // continents that had met: they parted at the first pull, and no
+    // continent was ever made of two.
+    let piled = up;
+    loop {
+        let mut seams: Vec<Seam> = Vec::new();
+        for &(c, p, o, normal, holds) in edges.sutures {
+            let (mut a, mut b) = (root(&up, p) as usize, root(&up, o) as usize);
+            if a == b {
+                continue;
+            }
+            let mut n = normal;
+            if a > b {
+                (a, b) = (b, a);
+                n = n.map(|v| -v);
+            }
+            let at = seams.iter().position(|f| f.0 == (a, b)).unwrap_or_else(|| {
+                seams.push(((a, b), Vec::new(), 0));
+                seams.len() - 1
+            });
+            seams[at].1.push((sphere.centre[c], n));
+            seams[at].2 += holds;
+        }
+        let mut merged = false;
+        for ((a, b), sides, section) in seams {
+            let (wa, wb) = (alone(w[a]), alone(w[b]));
+            let parting = -sides
+                .iter()
+                .map(|&(x, n)| dot(sub(cross(wa, x), cross(wb, x)), n))
+                .sum::<i64>()
+                / sides.len() as i64;
+            let shared =
+                (i128::from(rs[a]) * i128::from(rs[b]) / i128::from((rs[a] + rs[b]).max(1))) as i64;
+            if parting > 0 && tension(parting, shared, section, s.crust_holds) < 1000 {
+                let (ra, rb) = (root(&up, a as u8), root(&up, b as u8));
+                if ra != rb {
+                    up[ra.max(rb) as usize] = ra.min(rb);
+                    merged = true;
+                }
+            }
+        }
+        if !merged {
+            break;
+        }
+        (w, rs) = turns(&up);
+    }
+    back.retain(|&(a, b, ..)| root(&up, a as u8) != root(&up, b as u8));
+    let now_one = |was: &[u8; MAXP], p: u8, o: u8| {
+        root(&up, p) == root(&up, o) && root(was, p) != root(was, o)
+    };
+    let mut locked: Vec<(u8, u8, bool)> = edges
+        .piles
+        .iter()
+        .filter(|f| now_one(&before, f.1, f.2))
+        .map(|f| (f.1.min(f.2), f.1.max(f.2), false))
+        .chain(
+            edges
+                .sutures
+                .iter()
+                .filter(|f| now_one(&piled, f.1, f.2))
+                .map(|f| (f.1.min(f.2), f.1.max(f.2), true)),
+        )
+        .collect();
+    locked.sort_unstable();
+    locked.dedup_by_key(|x| (x.0, x.1));
     for &(a, b, da, db) in &back {
+        let (a, b) = (root(&up, a as u8) as usize, root(&up, b as u8) as usize);
         w[a] = add(w[a], da);
         w[b] = add(w[b], db);
     }
-    let mut locked: Vec<(u8, u8)> = edges
-        .piles
-        .iter()
-        .filter(|f| root(&up, f.1) == root(&up, f.2) && root(&before, f.1) != root(&before, f.2))
-        .map(|f| (f.1.min(f.2), f.1.max(f.2)))
-        .collect();
-    locked.sort_unstable();
-    locked.dedup();
     // The crust that still joins two plates a rift has cut holds them
     // there: it lets through its weakness' share of their parting at
     // each of its cells, and leaves them free to turn about it (the
@@ -484,7 +582,6 @@ pub(super) fn drive_from(
             pr[r] += resist[p];
         }
     }
-    let (v0, top) = (s.mantle_drag_mm * 1000, s.speed_mm.1 * 1000);
     let omega = (0..MAXP)
         .map(|p| {
             if cells[p] == 0 {
@@ -838,6 +935,7 @@ pub(super) fn next(world: &mut World) {
                 suction: &seen.suction,
                 ridge: &seen.ridge,
                 piles: &*piles,
+                sutures: &world.step.sutures,
                 bridges: &bridges,
             },
             Some(&*omega),
@@ -894,6 +992,75 @@ pub(super) fn next(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two plates, each half the sphere, all ocean floor; the forces
+    /// turn the second about the north pole, which parts it from the
+    /// first around `(0, 1, 0)` and presses it on the first on the far
+    /// side. A suture of `cells` cells of their boundary there, each
+    /// holding `holds`: do they turn as one?
+    fn joined(cells: usize, holds: i64, turn: i64, far_side: bool) -> (bool, Vec<(u8, u8, bool)>) {
+        let sphere = Sphere::new();
+        let s = Settings::default();
+        let plate: Vec<u8> = (0..CELLS)
+            .map(|c| u8::from(sphere.centre[c][0] < 0))
+            .collect();
+        let rock = vec![Rock::plain(OCEAN, OCEAN_THICK); CELLS];
+        let place = [0, if far_side { -ONE } else { ONE }, 0];
+        let mut edge: Vec<usize> = (0..CELLS)
+            .filter(|&c| {
+                plate[c] == 0 && sphere.links[c].iter().any(|&(n, _)| plate[n as usize] == 1)
+            })
+            .collect();
+        edge.sort_by_key(|&c| (km_between(sphere.centre[c], place), c));
+        let sutures: Vec<Suture> = edge[..cells]
+            .iter()
+            .map(|&c| (c, 0, 1, [-ONE, 0, 0], holds))
+            .collect();
+        let mut count = [0_i64; MAXP];
+        for &p in &plate {
+            count[p as usize] += 1;
+        }
+        let mut torque = vec![[0_i64; 3]; MAXP];
+        torque[1] = [0, 0, turn * count[1]];
+        let d = drive_from(
+            &sphere,
+            &s,
+            &plate,
+            &rock,
+            Edges {
+                slab: &[],
+                suction: &[],
+                ridge: &[],
+                piles: &[],
+                sutures: &sutures,
+                bridges: &[],
+            },
+            None,
+            &vec![[false; MAXP]; MAXP],
+            (torque, count, [0; MAXP]),
+        );
+        (d.group[0] == d.group[1], d.locked)
+    }
+
+    #[test]
+    fn a_suture_holds_a_pull_its_section_can_hold_and_tears_under_more() {
+        // A pull of 20 mm a year across a suture of 40 cells of a
+        // shield's strength: more than it holds, the plates part.
+        assert_eq!(joined(40, 1_000_000, 20_000, false), (false, vec![]));
+        // The same suture under a pull of 1 mm a year holds: the two
+        // turn as one, and the record will make them one plate.
+        assert_eq!(
+            joined(40, 1_000_000, 1_000, false),
+            (true, vec![(0, 1, true)])
+        );
+        // A long front holds what a point of contact does not.
+        assert!(!joined(2, 1_000_000, 1_000, false).0);
+        // Young, seamed crust holds a tenth of it.
+        assert!(!joined(40, 100_000, 1_000, false).0);
+        // Nothing holds two continents against closing: pressed on each
+        // other they go on closing (against their pile).
+        assert_eq!(joined(40, 1_000_000, 20_000, true), (false, vec![]));
+    }
 
     #[test]
     fn a_pile_pushes_back_as_the_difference_of_the_squares_of_the_thicknesses() {

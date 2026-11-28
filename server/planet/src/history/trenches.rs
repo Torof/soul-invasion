@@ -186,6 +186,7 @@ pub(super) fn margins_give_way(world: &mut World) {
                 suction: &edges_last.1,
                 ridge: &edges_last.2,
                 piles: &[],
+                sutures: &[],
                 bridges: &[],
             },
         );
@@ -357,6 +358,160 @@ pub(super) fn margins_give_way(world: &mut World) {
             })),
             floor,
         ));
+    }
+}
+
+/// The edge of a continent that rides over a trench folds (version 19;
+/// until then a continent's edge above a trench only grew an arc, some
+/// 1,500 m high, and no range stood along an ocean). A slab hangs in the
+/// mantle and does not move aside freely: its hinge falls back by
+/// itself, slowly, and a continent that advances on its trench faster
+/// than that is squeezed against it; the advance left over is shared
+/// between the hinge pushed back and the continent's margin shortened
+/// (the slab is "partly anchored": Heuret and Lallemand 2005, the upper
+/// plate's motion is the trench's plus the deformation behind it). The
+/// two numbers are read off the models of the Andes (Sobolev and Babeyko
+/// 2005; Sobolev et al. 2006): no compression under an advance of 10 to
+/// 15 mm a year ([`ROLLBACK_UM`]); 180 km of shortening in 35 My for a
+/// continent overriding at 20 mm a year, 350 km at 30 (5 and 10 mm a
+/// year: half of what is beyond the threshold, [`FOLD_SHARE`]; the
+/// Central Andes: 250 to 350 km since 35 to 45 Ma, at 6 to 14 mm a year,
+/// Oncken et al. 2006, `McQuarrie` et al. 2005).
+///
+/// What squeezes is a push, not the trench's own pull. A slab's suction
+/// draws the plate riding over it after the hinge as it falls back
+/// (`Settings::slab_suction`): that advance closes on nothing. So the
+/// advance counted is the one the other forces on the plate give it
+/// (the mantle's heat under it, the ridges, its own slabs), each plate
+/// turned by them alone against the mantle's drag, as `forces::parting`
+/// and [`margins_give_way`] read the two sides of a line; and no more
+/// than the plate's true advance over the mantle. It is read toward the
+/// trench, where the last step saw a continent's edge ride over a
+/// sinking floor. A rigid piece does not shrink: the
+/// shortening owed is kept by the cell of crust at the edge
+/// ([`Crust::squeezed`], km); once it is as wide as the cell, the cell's
+/// crust is folded on the crust behind it, the thinnest first (`collisions::pile`,
+/// as crust run under in a collision is: within some 370 km, so a
+/// margin squeezed for long widens into a plateau), the cell is gone and
+/// the floor sinks under the next one. The volume is kept; the height
+/// follows from the thickness ([`Rock::high`]); the flow of thick crust
+/// and wear are what limit it, as for any pile.
+pub(super) const ROLLBACK_UM: i64 = 10_000;
+pub(super) const FOLD_SHARE: i64 = 2;
+
+/// Step 4 (the margins above a trench). See [`ROLLBACK_UM`].
+pub(super) fn margins_fold(world: &mut World) {
+    let sphere = world.sphere;
+    let step_my = world.s.step_my;
+    let land = &mut world.land;
+    let (top, plate, rock) = (&world.top, &world.plate, &world.rock);
+    let (omega, group, last_kind) = (&world.omega, &world.group, &world.last_kind);
+    let now_my = world.step.now_my;
+    let arc = Kind::Arc as u8 + 1;
+    let solid = |r: &Rock| r.class == CONTINENT || r.class == TERRANE && r.margins & ACCRETED != 0;
+    if !(0..CELLS).any(|q| last_kind[q] == arc) {
+        return;
+    }
+    // Each plate's turn by the forces on it other than its trenches'
+    // suction (the plates that move as one, as one).
+    let s = world.s;
+    let (cell_tq, edge_tq) = torques(
+        sphere,
+        s,
+        rock,
+        &world.heat,
+        Edges {
+            slab: &world.edges_last.0,
+            suction: &[],
+            ridge: &world.edges_last.2,
+            piles: &[],
+            sutures: &[],
+            bridges: &[],
+        },
+    );
+    let mut pushed = vec![[0_i64; 3]; MAXP];
+    let mut drag = [0_i64; MAXP];
+    for c in 0..CELLS {
+        let g = group[plate[c] as usize] as usize;
+        pushed[g] = add(pushed[g], cell_tq[c]);
+        drag[g] += 1000
+            + if rock[c].class == OCEAN {
+                0
+            } else {
+                s.continent_drag
+            };
+    }
+    for &(_, p, torque) in &edge_tq {
+        let g = group[p as usize] as usize;
+        pushed[g] = add(pushed[g], torque);
+    }
+    let (v0, most) = (s.mantle_drag_mm * 1000, s.speed_mm.1 * 1000);
+    for g in 0..MAXP {
+        let w = pushed[g].map(|v| v * 1000 / drag[g].max(1));
+        let u = norm(w);
+        pushed[g] = if u > 0 {
+            w.map(|v| v * dragged(u, v0).min(most) / u)
+        } else {
+            w
+        };
+    }
+    // (The grid's view is still the last step's: the edges it saw.)
+    for q in 0..CELLS {
+        if last_kind[q] != arc || top[q] == NO_BIT || !solid(&rock[q]) {
+            continue;
+        }
+        let i = top[q] as usize;
+        if land.cells[i].dead || land.cells[i].under {
+            continue;
+        }
+        let x = sphere.centre[q];
+        let mut toward = [0_i64; 3];
+        for &(n, _) in &sphere.links[q] {
+            let n = n as usize;
+            if rock[n].class == OCEAN && group[plate[n] as usize] != group[plate[q] as usize] {
+                toward = add(toward, sub(sphere.centre[n], x));
+            }
+        }
+        if toward == [0; 3] {
+            continue;
+        }
+        let normal = normalize(tangent(x, toward));
+        let p = plate[q] as usize;
+        let advance =
+            dot(cross(omega[p], x), normal).min(dot(cross(pushed[group[p] as usize], x), normal));
+        let owed = (advance - ROLLBACK_UM).max(0) / FOLD_SHARE * step_my / 1000;
+        let all = i64::from(land.cells[i].squeezed) + owed;
+        let wide = i64::from(land.cells[i].area).isqrt().max(1);
+        if all < wide {
+            land.cells[i].squeezed = all as u16;
+            continue;
+        }
+        // Folded: its crust and the sediment on it go to the crust
+        // behind it, and what is owed beyond its width to the cell of
+        // its piece farthest from the trench beside it, the next edge.
+        let me = land.cells[i];
+        let vol = (me.rock.crust_m() + i64::from(me.rock.silt)) * i64::from(me.area);
+        let takers = collisions::pile(land, sphere, i, false, vol);
+        if takers.is_empty() {
+            land.cells[i].squeezed = all.min(i64::from(u16::MAX)) as u16;
+            continue;
+        }
+        for to in takers {
+            let up = &mut land.cells[to].rock;
+            up.orogeny = now_my;
+            up.margins |= ACTIVE;
+        }
+        let behind = land
+            .kin(sphere, i)
+            .filter(|&(k, _)| !land.cells[k].dead && !land.cells[k].under)
+            .min_by_key(|&(k, _)| (dot(sub(land.cells[k].pos, me.pos), normal), k))
+            .map(|(k, _)| k);
+        if let Some(k) = behind {
+            let rest = i64::from(land.cells[k].squeezed) + all - wide;
+            land.cells[k].squeezed = rest.min(i64::from(u16::MAX)) as u16;
+        }
+        world.step.folded += i64::from(me.area);
+        land.kill(i);
     }
 }
 

@@ -42,6 +42,18 @@
 //!    it is very thick, and wears from the top slowly: a range keeps its
 //!    root for hundreds of millions of years. A terrane or an arc against
 //!    a continent is accreted to its plate.
+//!    **A suture holds** (version 19): where a collision has closed, one
+//!    crust joins the two plates, and they part again only by tearing
+//!    it, under a pull greater than its section holds (the rifts' own
+//!    measure, `forces::drive_from`); under less they are one plate. And
+//!    the pile's push is read on the speeds the plates really reach, so
+//!    it slows two continents and never sends them apart.
+//!    **A continent's edge folds above a trench** (version 19): where
+//!    the forces other than the trench's own suction push a continent on
+//!    its trench faster than the slab's hinge falls back, half of the
+//!    advance beyond that shortens its margin, whose crust is piled
+//!    behind the edge (`trenches::margins_fold`): a range along an
+//!    ocean, as high as its thickened crust floats.
 //!    **A trench is a state** (version 14), not only a motion: where a
 //!    slab hangs it pulls by its weight however slowly the plates close,
 //!    and is lost only where they part. **And a trench is born, for a
@@ -168,6 +180,7 @@ pub(crate) fn advance(world: &mut World, t: usize) {
         collisions::stopped(world);
         rifts::troughs(world);
         crust::turn(world);
+        trenches::margins_fold(world);
         collisions::meet(world);
         trenches::sink_and_dock(world);
         trenches::draw_floor(world);

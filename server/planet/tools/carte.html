@@ -188,7 +188,7 @@ const ZONES = {
   m: "terre basse et plate (marais à venir)", "?": "—"
 };
 
-const L_FRONTIERES_P = [["#eb2323", "fosse, arc continental"], ["#ff961e", "arc d'îles"],
+const L_FRONTIERES_P = [["#eb2323", "fosse ; bord de continent au-dessus (volcans, et plis s'il est poussé)"], ["#ff961e", "arc d'îles"],
   ["#c83ce6", "collision"], ["#ffe646", "dorsale ou rift"], ["#3ce678", "faille transformante"]];
 
 const VUES = {
@@ -220,7 +220,7 @@ const VUES = {
         leg: [["#e67878", "un morceau du supercontinent (une couleur chacun)"], ["#96735a", "terrane"], ["#969650", "arc d'îles"], ["#1e1e1e", "limite entre morceaux"]] },
       { id: "marges", nom: "Histoire : marges", on: false, op: 1,
         leg: [["#eb2323", "bord d'attaque aujourd'hui (subduction)"], ["#5adc78", "bord de fuite (marge passive)"],
-              ["#b446e6", "soudure (collision)"], ["#ff9628", "terrane accrété"], ["#ffe13c", "ancien rift"], ["#3c141e", "grand épanchement de lave (trapps)"]] },
+              ["#b446e6", "suture (collision)"], ["#ff9628", "terrane accrété"], ["#ffe13c", "ancien rift"], ["#3c141e", "grand épanchement de lave (trapps)"]] },
       { id: "montagnes", nom: "Histoire : dernière formation de montagnes", on: false, op: 0.9,
         leg: [["#eb1e1e", "aujourd'hui"], ["#fa9628", "il y a 100 Ma"], ["#f5e65a", "200 Ma"], ["#c88ce6", "300 Ma"], ["#6e3ca0", "700 Ma (vieilles sutures)"]] },
       { id: "age", nom: "Histoire : âge de la croûte", on: false, op: 0.8,
@@ -502,7 +502,7 @@ const DIT = {
   BornOfRift: e => [true, `<b>La ${P(e.p)} naît.</b> Le rift ${e.r + 1} a traversé son continent et la croûte a cédé : la ${P(e.o)} est coupée en deux.`],
   BornOfTrench: e => [true, `<b>La ${P(e.p)} naît : une fosse est née.</b> Le fond d'océan de la ${P(e.o)} (${aire(e.km2)}) était poussé contre son continent plus fort que sa marge ne tient, depuis deux étapes : la marge a cédé, ce fond se détache de son continent et commence à plonger dessous.`],
   BornCutOff: e => [true, `<b>La ${P(e.p)} naît.</b> Un grand morceau de la ${P(e.o)} (${aire(e.km2)}), séparé du reste sur la carte, devient une plaque à part, avec le même mouvement.`],
-  EndedWelded: e => [true, `<b>La ${P(e.p)} disparaît.</b> Elle est soudée à la ${P(e.o)} : leur collision ne bougeait plus.`],
+  EndedWelded: e => [true, `<b>La ${P(e.p)} disparaît.</b> Elle est soudée à la ${P(e.o)} : leur chaîne de collision retenait tout ce qui les pressait l'une contre l'autre, ou bien leur suture a tenu contre ce qui les écartait. Les deux ne font plus qu'une plaque.`],
   EndedCrumb: e => [true, `<b>La ${P(e.p)} disparaît.</b> C'est une miette (${aire(e.km2)}, moins de 100 000 km²) : la ${P(e.o)}, qu'elle touche le plus, la prend.`],
   EndedEnclosed: e => [true, `<b>La ${P(e.p)} disparaît.</b> Petite plaque (${aire(e.km2)}) enfermée dans la seule ${P(e.o)} : celle-ci la prend.`],
   EndedNoCell: e => [true, `<b>La ${P(e.p)} disparaît.</b> Il ne lui reste aucune case : son fond a plongé ou ses dernières cases ont été reprises une à une. Aucune règle ne la nomme.`],
@@ -511,9 +511,9 @@ const DIT = {
   PartTaken: e => [false, `Un morceau de la ${P(e.p)} (${aire(e.km2)}), séparé du reste, est pris par la ${P(e.o)}.`],
   RiftBegun: e => [false, `Un fossé de rift commence sur la ${P(e.p)} (rift ${e.r + 1}).`],
   RiftAbandoned: e => [false, `Le fossé du rift ${e.r + 1} est abandonné : la traction l'a quitté (rift avorté).`],
-  CollisionBegun: e => [false, `Collision : les continents de la ${P(e.p)} et de la ${P(e.o)} se rencontrent.`],
+  CollisionBegun: e => [false, `Collision : les continents de la ${P(e.p)} et de la ${P(e.o)} se rencontrent. La croûte de l'un passe sous l'autre et l'épaissit : une chaîne monte.`],
   Docked: e => [false, `Des terranes ou des arcs d'îles accostent la ${P(e.p)} (${aire(e.km2)})${e.o === null ? "" : `, portés jusque-là par la ${P(e.o)}`}.`],
-  IslandsRisen: e => [false, `Des îles naissent au bord de la ${P(e.p)} (arc volcanique, ${aire(e.km2)})${e.o === null ? "" : `, au-dessus du fond de la ${P(e.o)} qui plonge`}.`],
+  IslandsRisen: e => [false, `Des îles naissent au bord de la ${P(e.p)} (${aire(e.km2)}) : le fond de l'océan, épaissi par les volcans de l'arc, y est devenu une croûte trop légère pour plonger${e.o === null ? "" : `, au-dessus du fond de la ${P(e.o)} qui plonge`}.`],
   Opened: e => [false, `Une frontière s'ouvre à l'intérieur d'un continent, entre la ${P(e.p)} et la ${P(e.o)}.`],
   Lava: e => [false, `Grand épanchement de lave (trapps, ${aire(e.km2)}).`],
 };

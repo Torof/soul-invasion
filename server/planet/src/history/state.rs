@@ -70,7 +70,7 @@ pub(crate) struct World<'a> {
     pub(super) record_of: Vec<[usize; MAXP]>,
     /// The pairs of plates a collision's pile has stopped, from the
     /// forces of the last step (`forces::drive_from`).
-    pub(super) locked: Vec<(u8, u8)>,
+    pub(super) locked: Vec<(u8, u8, bool)>,
     // Rifts in progress, arcs, silt.
     pub(super) troughs: Vec<Trough>,
     /// The tension across each plate's most pulled line at the last step,
@@ -118,6 +118,7 @@ pub(crate) struct World<'a> {
     pub(super) out_rifts: Vec<Vec<(V3, u16, bool)>>,
     pub(super) continental_km2: Vec<i64>,
     pub(super) shortened_km2: Vec<i64>,
+    pub(super) folded_km2: Vec<i64>,
     pub(super) made_km2: Vec<i64>,
     /// The journal: the events since the last step was written, the
     /// journal of each step, and each plate's group when the last step
@@ -248,6 +249,7 @@ pub(super) struct Step {
     /// The cells of crust that dock, and the plate they join.
     pub(super) accrete: Vec<(usize, u8)>,
     pub(super) shortened: i64,
+    pub(super) folded: i64,
     pub(super) made: i64,
     /// Where each bit of floor is drawn.
     pub(super) drawn: Vec<u32>,
@@ -259,6 +261,7 @@ pub(super) struct Step {
     pub(super) margin_of: Vec<u8>,
     /// The collisions' piles (`collisions::progress`).
     pub(super) piles: Vec<Pile>,
+    pub(super) sutures: Vec<Suture>,
 }
 
 impl Step {
@@ -282,6 +285,7 @@ impl Step {
             pending: Vec::new(),
             accrete: Vec::new(),
             shortened: 0,
+            folded: 0,
             made: 0,
             drawn: Vec::new(),
             built: 0,
@@ -299,6 +303,7 @@ impl Step {
             },
             margin_of: Vec::new(),
             piles: Vec::new(),
+            sutures: Vec::new(),
         }
     }
 }

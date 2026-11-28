@@ -219,7 +219,7 @@ struct Count {
     born_km2: u64,
     // Version 15. Counts added over the planets ([`STOPPED`]...), and
     // lists of a value a planet or an event ([`LASTED`]...).
-    tally: [u64; 22],
+    tally: [u64; 31],
     // Shelves built out, km2.
     built: u64,
     // What moves the sea, at the five quarters of the history, a value
@@ -242,6 +242,16 @@ const ON_CRUMBS: usize = 2;
 const BIG: usize = 3;
 const BIG_BRIEF: usize = 4;
 const BIG_STOPPED: usize = 5;
+/// Version 19. Collisions whose suture held their two plates together
+/// against a pull (they are one plate); of those between two continents:
+/// the same, those going on today, those ended otherwise (three: the
+/// plates parted, their continents touch no more, a plate was taken or
+/// cut), and of these the ones of one step only (the same three).
+const HELD: usize = 22;
+const BIG_HELD: usize = 23;
+const BIG_GOING: usize = 24;
+const BIG_OTHER: usize = 25;
+const BIG_BRIEF_OTHER: usize = 28;
 /// [`Count::lists`]: how long each collision lasted, My; the same for
 /// those of more than a step; each planet's thickest pile, tenths of a
 /// km; its continents today and the largest, k km2; the most continent
@@ -1013,6 +1023,21 @@ fn main() {
                 per(n.tally[BIG_BRIEF], n.planets),
                 per(n.tally[BIG_STOPPED], n.planets),
             ],
+            "ended because their suture held against a pull (the two plates are one)": per(n.tally[HELD], n.planets),
+            "between two plates with over 1 M km2 of continent each: made one plate by their suture, going on today": [
+                per(n.tally[BIG_HELD], n.planets),
+                per(n.tally[BIG_GOING], n.planets),
+            ],
+            "the same, ended otherwise: the plates parted along their front, their continents touch no more (one run under whole, or slid past), a plate taken by another or cut by a rift": [
+                per(n.tally[BIG_OTHER], n.planets),
+                per(n.tally[BIG_OTHER + 1], n.planets),
+                per(n.tally[BIG_OTHER + 2], n.planets),
+            ],
+            "the same three, of those of one step only": [
+                per(n.tally[BIG_BRIEF_OTHER], n.planets),
+                per(n.tally[BIG_BRIEF_OTHER + 1], n.planets),
+                per(n.tally[BIG_BRIEF_OTHER + 2], n.planets),
+            ],
             "how long those last, My: least, median, most": spread(&mut n.lists[LASTED_BIG]),
             "how long a collision lasts, My: least, median, most": spread(&mut n.lists[LASTED]),
             "the same, of those of more than a step": spread(&mut n.lists[LASTED_LONG]),
@@ -1458,6 +1483,19 @@ fn real(world: &Planet, settings: &Settings) -> Vec<(&'static str, Vec<i64>)> {
         "sediment made in the history, k km3: in all; of which crust taken off the continents; of which sediment taken up again; the continents' crust at the start, k km3",
         vec![worn / 1_000_000, crust / 1_000_000, again / 1_000_000, start / 1_000_000],
     ));
+    let years = (h.class.len() as i64 - 1).max(1) * world.settings.step_my;
+    rows.push((
+        "sediment made, thousandths of a km3 a year (the Earth: some 2,000 over 540 My, 5,000 to 7,000 today)",
+        vec![worn / (years * 1_000_000)],
+    ));
+    // Version 19: the two ways a continent shortens.
+    rows.push((
+        "continental crust shortened in the history, k km2: run under at a collision or a docking; folded at a continent's edge above a trench",
+        vec![
+            h.shortened_km2.iter().sum::<i64>() / 1000,
+            h.folded_km2.iter().sum::<i64>() / 1000,
+        ],
+    ));
     rows
 }
 
@@ -1499,7 +1537,8 @@ fn rifts(world: &Planet, n: &mut Count) {
         n.collisions[0] += 1;
         n.collisions[1] += u64::from(c.front_cells >= 40);
         n.brief += u64::from(c.steps <= 1);
-        n.tally[STOPPED] += u64::from(c.stopped);
+        n.tally[STOPPED] += u64::from(c.stopped && !c.held);
+        n.tally[HELD] += u64::from(c.held);
         n.tally[GOING] += u64::from(c.ended_my == never);
         let ended = if c.ended_my == never { 0 } else { c.ended_my };
         let lasted = i64::from(c.from_my) - i64::from(ended);
@@ -1510,7 +1549,17 @@ fn rifts(world: &Planet, n: &mut Count) {
         if c.km2.0.min(c.km2.1) >= CRUMB_KM2 {
             n.tally[BIG] += 1;
             n.tally[BIG_BRIEF] += u64::from(c.steps <= 1);
-            n.tally[BIG_STOPPED] += u64::from(c.stopped);
+            n.tally[BIG_STOPPED] += u64::from(c.stopped && !c.held);
+            n.tally[BIG_HELD] += u64::from(c.held);
+            n.tally[BIG_GOING] += u64::from(c.ended_my == never);
+            n.tally[BIG_OTHER] += u64::from(c.end == history::ENDED_PARTED);
+            n.tally[BIG_OTHER + 1] += u64::from(c.end == history::ENDED_APART);
+            n.tally[BIG_OTHER + 2] += u64::from(c.end == history::ENDED_TAKEN);
+            if c.steps <= 1 {
+                n.tally[BIG_BRIEF_OTHER] += u64::from(c.end == history::ENDED_PARTED);
+                n.tally[BIG_BRIEF_OTHER + 1] += u64::from(c.end == history::ENDED_APART);
+                n.tally[BIG_BRIEF_OTHER + 2] += u64::from(c.end == history::ENDED_TAKEN);
+            }
             n.lists[LASTED_BIG].push(lasted);
         }
     }
