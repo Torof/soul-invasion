@@ -224,6 +224,9 @@ pub struct Handwork {
     pub(super) pending: Option<(Deed, ItemId)>,
     /// What came of its last cut or fold: something, or nothing.
     pub(super) done: Option<bool>,
+    /// The thing that came of it, when one did: what it sees in its
+    /// hands or at its feet (amended 28 November 2026).
+    pub(super) gave: Option<ItemId>,
     /// The last thing it set to work on: left alone today if refused.
     pub(super) last: Option<HandTarget>,
     /// The things it could not reach or work today, and the day.
@@ -321,6 +324,12 @@ impl Handwork {
         }
     }
 
+    /// What came of its gesture, seen: something, the thing, or nothing.
+    pub(super) fn came(&mut self, gave: Option<ItemId>) {
+        self.done = Some(gave.is_some());
+        self.gave = gave;
+    }
+
     /// Its last thing set to work on, refused: left alone today.
     pub(super) fn refused(&mut self, day: u64) {
         if let Some(target) = self.last.take() {
@@ -335,6 +344,7 @@ impl Handwork {
         self.to = None;
         self.pending = None;
         self.done = None;
+        self.gave = None;
         self.gestured = false;
         self.drew = false;
         self.fetch = None;
@@ -678,6 +688,25 @@ fn bark_fits(world: &World, rules: &Content, id: BodyId, deed: Deed) -> bool {
         return true;
     };
     body.load_g().saturating_add(mass_g) <= body.capacity_g(&rules.movement)
+}
+
+/// Whether the trunk of `tree` shows its wood bare to a body that would
+/// cut it for its bark by `deed` (amended 28 November 2026): the eye
+/// sees a stripped trunk, and such a tree is not one to cut bark from.
+/// Never so for a cut on a branch, or of a kind whose bark does not come
+/// away.
+fn shows_bare(
+    world: &World,
+    rules: &Content,
+    deed: Deed,
+    (chunk, key): (ChunkPos, TreeKey),
+) -> bool {
+    cut_part(deed.on) == Part::Trunk
+        && rules
+            .species
+            .get(cut_species(deed.on))
+            .is_some_and(|s| s.bark.is_some())
+        && world.bark_left(chunk, key, rules) == Some(0)
 }
 
 /// The trees standing within `near` tiles of `here`, nearest first: their
@@ -1378,9 +1407,12 @@ fn needed(
                         }
                         continue;
                     };
-                    if let Some(&(chunk, key, at, _)) = trees_near(world, here, near, mind)
-                        .iter()
-                        .find(|t| cut_species(deed.on) == t.3 && bark_fits(world, rules, id, deed))
+                    if let Some(&(chunk, key, at, _)) =
+                        trees_near(world, here, near, mind).iter().find(|t| {
+                            cut_species(deed.on) == t.3
+                                && bark_fits(world, rules, id, deed)
+                                && !shows_bare(world, rules, deed, (t.0, t.1))
+                        })
                     {
                         let part = cut_part(deed.on);
                         let target = HandTarget::Tree {
@@ -1535,6 +1567,7 @@ fn act_on(
 fn begin(mind: &mut Mind, deed: Deed, item: ItemId) {
     mind.handwork.pending = Some((deed, item));
     mind.handwork.done = None;
+    mind.handwork.gave = None;
     if mind
         .trial
         .is_some_and(|t| t.way == Way::Hands && !t.before.hands.contains(deed))
@@ -1677,6 +1710,23 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
         }
     };
     mind.handwork.pending = None;
+    // A trunk answers a cut by its state (amended 28 November 2026):
+    // bare of its bark it gives its wood, or nothing to an edge too
+    // blunt for wood, where the same cut gives bark on a whole tree. What
+    // came is then the tree's answer, not the deed's: nothing is learnt
+    // of the deed, and nothing remembered against it.
+    let came = mind.handwork.gave.take();
+    if deed.gesture == Gesture::Cut
+        && let Some(gives) = product(rules, deed)
+        && came.map_or(!worked, |thing| {
+            world
+                .item(thing)
+                .and_then(|i| material_index(rules, i.material()))
+                != Some(gives)
+        })
+    {
+        return None;
+    }
     if !worked {
         // What gave nothing or broke the thing is remembered (amended 27
         // November 2026), unless it is a deed its hands know: that one
@@ -1926,6 +1976,109 @@ mod tests {
         };
         assert_eq!(mind.handwork.practised(cut), 1);
         assert_eq!(mind.ways.hands, bark_deeds(&rules, birch));
+    }
+
+    #[test]
+    fn a_bare_trunk_is_not_cut_for_bark_and_its_answer_teaches_nothing_of_the_deed() {
+        // Amended 28 November 2026: a trunk wears so much bark where the
+        // hands reach, and bare, it answers the same cut with its wood.
+        let (rules, mut world, mut brains, id, birch) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let flint = picked(&mut world, &rules, id, "flint");
+        let knows = |brains: &Brains| {
+            let mut mind = brains.minds.get(&id).unwrap().clone();
+            mind.ways.hands = bark_deeds(&rules, birch);
+            mind
+        };
+        // It knows the bark and lacks it: it cuts the birch beside it.
+        let HandsTurn::Decide(Some(Decision {
+            intention: Intention::Cut { chunk, tree, .. },
+            ..
+        })) = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            &mut knows(&brains),
+            (7, &mut Vec::new()),
+        )
+        else {
+            panic!("a cut");
+        };
+        // Another strips that trunk.
+        let other = world.spawn_body(here);
+        let its = picked(&mut world, &rules, other, "flint");
+        let mut events = Vec::new();
+        while world.bark_left(chunk, tree, &rules) != Some(0) {
+            world.queue(Intention::Cut {
+                body: other,
+                with: its,
+                chunk,
+                tree,
+                part: Part::Trunk,
+            });
+            world.advance(12, &rules, &mut events);
+        }
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), 0);
+        // The eye sees the wood bare: it does not cut that tree for bark.
+        let turn = hands_turn(
+            &world,
+            &rules,
+            (id, here),
+            &mut knows(&brains),
+            (7, &mut Vec::new()),
+        );
+        assert!(
+            !matches!(
+                turn,
+                HandsTurn::Decide(Some(Decision {
+                    intention: Intention::Cut { chunk: c, tree: t, .. },
+                    ..
+                })) if c == chunk && t == tree
+            ),
+            "{turn:?}"
+        );
+        // A cut made on it all the same (drawn: a tree it knows nothing
+        // of) is answered by the tree's state, wood to flint and nothing
+        // to quartz: neither learnt, practised, told nor remembered as
+        // a gesture that gives nothing.
+        for kind in ["flint", "quartz"] {
+            let with = match kind {
+                "flint" => flint,
+                _ => picked(&mut world, &rules, id, kind),
+            };
+            let cut = Deed {
+                gesture: Gesture::Cut,
+                on: birch,
+                with: material(&rules, kind),
+            };
+            let mind = brains.minds.get_mut(&id).unwrap();
+            mind.handwork.pending = Some((cut, with));
+            events.clear();
+            world.queue(Intention::Cut {
+                body: id,
+                with,
+                chunk,
+                tree,
+                part: Part::Trunk,
+            });
+            world.advance(12, &rules, &mut events);
+            assert!(
+                events.iter().any(|e| matches!(
+                    e,
+                    Event::Gestured { body, gave, .. }
+                        if *body == id && gave.is_some() == (kind == "flint")
+                )),
+                "{kind}"
+            );
+            brains.notice(&events, &world, &rules);
+            let mind = brains.minds.get_mut(&id).unwrap();
+            let _ = hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()));
+            assert_eq!(mind.handwork.practised(cut), 0, "{kind}");
+            assert!(!mind.handwork.failed(cut), "{kind}");
+            assert!(!mind.handwork.served(material(&rules, kind)), "{kind}");
+            assert!(mind.handwork.novel.is_empty(), "{kind}");
+            assert!(mind.ways.hands.is_empty(), "{kind}");
+        }
     }
 
     #[test]

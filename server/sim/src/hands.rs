@@ -59,6 +59,38 @@ pub enum Part {
     Branch,
 }
 
+/// The trunk of a standing tree as it is on a journée (D57, amended 28
+/// November 2026): what it is by the seed, and what men's marks have left
+/// of it, healing counted ([`World::trunk_now`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Trunk {
+    /// How thick it is, in millimetres.
+    pub trunk_mm: u32,
+    /// Its whole section, in square millimetres.
+    pub section_mm2: u32,
+    /// The pieces of bark it wears where the hands reach, untouched: 0
+    /// for a kind whose bark does not come away.
+    pub plates: u32,
+    /// The section cut through today.
+    pub notch_mm2: u32,
+    /// The pieces of bark missing today.
+    pub barked: u32,
+}
+
+/// What is left of a mark of `left` on a whole of `whole` after `days`
+/// journées, the whole healing in `over` journées.
+fn healed(left: u32, whole: u32, days: u64, over: u64) -> u32 {
+    let back = u64::from(whole).saturating_mul(days) / over.max(1);
+    u32::try_from(u64::from(left).saturating_sub(back)).unwrap_or(u32::MAX)
+}
+
+/// The journées after which nothing is left of a mark of `left` on a
+/// whole of `whole` that heals in `over` journées: the first for which
+/// [`healed`] gives nothing.
+fn heals_in(left: u32, whole: u32, over: u64) -> u64 {
+    (u64::from(left).saturating_mul(over.max(1))).div_ceil(u64::from(whole.max(1)))
+}
+
 impl Part {
     /// Both parts, in a fixed order.
     pub const ALL: [Part; 2] = [Part::Trunk, Part::Branch];
@@ -819,10 +851,13 @@ impl World {
     /// What a cut gives, by the part of the tree it is made on and what
     /// the thing in hand is ([`Content::cut_gives`]; amended 27 November
     /// 2026). On the trunk: a piece of the tree's bark, when the thing
-    /// works it loose; and when it works the living wood under it, it
+    /// works it loose, while the trunk wears bark where the hands reach
+    /// ([`World::trunk_now`]); lifting bark never deepens the notch
+    /// (amended 28 November 2026). Where the bark is gone, or on a tree
+    /// whose bark does not come away, a thing that works the living wood
     /// bites ([`World::bite`]): chips fall and the tree's notch deepens,
     /// until the tree falls. On a branch: the branch, when the thing
-    /// works living wood. The bark first, else the chips.
+    /// works living wood.
     fn cut_gives(
         &mut self,
         index: usize,
@@ -853,10 +888,31 @@ impl World {
                     .as_deref()
                     .and_then(|bark| rules.material(bark))
                     .filter(|bark| tool.works(bark))
-                    .map(piece)
-                    .map(|(bark, mass_g)| self.gain(index, &bark, mass_g, rules, events));
-                let chips = self.bite(index, (chunk, tree), tool, rules, events);
-                bark.or(chips)
+                    .map(piece);
+                let Some(trunk) = self.trunk_now(chunk, &tree, rules) else {
+                    // Trees without parts: the bark, as before them.
+                    let (bark, mass_g) = bark?;
+                    return Some(self.gain(index, &bark, mass_g, rules, events));
+                };
+                if trunk.barked < trunk.plates {
+                    // The bark is on: a piece comes away, or nothing
+                    // does; the wood under it is not reached.
+                    let (bark, mass_g) = bark?;
+                    let lifted = Trunk {
+                        barked: trunk.barked + 1,
+                        ..trunk
+                    };
+                    self.mark(chunk, tree.key, lifted, rules);
+                    events.push(Event::BarkLifted {
+                        body: self.bodies[index].id,
+                        chunk,
+                        tree: tree.key,
+                        left: lifted.plates - lifted.barked,
+                        version: self.chunk_version(chunk),
+                    });
+                    return Some(self.gain(index, &bark, mass_g, rules, events));
+                }
+                self.bite(index, (chunk, tree), trunk, tool, rules, events)
             }
         }
     }
@@ -958,13 +1014,104 @@ impl World {
         Some(parts.trunk_mm(species, roll))
     }
 
-    /// The section of the trunk of the tree `tree` of `chunk` cut
-    /// through so far, in square millimetres: 0 for a tree no edge bit.
+    /// The trunk of `tree` of `chunk` as it stands today (D57, amended
+    /// 28 November 2026): its thickness and section, the pieces of bark
+    /// it wears where the hands reach, and what is left today of the
+    /// marks men made on it, healed by the journées gone since the last
+    /// one: a notch closes, the bark grows back, each in proportion to
+    /// the content's seasons. Worked out here, when the tree is looked at
+    /// or cut, never by a pass over the trees. `None` where trees have no
+    /// parts.
     #[must_use]
-    pub fn notch_mm2(&self, chunk: ChunkPos, tree: TreeKey) -> u32 {
-        self.changes_in(chunk)
-            .and_then(|c| c.notched.get(&tree).copied())
-            .unwrap_or(0)
+    pub fn trunk_now(
+        &self,
+        chunk: ChunkPos,
+        tree: &crate::trees::Tree,
+        rules: &Content,
+    ) -> Option<Trunk> {
+        let parts = rules.needs.hands.trees.as_ref()?;
+        let species = rules.species.get(tree.species)?;
+        let trunk_mm = self.trunk_mm(tree, rules)?;
+        let section_mm2 = crate::content::TreeParts::section_mm2(trunk_mm);
+        let plates = species
+            .bark
+            .as_deref()
+            .and_then(|bark| rules.material(bark))
+            .map_or(0, |bark| parts.bark_plates(trunk_mm, bark));
+        let today = self.day_now();
+        let (notch_mm2, barked) = self
+            .changes_in(chunk)
+            .and_then(|c| c.scars.get(&tree.key))
+            .filter(|scar| scar.whole_day > today)
+            .map_or((0, 0), |scar| {
+                let days = today.saturating_sub(scar.day);
+                let (closes, grows) = parts.heal_days(self.calendar.days_per_cycle());
+                (
+                    healed(scar.notch_mm2.min(section_mm2), section_mm2, days, closes),
+                    healed(scar.barked.min(plates), plates, days, grows),
+                )
+            });
+        Some(Trunk {
+            trunk_mm,
+            section_mm2,
+            plates,
+            notch_mm2,
+            barked,
+        })
+    }
+
+    /// The tree of `chunk` with the key `key`, if it stands.
+    fn standing(&self, chunk: ChunkPos, key: TreeKey) -> Option<crate::trees::Tree> {
+        self.trees_in(chunk).iter().find(|t| t.key == key).copied()
+    }
+
+    /// The section of the trunk of the tree `tree` of `chunk` cut
+    /// through as it is today, in square millimetres: 0 for a tree no
+    /// edge bit, or whose notch has closed.
+    #[must_use]
+    pub fn notch_mm2(&self, chunk: ChunkPos, tree: TreeKey, rules: &Content) -> u32 {
+        self.standing(chunk, tree)
+            .and_then(|tree| self.trunk_now(chunk, &tree, rules))
+            .map_or(0, |trunk| trunk.notch_mm2)
+    }
+
+    /// The pieces of bark the trunk of the tree `tree` of `chunk` wears
+    /// today where the hands reach (D57, amended 28 November 2026): what
+    /// the eye sees of a trunk, bare or not. `None` for a tree that
+    /// stands no more, or where trees have no parts; 0 for a kind whose
+    /// bark does not come away.
+    #[must_use]
+    pub fn bark_left(&self, chunk: ChunkPos, tree: TreeKey, rules: &Content) -> Option<u32> {
+        let tree = self.standing(chunk, tree)?;
+        let trunk = self.trunk_now(chunk, &tree, rules)?;
+        Some(trunk.plates - trunk.barked)
+    }
+
+    /// Keeps the marks of `trunk`, the trunk of the tree `key` of
+    /// `chunk`, as of today (D57, amended 28 November 2026), with the
+    /// journée by which they will have healed if nobody adds to them.
+    fn mark(&mut self, chunk: ChunkPos, key: TreeKey, trunk: Trunk, rules: &Content) {
+        let Some(parts) = rules.needs.hands.trees.as_ref() else {
+            return;
+        };
+        let day = self.day_now();
+        let (closes, grows) = parts.heal_days(self.calendar.days_per_cycle());
+        let heals = heals_in(trunk.notch_mm2, trunk.section_mm2, closes).max(heals_in(
+            trunk.barked,
+            trunk.plates,
+            grows,
+        ));
+        self.change(chunk, |c| {
+            c.scars.insert(
+                key,
+                crate::changes::Scar {
+                    notch_mm2: trunk.notch_mm2,
+                    barked: trunk.barked,
+                    day,
+                    whole_day: day.saturating_add(heals),
+                },
+            );
+        });
     }
 
     /// The thing in hand bites the trunk of `tree` (D57, amended 27
@@ -978,20 +1125,18 @@ impl World {
         &mut self,
         index: usize,
         (chunk, tree): (ChunkPos, crate::trees::Tree),
+        trunk: Trunk,
         tool: &crate::content::Material,
         rules: &Content,
         events: &mut Vec<Event>,
     ) -> Option<ItemId> {
         let parts = rules.needs.hands.trees.as_ref()?;
         let bite = rules.bite_mm2(tool)?;
-        let trunk_mm = self.trunk_mm(&tree, rules)?;
-        let section_mm2 = crate::content::TreeParts::section_mm2(trunk_mm);
-        let before = self.notch_mm2(chunk, tree.key).min(section_mm2);
+        let (trunk_mm, section_mm2) = (trunk.trunk_mm, trunk.section_mm2);
+        let before = trunk.notch_mm2.min(section_mm2);
         let cut = bite.min(section_mm2 - before);
         let notch_mm2 = before + cut;
-        self.change(chunk, |c| {
-            c.notched.insert(tree.key, notch_mm2);
-        });
+        self.mark(chunk, tree.key, Trunk { notch_mm2, ..trunk }, rules);
         let chips_g = parts.chips_g(cut);
         let feet = self.bodies[index].pos();
         let chips = (chips_g > 0).then(|| self.falls(&parts.chips, chips_g, feet, events));
@@ -1031,7 +1176,7 @@ impl World {
             return;
         };
         self.change(chunk, |c| {
-            c.notched.remove(&tree.key);
+            c.scars.remove(&tree.key);
             c.felled.insert(tree.key);
         });
         if let Some(felled) = self.changes_in(chunk).map(|c| c.felled.clone()) {
@@ -1921,7 +2066,7 @@ mod tests {
                 e,
                 Event::Gestured { part: Some(Part::Branch), on, .. } if on == "hazel"
             )));
-            assert_eq!(world.notch_mm2(chunk, tree), 0);
+            assert_eq!(world.notch_mm2(chunk, tree, &rules), 0);
             assert!(!events.iter().any(|e| matches!(e, Event::TreeBitten { .. })));
             if gives.is_some() {
                 let branch = body(&world, id)
@@ -1949,23 +2094,18 @@ mod tests {
                 .trunk_mm(&standing(&world, chunk, tree).unwrap(), &rules)
                 .unwrap(),
         );
-        // Quartz takes the birch's bark, as before, and does not bite.
-        let quartz = picked(&mut world, &rules, id, "quartz", 400);
-        let (gave, events) = cut_part(&mut world, &rules, (id, quartz), (chunk, tree, Part::Trunk));
-        assert_eq!(gave.as_deref(), Some("birch_bark"));
-        assert!(!events.iter().any(|e| matches!(e, Event::TreeBitten { .. })));
-        assert_eq!(world.notch_mm2(chunk, tree), 0);
-        // Flint takes the bark and bites the wood under it: chips, and a
-        // notch of one bite.
+        // The bark gone where the hands reach (28 November 2026), flint
+        // bites the wood: chips, and a notch of one bite.
         let flint = picked(&mut world, &rules, id, "flint", 400);
+        strip(&mut world, &rules, (id, flint), (chunk, tree));
         let (gave, events) = cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
-        assert_eq!(gave.as_deref(), Some("birch_bark"));
+        assert_eq!(gave.as_deref(), Some("wood_chips"));
         assert!(events.iter().any(|e| matches!(
             e,
             Event::TreeBitten { body, chips_g: 66, notch_mm2: 1320, section_mm2, .. }
                 if *body == id && *section_mm2 == section
         )));
-        assert_eq!(world.notch_mm2(chunk, tree), 1320);
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), 1320);
         // The chips fell at its feet; it carries none.
         let feet = body(&world, id).pos();
         let chips = |world: &World| -> Vec<u32> {
@@ -1999,14 +2139,17 @@ mod tests {
             e,
             Event::ItemAdded { material, mass_g: 132, .. } if material == "wood_chips"
         )));
-        assert_eq!(world.notch_mm2(chunk, tree), 2640);
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), 2640);
         // Another's cuts add to it: the notch is the tree's.
         let other = world.spawn_body(feet);
         let its = picked(&mut world, &rules, other, "flint", 400);
         cut_part(&mut world, &rules, (other, its), (chunk, tree, Part::Trunk));
-        assert_eq!(world.notch_mm2(chunk, tree), 3960);
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), 3960);
         // It is kept with the chunk's changes, and the tree still stands.
-        assert_eq!(world.changes_in(chunk).unwrap().notched[&tree], 3960);
+        assert_eq!(
+            world.changes_in(chunk).unwrap().scars[&tree].notch_mm2,
+            3960
+        );
         assert!(standing(&world, chunk, tree).is_some());
         // A tree with no bark that comes away gives its chips.
         let (mut world, id, chunk, tree) = by_a(&rules, "hazel");
@@ -2050,7 +2193,7 @@ mod tests {
         assert!(standing(&world, chunk, key).is_none());
         assert!(!world.is_trunk(tile));
         let changes = world.changes_in(chunk).unwrap();
-        assert!(changes.felled.contains(&key) && !changes.notched.contains_key(&key));
+        assert!(changes.felled.contains(&key) && !changes.scars.contains_key(&key));
         assert_eq!(world.shared_ground().trees_placed(), placed);
         // Where it stood lie its log, of the trunk's mass, and a branch
         // of its crown, of living wood, each told as an item added.
@@ -2096,13 +2239,22 @@ mod tests {
         let tree = standing(&world, chunk, key).unwrap();
         let trunk_mm = world.trunk_mm(&tree, &rules).unwrap();
         let section = crate::content::TreeParts::section_mm2(trunk_mm);
-        // All but the last bite given already, by whoever: a notch
-        // stored is the tree's, and the next cut ends it.
+        // Its bark lifted and all but the last bite given already, by
+        // whoever: the marks stored are the tree's, and the next cut ends
+        // it.
         let mut changes = crate::changes::ChunkChanges {
             version: 1,
             ..Default::default()
         };
-        changes.notched.insert(key, section - 1);
+        changes.scars.insert(
+            key,
+            crate::changes::Scar {
+                notch_mm2: section - 1,
+                barked: world.bark_left(chunk, key, &rules).unwrap(),
+                day: 0,
+                whole_day: 128,
+            },
+        );
         world.restore_changes(chunk, changes);
         let flint = picked(&mut world, &rules, id, "flint", 400);
         let (_, events) = cut_part(&mut world, &rules, (id, flint), (chunk, key, Part::Trunk));
@@ -2159,5 +2311,299 @@ mod tests {
         assert_eq!(world.trees_in(chunk).len(), before - 1);
         assert!(standing(&world, chunk, key).is_none());
         assert!(!world.is_trunk(tree.at.tile()));
+    }
+
+    /// `id` lifts with `with` all the bark the trunk of `tree` wears
+    /// where the hands reach, laying each piece down; how many pieces.
+    fn strip(
+        world: &mut World,
+        rules: &Content,
+        (id, with): (BodyId, ItemId),
+        (chunk, tree): (ChunkPos, TreeKey),
+    ) -> u32 {
+        let pieces = world.bark_left(chunk, tree, rules).unwrap();
+        for left in (0..pieces).rev() {
+            let (gave, events) = cut_part(world, rules, (id, with), (chunk, tree, Part::Trunk));
+            assert!(gave.is_some_and(|g| g.ends_with("bark")));
+            assert!(events.iter().any(|e| matches!(
+                e,
+                Event::BarkLifted { body, chunk: c, tree: k, left: l, .. }
+                    if *body == id && *c == chunk && *k == tree && *l == left
+            )));
+            assert!(!events.iter().any(|e| matches!(e, Event::TreeBitten { .. })));
+        }
+        pieces
+    }
+
+    /// `days` journées go by, nothing done.
+    fn days_pass(world: &mut World, days: u64) {
+        world.tick.0 += days * world.calendar.ticks_per_day();
+    }
+
+    #[test]
+    fn a_trunk_wears_so_many_pieces_of_bark_by_its_girth_and_lifting_them_never_notches_it() {
+        let rules = tree_rules();
+        let parts = rules.needs.hands.trees.clone().unwrap();
+        let stuff = |id: &str| rules.material(id).unwrap();
+        // Its girth times the metre the hands reach, over a piece's
+        // area: 4 pieces on a birch of 22 cm, 10 on an oak of 55 cm, one
+        // at least on the thinnest stem.
+        assert_eq!(parts.bark_plates(220, stuff("birch_bark")), 4);
+        assert_eq!(parts.bark_plates(550, stuff("oak_bark")), 10);
+        assert_eq!(parts.bark_plates(10, stuff("oak_bark")), 1);
+        // Keen flint, that bites wood, lifts every piece and bites
+        // nothing: no chip, no notch, the tree standing.
+        let (mut world, id, chunk, tree) = by_a(&rules, "birch");
+        let trunk_mm = world
+            .trunk_mm(&standing(&world, chunk, tree).unwrap(), &rules)
+            .unwrap();
+        let pieces = parts.bark_plates(trunk_mm, stuff("birch_bark"));
+        assert!((3..=5).contains(&pieces), "a birch: {pieces} pieces");
+        assert_eq!(world.bark_left(chunk, tree, &rules), Some(pieces));
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        assert_eq!(
+            strip(&mut world, &rules, (id, flint), (chunk, tree)),
+            pieces
+        );
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), 0);
+        assert_eq!(world.bark_left(chunk, tree, &rules), Some(0));
+        let scar = world.changes_in(chunk).unwrap().scars[&tree];
+        assert_eq!((scar.notch_mm2, scar.barked), (0, pieces));
+        assert!(standing(&world, chunk, tree).is_some());
+        let feet = body(&world, id).pos();
+        assert!(
+            world
+                .laid_in(feet.chunk())
+                .all(|i| i.material() != "wood_chips")
+        );
+        // A kind whose bark does not come away wears none.
+        let (world, _, chunk, tree) = by_a(&rules, "hazel");
+        assert_eq!(world.bark_left(chunk, tree, &rules), Some(0));
+        // Without parts a trunk is not measured: bark without end.
+        let plain = self::rules();
+        let (mut world, id, chunk, tree) = by_a(&plain, "birch");
+        assert_eq!(world.bark_left(chunk, tree, &plain), None);
+        let flint = picked(&mut world, &plain, id, "flint", 400);
+        for _ in 0..8 {
+            let (gave, _) = cut_part(&mut world, &plain, (id, flint), (chunk, tree, Part::Trunk));
+            assert_eq!(gave.as_deref(), Some("birch_bark"));
+        }
+        assert!(world.changes_in(chunk).is_none_or(|c| c.scars.is_empty()));
+    }
+
+    #[test]
+    fn the_wood_is_cut_only_where_the_bark_is_gone() {
+        let rules = tree_rules();
+        let (mut world, id, chunk, tree) = by_a(&rules, "birch");
+        // Quartz lifts the birch's bark, piece after piece.
+        let quartz = picked(&mut world, &rules, id, "quartz", 400);
+        let (gave, events) = cut_part(&mut world, &rules, (id, quartz), (chunk, tree, Part::Trunk));
+        assert_eq!(gave.as_deref(), Some("birch_bark"));
+        assert!(!events.iter().any(|e| matches!(e, Event::TreeBitten { .. })));
+        // While a piece is left, flint too gives bark and no wood.
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        assert!(world.bark_left(chunk, tree, &rules).unwrap() >= 1);
+        strip(&mut world, &rules, (id, flint), (chunk, tree));
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), 0);
+        // The trunk bare, the same cut is answered by the wood: nothing
+        // to quartz, too blunt for it; chips and a notch to flint.
+        let (gave, events) = cut_part(&mut world, &rules, (id, quartz), (chunk, tree, Part::Trunk));
+        assert_eq!(gave, None);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::TreeBitten { .. } | Event::BarkLifted { .. }))
+        );
+        let (gave, events) = cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+        assert_eq!(gave.as_deref(), Some("wood_chips"));
+        assert!(events.iter().any(|e| matches!(e, Event::TreeBitten { .. })));
+        assert!(!events.iter().any(|e| matches!(e, Event::BarkLifted { .. })));
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), 1320);
+        // An oak's bark is too tough for quartz: under a bark that does
+        // not come away to it, no edge reaches the wood.
+        let (mut world, id, chunk, tree) = by_a(&rules, "oak");
+        let quartz = picked(&mut world, &rules, id, "quartz", 400);
+        let (gave, _) = cut_part(&mut world, &rules, (id, quartz), (chunk, tree, Part::Trunk));
+        assert_eq!(gave, None);
+        assert!(world.changes_in(chunk).is_none_or(|c| c.scars.is_empty()));
+    }
+
+    #[test]
+    fn a_notch_nobody_deepens_closes_and_the_bark_grows_back_with_the_seasons() {
+        let rules = tree_rules();
+        let (mut world, id, chunk, tree) = by_a(&rules, "birch");
+        let section = crate::content::TreeParts::section_mm2(
+            world
+                .trunk_mm(&standing(&world, chunk, tree).unwrap(), &rules)
+                .unwrap(),
+        );
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        let pieces = strip(&mut world, &rules, (id, flint), (chunk, tree));
+        for _ in 0..6 {
+            cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+        }
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), 6 * 1320);
+        let stored = world.changes_in(chunk).unwrap().clone();
+        // A night: the notch has lost the trunk's section over the 128
+        // journées of eight seasons, a fifth of a bite or so; a felling
+        // of several journées goes on from there.
+        days_pass(&mut world, 1);
+        let night = u32::try_from(u64::from(section) / 128).unwrap();
+        assert!((150..=500).contains(&night), "{night} mm² a night");
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), 6 * 1320 - night);
+        assert_eq!(world.bark_left(chunk, tree, &rules), Some(0));
+        // Nothing was written by looking: what is kept is the marks as
+        // they were made.
+        assert_eq!(world.changes_in(chunk), Some(&stored));
+        // The bark comes back piece by piece over eight seasons, the
+        // notch closes in proportion to what was cut.
+        days_pass(&mut world, 63);
+        let half = u32::try_from(u64::from(section) * 64 / 128).unwrap();
+        assert_eq!(
+            world.notch_mm2(chunk, tree, &rules),
+            (6 * 1320_u32).saturating_sub(half)
+        );
+        assert_eq!(world.bark_left(chunk, tree, &rules), Some(pieces / 2));
+        days_pass(&mut world, 63);
+        assert_eq!(world.bark_left(chunk, tree, &rules), Some(pieces - 1));
+        assert_eq!(stored.scars[&tree].whole_day, 128);
+        days_pass(&mut world, 1);
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), 0);
+        assert_eq!(world.bark_left(chunk, tree, &rules), Some(pieces));
+        // Whole again, the same cut gives bark again and bites nothing.
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        let (gave, events) = cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+        assert_eq!(gave.as_deref(), Some("birch_bark"));
+        assert!(!events.iter().any(|e| matches!(e, Event::TreeBitten { .. })));
+        let scar = world.changes_in(chunk).unwrap().scars[&tree];
+        assert_eq!((scar.notch_mm2, scar.barked, scar.day), (0, 1, 128));
+    }
+
+    #[test]
+    fn a_cut_dates_the_marks_from_what_healing_left_of_them() {
+        let rules = tree_rules();
+        let (mut world, id, chunk, tree) = by_a(&rules, "birch");
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        strip(&mut world, &rules, (id, flint), (chunk, tree));
+        cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+        cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+        days_pass(&mut world, 2);
+        let left = world.notch_mm2(chunk, tree, &rules);
+        assert!(left > 0 && left < 2640);
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+        let scar = world.changes_in(chunk).unwrap().scars[&tree];
+        assert_eq!((scar.notch_mm2, scar.day), (left + 1320, 2));
+        assert_eq!(world.notch_mm2(chunk, tree, &rules), left + 1320);
+    }
+
+    #[test]
+    fn a_healed_tree_is_forgotten_when_its_chunk_changes_or_is_loaded() {
+        let rules = tree_rules();
+        let (mut world, id, chunk, tree) = by_a(&rules, "birch");
+        let pieces = world.bark_left(chunk, tree, &rules).unwrap();
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        let (gave, _) = cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+        assert_eq!(gave.as_deref(), Some("birch_bark"));
+        let stored = world.changes_in(chunk).unwrap().clone();
+        let whole = stored.scars[&tree].whole_day;
+        assert!(
+            (16..=64).contains(&whole),
+            "a piece of bark: {whole} journées"
+        );
+        // The journée before, it is still kept, loaded or not.
+        days_pass(&mut world, whole - 1);
+        world.restore_changes(chunk, stored.clone());
+        assert_eq!(world.changes_in(chunk), Some(&stored));
+        assert_eq!(world.bark_left(chunk, tree, &rules), Some(pieces - 1));
+        // Healed, it is a tree among the others to whoever looks, though
+        // nothing passed over the records...
+        days_pass(&mut world, 1);
+        assert_eq!(world.changes_in(chunk), Some(&stored));
+        assert_eq!(world.bark_left(chunk, tree, &rules), Some(pieces));
+        // ...and its record goes when the chunk is loaded, the version
+        // kept...
+        let mut loaded = world.clone();
+        loaded.restore_changes(chunk, stored.clone());
+        let back = loaded.changes_in(chunk).unwrap();
+        assert!(back.scars.is_empty());
+        assert_eq!(back.version, stored.version);
+        // ...or when men next change the chunk: here another tree of it
+        // marked.
+        let other = world
+            .trees_in(chunk)
+            .iter()
+            .map(|t| t.key)
+            .find(|k| *k != tree)
+            .expect("another tree in the chunk");
+        world.mark(
+            chunk,
+            other,
+            Trunk {
+                trunk_mm: 100,
+                section_mm2: 7853,
+                plates: 0,
+                notch_mm2: 1320,
+                barked: 0,
+            },
+            &rules,
+        );
+        let scars = &world.changes_in(chunk).unwrap().scars;
+        assert!(!scars.contains_key(&tree) && scars.contains_key(&other));
+        // The changes forget by their own dates alone.
+        let mut changes = stored;
+        assert!(!changes.forget_healed(whole - 1));
+        assert!(changes.forget_healed(whole) && changes.scars.is_empty());
+    }
+
+    #[test]
+    fn a_felled_tree_stays_felled_whatever_the_seasons() {
+        let rules = tree_rules();
+        let (mut world, id, chunk, key) = by_a(&rules, "hazel");
+        let flint = picked(&mut world, &rules, id, "flint", 400);
+        for _ in 0..8 {
+            if standing(&world, chunk, key).is_none() {
+                break;
+            }
+            cut_part(&mut world, &rules, (id, flint), (chunk, key, Part::Trunk));
+        }
+        assert!(standing(&world, chunk, key).is_none());
+        days_pass(&mut world, 64 * 50);
+        assert!(standing(&world, chunk, key).is_none());
+        assert_eq!(world.notch_mm2(chunk, key, &rules), 0);
+        assert_eq!(world.bark_left(chunk, key, &rules), None);
+        let stored = world.changes_in(chunk).unwrap().clone();
+        world.restore_changes(chunk, stored);
+        let changes = world.changes_in(chunk).unwrap();
+        assert!(changes.felled.contains(&key) && changes.scars.is_empty());
+        assert!(standing(&world, chunk, key).is_none());
+    }
+
+    #[test]
+    fn the_marks_and_their_healing_are_the_same_on_every_run_looked_at_or_not() {
+        let rules = tree_rules();
+        let run = |look: bool| {
+            let (mut world, id, chunk, tree) = by_a(&rules, "birch");
+            let mut told = Vec::new();
+            for day in 0..6 {
+                let flint = picked(&mut world, &rules, id, "flint", 400);
+                for _ in 0..3 {
+                    let (gave, events) =
+                        cut_part(&mut world, &rules, (id, flint), (chunk, tree, Part::Trunk));
+                    told.push((day, gave, events));
+                    if look {
+                        let _ = world.notch_mm2(chunk, tree, &rules);
+                        let _ = world.bark_left(chunk, tree, &rules);
+                    }
+                }
+                days_pass(&mut world, 3);
+            }
+            let trunk = world.trunk_now(chunk, &standing(&world, chunk, tree).unwrap(), &rules);
+            (world.changes_in(chunk).cloned(), trunk, told)
+        };
+        let first = run(false);
+        assert!(first.1.is_some_and(|t| t.notch_mm2 > 0));
+        assert_eq!(first, run(false));
+        assert_eq!(first, run(true));
     }
 }

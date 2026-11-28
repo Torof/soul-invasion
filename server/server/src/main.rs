@@ -506,10 +506,13 @@ fn publish(shared: &Shared, world: &World, rules: &Content, event: &Event) {
                 shared.crop_picked(*chunk, &changes.picked, *version);
             }
         }
-        // A trunk bitten or a tree fallen changes its chunk (D57, amended
-        // 27 November 2026): its frames made from now on carry the trees
-        // still standing. No message of its own: the protocol has none.
-        Event::TreeBitten { chunk, version, .. } | Event::TreeFell { chunk, version, .. } => {
+        // A bark lifted, a trunk bitten or a tree fallen changes its chunk
+        // (D57, amended 27 and 28 November 2026): its frames made from
+        // now on carry the trees still standing. No message of its own:
+        // the protocol has none.
+        Event::BarkLifted { chunk, version, .. }
+        | Event::TreeBitten { chunk, version, .. }
+        | Event::TreeFell { chunk, version, .. } => {
             shared.tree_changed(*chunk, *version);
         }
         // Gathering is the brains' alone, and spoiled food goes as an item

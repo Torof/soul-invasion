@@ -1378,6 +1378,21 @@ pub enum Event {
         /// The thing folded broke: it is gone.
         broke: bool,
     },
+    /// A piece of bark was lifted off a trunk (D57, amended 28 November
+    /// 2026): the trunk wears one less where the hands reach, its wood
+    /// untouched. Seen by all.
+    BarkLifted {
+        /// Who.
+        body: BodyId,
+        /// The chunk of the tree.
+        chunk: ChunkPos,
+        /// The tree.
+        tree: trees::TreeKey,
+        /// The pieces of bark its trunk still wears where the hands reach.
+        left: u32,
+        /// Its chunk's version right after it.
+        version: ground::Version,
+    },
     /// An edge bit the living wood of a trunk (D57, amended 27 November
     /// 2026): chips fell and the tree's notch deepened. Seen by all.
     TreeBitten {
@@ -2556,7 +2571,10 @@ impl World {
 
     /// Puts back a chunk's changes as the storage kept them, version
     /// included: how a world is loaded.
-    pub fn restore_changes(&mut self, chunk: ChunkPos, changes: changes::ChunkChanges) {
+    pub fn restore_changes(&mut self, chunk: ChunkPos, mut changes: changes::ChunkChanges) {
+        // The trees healed since are forgotten (D57, amended 28 November
+        // 2026); the version stays the stored one.
+        changes.forget_healed(self.day_now());
         self.ground_cache.set_version(chunk, changes.version);
         self.ground_cache.set_felled(chunk, &changes.felled);
         self.changes.insert(chunk, Arc::new(changes));
@@ -2565,7 +2583,11 @@ impl World {
     /// Changes `chunk` as `change` does, and counts it: the chunk's
     /// version grows by one.
     fn change(&mut self, chunk: ChunkPos, change: impl FnOnce(&mut changes::ChunkChanges)) {
+        let today = self.day_now();
         let changes = Arc::make_mut(self.changes.entry(chunk).or_default());
+        // A chunk men change forgets its trees healed since (D57, amended
+        // 28 November 2026): its own marks alone are looked at.
+        changes.forget_healed(today);
         change(changes);
         changes.version += 1;
         self.ground_cache.set_version(chunk, changes.version);
@@ -2833,6 +2855,12 @@ impl World {
     /// The world's day now, counted from its first.
     pub fn today(&self) -> i64 {
         i64::try_from(self.tick.0 / self.calendar.ticks_per_day().max(1)).unwrap_or(i64::MAX)
+    }
+
+    /// [`World::today`], never negative: the journée the changes of the
+    /// chunks are dated with.
+    fn day_now(&self) -> u64 {
+        u64::try_from(self.today()).unwrap_or(0)
     }
 
     /// How old a body is, in thousandths of an age-year (lot 3 B; D09,

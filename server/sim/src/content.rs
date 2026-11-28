@@ -1529,6 +1529,17 @@ pub struct TreeParts {
     pub crown_percent: u32,
     /// The branches of a fallen crown big enough to be things, at most.
     pub branches_most: u32,
+    /// The height of trunk whose bark a standing body's hands lift, in
+    /// millimetres (amended 28 November 2026): with the trunk's girth,
+    /// how many pieces of its bark a tree gives before its wood is bare.
+    pub bark_reach_mm: u32,
+    /// The seasons a notch as wide as the trunk's whole section would
+    /// take to close, nobody deepening it (amended 28 November 2026): a
+    /// lesser notch closes in proportion.
+    pub notch_closes_seasons: u32,
+    /// The seasons a trunk stripped at hand height takes to wear all its
+    /// bark again (amended 28 November 2026).
+    pub bark_grows_seasons: u32,
 }
 
 impl TreeParts {
@@ -1548,6 +1559,9 @@ impl TreeParts {
             wood_kg_per_m3: 900,
             crown_percent: 20,
             branches_most: 8,
+            bark_reach_mm: 1000,
+            notch_closes_seasons: 8,
+            bark_grows_seasons: 8,
         }
     }
 
@@ -1561,9 +1575,12 @@ impl TreeParts {
             || !(100..=2000).contains(&self.wood_kg_per_m3)
             || self.crown_percent > 100
             || self.branches_most > 64
+            || !(1..=10_000).contains(&self.bark_reach_mm)
+            || !(1..=4000).contains(&self.notch_closes_seasons)
+            || !(1..=4000).contains(&self.bark_grows_seasons)
         {
             return Err(ContentError::Needs(
-                "hands.trees: slender and slender_big 10 to 200, girth_spread_percent at most 90, bite_mm2 1 to a million, chips_g_per_cm2 at most 1000, stem_form_percent 1 to 100, wood_kg_per_m3 100 to 2000, crown_percent at most 100, branches_most at most 64",
+                "hands.trees: slender and slender_big 10 to 200, girth_spread_percent at most 90, bite_mm2 1 to a million, chips_g_per_cm2 at most 1000, stem_form_percent 1 to 100, wood_kg_per_m3 100 to 2000, crown_percent at most 100, branches_most at most 64, bark_reach_mm 1 to 10000, notch_closes_seasons and bark_grows_seasons 1 to 4000",
             ));
         }
         Ok(())
@@ -1628,6 +1645,31 @@ impl TreeParts {
     #[must_use]
     pub fn chips_g(&self, mm2: u32) -> u32 {
         u32::try_from(u64::from(mm2) * u64::from(self.chips_g_per_cm2) / 100).unwrap_or(u32::MAX)
+    }
+
+    /// How many pieces of `bark` a trunk `trunk_mm` thick wears where
+    /// the hands reach (amended 28 November 2026): its girth times the
+    /// height reached, over the area of one piece; one at least.
+    #[must_use]
+    pub fn bark_plates(&self, trunk_mm: u32, bark: &Material) -> u32 {
+        // π as 355 / 113; a square decimetre is 10,000 mm².
+        let girth_mm = u64::from(trunk_mm) * 355 / 113;
+        let piece_mm2 = u64::from(bark.area_dm2.max(1)) * 10_000;
+        u32::try_from(girth_mm * u64::from(self.bark_reach_mm) / piece_mm2)
+            .unwrap_or(u32::MAX)
+            .max(1)
+    }
+
+    /// The journées a notch as wide as the whole section takes to close,
+    /// and a stripped trunk to wear its bark again, under a calendar of
+    /// `days_per_cycle` journées a cycle: a journée each at least.
+    #[must_use]
+    pub fn heal_days(&self, days_per_cycle: u32) -> (u64, u64) {
+        let days = |seasons| u64::from(season_days(seasons, days_per_cycle).max(1));
+        (
+            days(self.notch_closes_seasons),
+            days(self.bark_grows_seasons),
+        )
     }
 }
 
@@ -4670,25 +4712,26 @@ impl Content {
     }
 
     /// What a cut of a part of a tree of `species` gives with a piece of
-    /// `tool` in hand (D57, amended 27 November 2026). On the trunk: the
-    /// tree's bark, when it has one that comes away and the tool works it
-    /// loose ([`Material::works`]); else the chips of the living wood,
-    /// when the tool bites it ([`Content::bite_mm2`]). On a branch: the
-    /// branch, of living wood, when the tool works that. Nothing
-    /// otherwise.
+    /// `tool` in hand (D57, amended 27 November 2026), the tree being as
+    /// the seed made it. On the trunk: the tree's bark, when it has one
+    /// that comes away and the tool works it loose ([`Material::works`]);
+    /// on a tree with no such bark, the chips of the living wood, when
+    /// the tool bites it ([`Content::bite_mm2`]). The wood under a bark
+    /// is cut only where the bark is gone (amended 28 November 2026):
+    /// that is the tree's state, the world's to know
+    /// ([`crate::World::bark_left`]). On a branch: the branch, of living
+    /// wood, when the tool works that. Nothing otherwise.
     #[must_use]
     pub fn cut_gives(&self, tool: &Material, species: &Species, part: Part) -> Option<&Material> {
         let trees = self.needs.hands.trees.as_ref();
         match part {
-            Part::Trunk => species
-                .bark
-                .as_deref()
-                .and_then(|bark| self.material(bark))
-                .filter(|bark| tool.works(bark))
-                .or_else(|| {
-                    self.bite_mm2(tool)?;
-                    self.material(&trees?.chips)
-                }),
+            Part::Trunk => {
+                if let Some(bark) = species.bark.as_deref().and_then(|b| self.material(b)) {
+                    return tool.works(bark).then_some(bark);
+                }
+                self.bite_mm2(tool)?;
+                self.material(&trees?.chips)
+            }
             Part::Branch => self.material(&trees?.wood).filter(|wood| tool.works(wood)),
         }
     }

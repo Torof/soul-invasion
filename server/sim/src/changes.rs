@@ -10,10 +10,11 @@
 //! the chunk it holds is still the one the server has.
 //!
 //! Today the natural items taken off the ground, the crops picked, the
-//! notches cut in the trunks and the trees felled (D57, amended 27
-//! November 2026) are the changes the simulation makes. The shape is
-//! ready for planted trees and constructions: they are stored and read
-//! back, but nothing in the simulation makes them yet.
+//! bark lifted off the trunks, the notches cut in them and the trees
+//! felled (D57, amended 27 and 28 November 2026) are the changes the
+//! simulation makes. The shape is ready for planted trees and
+//! constructions: they are stored and read back, but nothing in the
+//! simulation makes them yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -34,11 +35,13 @@ pub struct ChunkChanges {
     /// stumps stand where they stood. A felled forest never grows back by
     /// itself.
     pub felled: BTreeSet<TreeKey>,
-    /// The trees of the seed men cut into, by their placement cell: the
-    /// square millimetres of the trunk's section cut through so far, by
-    /// whoever cut (D57, amended 27 November 2026). A notch lasts; the
-    /// tree whose notch has cut its trunk through falls, and is `felled`.
-    pub notched: BTreeMap<TreeKey, u32>,
+    /// The trees of the seed men lifted bark from or cut into, by their
+    /// placement cell (D57, amended 27 and 28 November 2026): the marks
+    /// as they were the journée they were last made, healing since. A
+    /// tree whose notch has cut its trunk through falls, and is `felled`;
+    /// a tree whose marks have healed is forgotten here
+    /// ([`ChunkChanges::forget_healed`]): a tree among the others.
+    pub scars: BTreeMap<TreeKey, Scar>,
     /// The trees men planted, by the placement cell they were planted on.
     pub planted: BTreeMap<TreeKey, Planted>,
     /// What men built in the chunk.
@@ -48,6 +51,37 @@ pub struct ChunkChanges {
     /// taken. A crop of another year is whole again: what was picked last
     /// autumn does not lessen this one.
     pub picked: BTreeMap<(Source, String), Picked>,
+}
+
+impl ChunkChanges {
+    /// Forgets the trees whose marks are healed by the journée `today`
+    /// (D57, amended 28 November 2026): no more than this chunk's own
+    /// marks are looked at. Whether any was forgotten.
+    pub fn forget_healed(&mut self, today: u64) -> bool {
+        let before = self.scars.len();
+        self.scars.retain(|_, scar| scar.whole_day > today);
+        self.scars.len() != before
+    }
+}
+
+/// The marks men left on a standing tree's trunk (D57, amended 28
+/// November 2026), as they were on the journée of the last one. They
+/// heal with the journées gone since, worked out when the tree is looked
+/// at or cut again ([`crate::World::trunk_now`]), never by a pass over
+/// the trees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scar {
+    /// The square millimetres of the trunk's section cut through, by
+    /// whoever cut.
+    pub notch_mm2: u32,
+    /// The pieces of bark lifted off the trunk where the hands reach.
+    pub barked: u32,
+    /// The journée of the last mark.
+    pub day: u64,
+    /// The journée by which the notch is closed and the bark back, left
+    /// alone: worked out when the mark was made, so that a healed tree
+    /// is forgotten without its trunk being measured again.
+    pub whole_day: u64,
 }
 
 /// What men picked of one crop of one tree or plant.

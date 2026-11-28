@@ -1095,6 +1095,29 @@
         //                 be things lie where the tree fell, one at
         //                 least, eight at most (the twigs and the leaves
         //                 are not things).
+        //   bark_reach_mm: 1000 — the height of trunk whose bark a
+        //                 standing body's hands lift (28 November 2026).
+        //                 A trunk's bark is finite there: its girth
+        //                 times this height, over the area of one piece
+        //                 of its bark (area_dm2 in materials.ron), one
+        //                 piece at least: 4 pieces on a birch of 22 cm,
+        //                 10 on an oak of 55 cm. A cut lifts a piece and
+        //                 never bites the wood; the wood is cut only
+        //                 once the bark is gone. A placeholder.
+        //   notch_closes_seasons: 8 — a notch nobody deepens closes: a
+        //                 notch as wide as the trunk's whole section
+        //                 would take these seasons (two cycles), a
+        //                 lesser one in proportion (a single bite of
+        //                 flint in a birch of 22 cm: 5 journées; a birch
+        //                 half cut through: a cycle). A felling of
+        //                 several journées loses a fifth of a bite a
+        //                 night on such a birch. A placeholder.
+        //   bark_grows_seasons: 8 — a trunk stripped at hand height
+        //                 wears all its bark again in these seasons
+        //                 (two cycles), piece by piece. Once the notch
+        //                 is closed and the bark back, nothing is kept
+        //                 of the tree: it is as the seed made it. A
+        //                 felled tree stays felled. A placeholder.
         trees: Some((
             wood: "green_branch",
             chips: "wood_chips",
@@ -1108,6 +1131,9 @@
             wood_kg_per_m3: 900,
             crown_percent: 20,
             branches_most: 8,
+            bark_reach_mm: 1000,
+            notch_closes_seasons: 8,
+            bark_grows_seasons: 8,
         )),
     ),
     // The problems (D50 and D57, amended 26 November 2026; the project

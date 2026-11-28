@@ -7689,7 +7689,7 @@ impl Brains {
                     mind.water.retain(|_, place| place.water != *at);
                 }
                 match event {
-                    Event::Gestured { gave, .. } => mind.handwork.done = Some(gave.is_some()),
+                    Event::Gestured { gave, .. } => mind.handwork.came(*gave),
                     Event::GestureRefused { .. }
                     | Event::ActRefused {
                         act: crate::ItemAct::PickUp,

@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, params};
-use sim::changes::{ChunkChanges, Construction, Picked, Planted, Stage};
+use sim::changes::{ChunkChanges, Construction, Picked, Planted, Scar, Stage};
 use sim::crops::{PlantKey, Source};
 use sim::ground::Version;
 use sim::plan::Continent;
@@ -44,7 +44,10 @@ pub const SNAPSHOT_FORMAT_VERSION: u32 = 21;
 /// Version of a chunk's changes as stored (`encode_changes`). Bump on any
 /// change to their bytes, and read the old ones in `decode_changes`.
 /// 2 (16 November 2026): the crops picked (D45), a fifth list.
-/// 3 (27 November 2026): the notches cut in the trunks (D57), a sixth.
+/// 3 (27 November 2026, reshaped on the 28th before any world was stored
+/// with it): the marks on the trunks (D57), a sixth: each tree's notch,
+/// its bark lifted, the journée of the last mark and how long they take
+/// to heal.
 pub const CHUNK_CHANGES_FORMAT_VERSION: u32 = 3;
 
 /// Snapshots kept: the latest and two before it. Every one used to be
@@ -457,9 +460,11 @@ impl Storage for Sqlite {
 /// its stage (0 to 3), its day. A construction: its kind's id, its tile
 /// in the chunk (`y × 32 + x`), its day. A crop picked: what bore it (0
 /// and a tree's key, or 1 and a plant's place in millimetres, east then
-/// south), the material's id, the crop's year, the grams taken. A notch
-/// (D57, amended 27 November 2026): the tree's key, then the square
-/// millimetres of its trunk's section cut through, in the keys' order.
+/// south), the material's id, the crop's year, the grams taken. A marked
+/// trunk (D57, amended 27 and 28 November 2026), in the keys' order: the
+/// tree's key, the square millimetres of its trunk's section cut
+/// through, the pieces of bark lifted, the journée of the last mark, and
+/// the journées from it to the one by which the marks have healed.
 fn encode_changes(chunk: ChunkPos, changes: &ChunkChanges) -> Vec<u8> {
     fn varint(out: &mut Vec<u8>, mut value: u64) {
         while value >= 0x80 {
@@ -526,17 +531,20 @@ fn encode_changes(chunk: ChunkPos, changes: &ChunkChanges) -> Vec<u8> {
         varint(&mut out, picked.year);
         varint(&mut out, u64::from(picked.grams));
     }
-    varint(&mut out, changes.notched.len() as u64);
-    for (key, mm2) in &changes.notched {
+    varint(&mut out, changes.scars.len() as u64);
+    for (key, scar) in &changes.scars {
         varint(&mut out, u64::from(key.bits()));
-        varint(&mut out, u64::from(*mm2));
+        varint(&mut out, u64::from(scar.notch_mm2));
+        varint(&mut out, u64::from(scar.barked));
+        varint(&mut out, scar.day);
+        varint(&mut out, scar.whole_day.saturating_sub(scar.day));
     }
     out
 }
 
 /// The changes [`encode_changes`] wrote for `chunk` at `version`, in
 /// `format` (1 to 3); `None` if the bytes are damaged or the format
-/// unknown. An older format has no notch: none is read.
+/// unknown. An older format has no marked trunk: none is read.
 #[allow(
     clippy::too_many_lines,
     reason = "one straight reading, top to bottom; splitting it would scatter the rule"
@@ -661,9 +669,22 @@ fn decode_changes(
     if format >= 3 {
         for _ in 0..bytes.count()? {
             let key = TreeKey::from_bits(u16::try_from(bytes.varint()?).ok()?)?;
-            let mm2 = u32::try_from(bytes.varint()?).ok()?;
-            // A notch is of a tree standing, each tree once.
-            if changes.felled.contains(&key) || changes.notched.insert(key, mm2).is_some() {
+            let notch_mm2 = u32::try_from(bytes.varint()?).ok()?;
+            let barked = u32::try_from(bytes.varint()?).ok()?;
+            let day = bytes.varint()?;
+            let whole_day = day.checked_add(bytes.varint()?)?;
+            let scar = Scar {
+                notch_mm2,
+                barked,
+                day,
+                whole_day,
+            };
+            // A mark is of a tree standing, each tree once, and is of
+            // something.
+            if (notch_mm2 == 0 && barked == 0)
+                || changes.felled.contains(&key)
+                || changes.scars.insert(key, scar).is_some()
+            {
                 return None;
             }
         }
@@ -1597,8 +1618,33 @@ mod tests {
                 },
             );
         }
-        a.notched.insert(key(8), 1);
-        a.notched.insert(key(0x0890), u32::MAX);
+        a.scars.insert(
+            key(8),
+            Scar {
+                notch_mm2: 1,
+                barked: 0,
+                day: 0,
+                whole_day: 4000,
+            },
+        );
+        a.scars.insert(
+            key(0x0890),
+            Scar {
+                notch_mm2: u32::MAX,
+                barked: u32::MAX,
+                day: 70_000,
+                whole_day: 70_128,
+            },
+        );
+        a.scars.insert(
+            key(2 << 11 | 0x0105),
+            Scar {
+                notch_mm2: 0,
+                barked: 3,
+                day: 12,
+                whole_day: 108,
+            },
+        );
         a.picked.insert(
             (Source::Tree(key(0x0888)), "hazelnuts".to_owned()),
             Picked {
@@ -1641,7 +1687,7 @@ mod tests {
         // Format 1 was format 2 without its fifth list.
         for (chunk, mut changes) in every_kind_of_change() {
             changes.picked.clear();
-            changes.notched.clear();
+            changes.scars.clear();
             let mut bytes = encode_changes(chunk, &changes);
             assert_eq!(bytes.pop(), Some(0), "an empty sixth list");
             assert_eq!(bytes.pop(), Some(0), "an empty fifth list");
@@ -1672,11 +1718,11 @@ mod tests {
         // was, no tree cut into.
         for (chunk, mut changes) in every_kind_of_change() {
             assert!(
-                chunk.x < 0 || !changes.notched.is_empty(),
-                "a notch among the changes"
+                chunk.x < 0 || !changes.scars.is_empty(),
+                "a marked trunk among the changes"
             );
             let with = encode_changes(chunk, &changes);
-            changes.notched.clear();
+            changes.scars.clear();
             let mut bytes = encode_changes(chunk, &changes);
             assert_eq!(bytes.pop(), Some(0), "an empty sixth list");
             let back = decode_changes(chunk, changes.version, 2, &bytes);
@@ -1686,19 +1732,84 @@ mod tests {
                 assert_eq!(decode_changes(chunk, changes.version, 2, &with), None);
             }
         }
-        // A notch of a felled tree, or two of one tree, are damage.
+        // A mark on a felled tree, two on one tree, or a mark of nothing
+        // are damage.
         let key = TreeKey::from_bits(0x0888).unwrap();
         let mut felled = ChunkChanges::default();
         felled.felled.insert(key);
         let mut bytes = encode_changes(ChunkPos::new(0, 0), &felled);
         assert_eq!(bytes.pop(), Some(0));
         let (lo, hi) = (0x08_u8 | 0x80, 0x11_u8);
-        bytes.extend([1, lo, hi, 5]);
+        bytes.extend([1, lo, hi, 5, 0, 3, 9]);
         assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 3, &bytes), None);
         let mut twice = encode_changes(ChunkPos::new(0, 0), &ChunkChanges::default());
         assert_eq!(twice.pop(), Some(0));
-        twice.extend([2, lo, hi, 5, lo, hi, 6]);
+        let empty = twice.clone();
+        twice.extend([2, lo, hi, 5, 0, 3, 9, lo, hi, 6, 0, 3, 9]);
         assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 3, &twice), None);
+        let mut nothing = empty.clone();
+        nothing.extend([1, lo, hi, 0, 0, 3, 9]);
+        assert_eq!(decode_changes(ChunkPos::new(0, 0), 1, 3, &nothing), None);
+        // The same tree marked once is read: its notch, its bark, the
+        // journée, and the journée it is whole again.
+        let mut marked = empty;
+        marked.extend([1, lo, hi, 5, 2, 3, 9]);
+        let read = decode_changes(ChunkPos::new(0, 0), 1, 3, &marked).expect("read");
+        assert_eq!(
+            read.scars[&key],
+            Scar {
+                notch_mm2: 5,
+                barked: 2,
+                day: 3,
+                whole_day: 12
+            }
+        );
+    }
+
+    #[test]
+    fn a_tree_healed_since_is_forgotten_when_the_world_is_loaded() {
+        // D57, amended 28 November 2026: a marked tree is kept until the
+        // journée it is whole again; loaded on or after it, it is a tree
+        // among the others, and its chunk keeps its version.
+        let (dir, path) = temp_db("healed");
+        let mut world = world_at(6);
+        let today = u64::try_from(world.today()).unwrap();
+        let chunk = ChunkPos::new(1, 1);
+        let key = |bits: u16| TreeKey::from_bits(bits).unwrap();
+        let scar = |whole_day| Scar {
+            notch_mm2: 1320,
+            barked: 2,
+            day: 0,
+            whole_day,
+        };
+        let mut changes = ChunkChanges {
+            version: 5,
+            ..ChunkChanges::default()
+        };
+        changes.scars.insert(key(8), scar(today + 1));
+        let kept = changes.clone();
+        world.restore_changes(chunk, changes.clone());
+        assert_eq!(world.changes_in(chunk), Some(&kept));
+        // Stored with a tree whose marks have healed by today.
+        changes.scars.insert(key(0x0890), scar(today));
+        let bytes = encode_changes(chunk, &changes);
+        let read = decode_changes(chunk, 5, CHUNK_CHANGES_FORMAT_VERSION, &bytes).unwrap();
+        assert_eq!(read.scars.len(), 2, "the bytes keep both");
+        world.restore_changes(chunk, read);
+        assert_eq!(world.changes_in(chunk), Some(&kept));
+        // Through the database: the same.
+        Sqlite::open(&path, content())
+            .unwrap()
+            .save_world(&world)
+            .unwrap();
+        let back = Sqlite::open(&path, content())
+            .unwrap()
+            .latest_world()
+            .unwrap()
+            .unwrap();
+        assert_eq!(back.changes_in(chunk), Some(&kept));
+        assert_eq!(back.chunk_version(chunk), 5);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
