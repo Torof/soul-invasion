@@ -71,8 +71,12 @@ pub struct ProblemAim {
     pub kind: u8,
     /// The times the problem came back with the limit unmoved.
     pub returns: u32,
-    /// The day its time is out: `gives_up_seasons` after it began.
+    /// The day its time is out: `gives_up_seasons` after it began, or
+    /// later when it saw something new near its end, never past `last`.
     pub until: u64,
+    /// The latest day its time may be out (amended 28 November 2026):
+    /// its time and the `trial_days` once, however many deeds it sees.
+    pub last: u64,
 }
 
 /// What happened of a problem (D50, amended 26 November 2026), for the
@@ -375,6 +379,7 @@ fn begin(
             kind,
             returns: 0,
             until: day + u64::from(span),
+            last: day + u64::from(span) + u64::from(trials.trial_days),
         }),
     });
     mind.changed_day = Some(day);
@@ -461,7 +466,7 @@ fn judge(
     // Kept, only the deeds of which something came that served stay
     // known (D57, amended 27 November 2026).
     if moved {
-        handwork::keep_what_served(rules, mind, &trial.before.hands, true);
+        handwork::keep_what_served(rules, mind, true);
     }
     let kept = moved && mind.ways.hands != trial.before.hands;
     mind.judged = Some(Judged {
@@ -836,8 +841,9 @@ mod tests {
             with: NOTHING,
         };
         mind.handwork.gestured = true;
-        for learnt in [deed, put, pebble] {
-            mind.ways.hands.add(learnt);
+        // Seen in its trial, not kept (amended 28 November 2026).
+        for seen in [deed, put, pebble] {
+            mind.handwork.see(seen, 32);
         }
         let _ = brains.news();
         // The hollow merely carried, its arms full again: the limit has
@@ -860,8 +866,8 @@ mod tests {
         assert!(mind.ways.hands.contains(deed), "what served is kept");
         assert!(mind.ways.hands.contains(put));
         assert!(
-            !mind.ways.hands.contains(pebble),
-            "a deed of which nothing came that served does not stay known"
+            !mind.ways.hands.contains(pebble) && mind.handwork.saw(pebble),
+            "a deed of which nothing came that served is not kept: seen"
         );
         assert_eq!(
             mind.handwork.kept,
@@ -896,7 +902,7 @@ mod tests {
         let deed = fold_bark(&rules);
         let mind = brains.minds.get_mut(&id).unwrap();
         mind.handwork.gestured = true;
-        mind.ways.hands.add(deed);
+        mind.handwork.see(deed, 32);
         let _ = brains.news();
         // The problem comes back unmoved, again and again: it waits.
         for back in 1..=5 {
@@ -1169,7 +1175,7 @@ mod tests {
         let until = brains.minds[&id].trial.unwrap().problem.unwrap().until;
         let mind = brains.minds.get_mut(&id).unwrap();
         mind.handwork.gestured = true;
-        mind.ways.hands.add(fold_bark(&rules));
+        mind.handwork.see(fold_bark(&rules), 32);
         let news = night(&world, &mut brains, &rules, id, until);
         let mind = &brains.minds[&id];
         assert!(mind.trial.is_none() && mind.judged.is_none());

@@ -1476,6 +1476,11 @@ pub struct Hands {
     /// goes when one more comes. 0: none remembered.
     #[serde(default = "Hands::default_failures_kept")]
     pub failures_kept: u32,
+    /// The deeds a body remembers having seen give a thing in its own
+    /// hands, without keeping them, at most (D57, amended 28 November
+    /// 2026: seen is not kept): the oldest goes when one more comes.
+    #[serde(default = "Hands::default_seen_kept")]
+    pub seen_kept: u32,
     /// What a body sees (the project lead, 25 November 2026: "on ne coupe
     /// pas avec une baie"): the edge from which a thing looks like it
     /// could cut.
@@ -1696,6 +1701,7 @@ impl Hands {
             fold_suppleness: Self::default_fold_suppleness(),
             loose_g_per_litre: Self::default_loose_g_per_litre(),
             failures_kept: Self::default_failures_kept(),
+            seen_kept: Self::default_seen_kept(),
             edge_seen: Self::default_edge_seen(),
             supple_seen: Self::default_supple_seen(),
             trees: None,
@@ -1712,6 +1718,10 @@ impl Hands {
 
     fn default_failures_kept() -> u32 {
         16
+    }
+
+    fn default_seen_kept() -> u32 {
+        32
     }
 
     fn default_edge_seen() -> u8 {
@@ -1746,9 +1756,10 @@ impl Hands {
             || self.supple_seen > 10
             || !(1..=2000).contains(&self.loose_g_per_litre)
             || self.failures_kept > 64
+            || self.seen_kept > 64
         {
             return Err(ContentError::Needs(
-                "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000, failures_kept at most 64",
+                "hands: fold_suppleness, edge_seen and supple_seen 0 to 10, loose_g_per_litre 1 to 2000, failures_kept and seen_kept at most 64",
             ));
         }
         if let Some(trees) = &self.trees {

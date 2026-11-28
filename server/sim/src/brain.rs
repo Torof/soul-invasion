@@ -1872,6 +1872,30 @@ pub enum News {
         /// The tick.
         at: u64,
     },
+    /// `body`, in a trial of its hands, saw `deed` give a thing for the
+    /// first time in that trial (D57, amended 28 November 2026): a
+    /// memory, not a deed its hands keep.
+    DeedSeen {
+        /// Who.
+        body: BodyId,
+        /// The deed.
+        deed: Deed,
+        /// The tick.
+        at: u64,
+    },
+    /// `body`'s hands keep `deed` from now on (D57, amended 28 November
+    /// 2026): it belongs to a chain that relieved a problem it lived.
+    /// Said at its hands' next thought after the trial's end.
+    DeedKept {
+        /// Who.
+        body: BodyId,
+        /// The deed.
+        deed: Deed,
+        /// Kept as its own kept trial; else left by a trial not kept.
+        own: bool,
+        /// The tick.
+        at: u64,
+    },
     /// `body`, drawing a gesture in a trial of its hands, set aside
     /// `deeds` different gestures the things at hand made plausible,
     /// because it remembers they gave nothing in its hands (D57, amended
@@ -7001,8 +7025,16 @@ impl Brains {
             if let Some(&by) = followed.get(&id) {
                 mind.calling = None;
                 if let Some(t) = mind.trial.take() {
-                    // Ended unjudged: no lesson, no credit moved.
-                    t.way.copy(&mut mind.ways, &t.before);
+                    // Ended unjudged: no lesson, no credit moved. A
+                    // trial of the hands ends as one not kept (amended
+                    // 28 November 2026): what served stays, and what it
+                    // was after is dropped. Before, the deeds heard
+                    // stayed its aim with no trial, done again without
+                    // end, and a hollow that had served was lost.
+                    handwork::leave_not_kept(rules, mind, &t);
+                    if t.way == Way::Hands {
+                        mind.handwork.drop_aim();
+                    }
                 }
                 let before = mind.ways;
                 mind.ways.home = to;

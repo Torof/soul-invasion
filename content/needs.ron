@@ -1002,6 +1002,15 @@
     //                       when one more comes; it does not draw such a
     //                       gesture again while it remembers it (0: none
     //                       remembered).
+    // What a body remembers of what gave a thing (28 November 2026):
+    // seen_kept:       32 — the deeds a body remembers having seen give
+    //                       a thing in its own hands without keeping
+    //                       them ("this gives that"), the oldest going
+    //                       when one more comes. Its hands do not
+    //                       practise them: a deed is kept only when it
+    //                       belongs to a chain that relieved a problem
+    //                       the body lived, and only a kept deed is done
+    //                       again for its product's sake.
     // What a body sees before it tries (the project lead, 25 November
     // 2026: "on ne coupe pas avec une baie"); it may still be wrong:
     // edge_seen:        3 — a thing with at least this edge looks like it
@@ -1017,6 +1026,7 @@
         fold_suppleness: 5,
         loose_g_per_litre: 500,
         failures_kept: 16,
+        seen_kept: 32,
         edge_seen: 3,
         supple_seen: 5,
         // A standing tree in parts (D57, amended 27 November 2026): a

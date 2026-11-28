@@ -17,6 +17,17 @@
 //! without a thought. What gave nothing or broke is remembered, a
 //! bounded list, and not drawn again while remembered. A trial kept
 //! leaves known only the deeds whose product served.
+//!
+//! Amended 28 November 2026 (the project lead, after the audit of the
+//! trials: "a success they want to keep, they keep and redo again and
+//! again; but success must be well defined: if it is 'I got bark' and
+//! that bark is good for nothing, it has no interest. Humans are lazy"):
+//! seen is not kept. A deed that gives a thing in a trial is seen, a
+//! memory "this gives that" ([`Handwork::seen`]); the deeds its hands
+//! keep (`ways.hands`) are only those of a chain that relieved a problem
+//! it lived ([`keep_what_served`]), and only those are done again when
+//! their product is missing, with the seen deeds that feed them or feed
+//! what the trial under way is after ([`wanted`]).
 
 use crate::content::{Content, Folded, Form};
 use crate::r#gen::scatter::{self, purpose};
@@ -29,11 +40,13 @@ use crate::{BodyId, GATHER_REACH_MM, Intention, ItemId, World};
 use super::{AROUND, Decision, Doing, Mind, News, Way, Why, today, walkable};
 
 /// The most deeds a body holds in its ways. Sixteen (27 November 2026;
-/// six before): a trial holds every deed it tried until its judge
-/// forgets those that served nothing, and with six, a trial that had put
+/// six before): a trial then held every deed it tried until its judge
+/// forgot those that served nothing, and with six, a trial that had put
 /// stones and branches in its hollow had no room left to learn the
 /// put-in of food, and was given up while it carried more than its arms
-/// (five of thirteen in the run of seed 37).
+/// (five of thirteen in the run of seed 37). Since 28 November 2026 its
+/// ways hold only the deeds kept, and what a trial saw is held apart
+/// ([`Handwork::seen`]).
 pub const DEEDS: usize = 16;
 
 /// No thing: a deed done with nothing in hand.
@@ -236,9 +249,11 @@ pub struct Handwork {
     /// 2026: no levels, practised gestures).
     pub practised: Vec<(Deed, u32)>,
     /// The kinds of thing that once served it (the lead, 25 November
-    /// 2026: "c'est propre d'un cerveau"): a tool whose cut gave
-    /// something, a container that held food beyond its arms. Its own
-    /// memory of use, no perception: such a thing is kept, never let go.
+    /// 2026: "c'est propre d'un cerveau"): a container that held food
+    /// beyond its arms, the tool of a cut of the chain kept for it
+    /// (amended 28 November 2026: before, any tool whose cut gave
+    /// something). Its own memory of use, no perception: such a thing is
+    /// kept, never let go.
     pub served: Vec<u16>,
     /// The kinds of thing its hands made or took (D57, 25 November 2026):
     /// one not among them is a novelty, told at the fire that evening.
@@ -264,6 +279,19 @@ pub struct Handwork {
     /// The deeds a kept trial of its own left it: something came of them
     /// that served.
     pub kept: Vec<Deed>,
+    /// The deeds it saw give a thing in its own hands and does not keep
+    /// (D57, amended 28 November 2026: seen is not kept): a memory,
+    /// "this gives that", the oldest first, at most the content's
+    /// `seen_kept`. Its hands do not practise them; one is done again
+    /// only when a deed it keeps, or one its trial is after, needs what
+    /// it gives ([`wanted`]).
+    pub seen: Vec<Deed>,
+    /// Of them, and of the deeds it keeps, those that gave a thing in
+    /// the trial of its hands under way: what the trial's end may keep.
+    pub(super) trial_seen: Vec<Deed>,
+    /// The deeds a trial's end just left kept, and whether as its own
+    /// kept trial: said in the news at its hands' next thought.
+    pub(super) kept_news: Vec<(Deed, bool)>,
 }
 
 impl Handwork {
@@ -300,6 +328,32 @@ impl Handwork {
             let over = self.failed.len() - most;
             self.failed.drain(..over);
         }
+    }
+
+    /// Whether it remembers that `deed` gave a thing in its hands, and
+    /// does not keep it.
+    #[must_use]
+    pub fn saw(&self, deed: Deed) -> bool {
+        self.seen.contains(&deed)
+    }
+
+    /// `deed` gave a thing in a trial of its hands: remembered as seen,
+    /// the oldest forgotten beyond `most`, and noted of the trial under
+    /// way. True when it is the first time in this trial.
+    pub(super) fn see(&mut self, deed: Deed, most: u32) -> bool {
+        if !self.seen.contains(&deed) {
+            self.seen.push(deed);
+            let most = usize::try_from(most).unwrap_or(usize::MAX);
+            if self.seen.len() > most {
+                let over = self.seen.len() - most;
+                self.seen.drain(..over);
+            }
+        }
+        let first = !self.trial_seen.contains(&deed);
+        if first {
+            self.trial_seen.push(deed);
+        }
+        first
     }
 
     /// A thing of `material` served it.
@@ -348,6 +402,7 @@ impl Handwork {
         self.gestured = false;
         self.drew = false;
         self.fetch = None;
+        self.trial_seen.clear();
     }
 }
 
@@ -557,12 +612,12 @@ fn product(rules: &Content, deed: Deed) -> Option<u16> {
 }
 
 /// `material` and what the folds of `deeds` turn it into.
-fn descendants(rules: &Content, deeds: &Deeds, material: u16) -> Vec<u16> {
+fn descendants(rules: &Content, deeds: &[Deed], material: u16) -> Vec<u16> {
     let mut out = vec![material];
     let mut i = 0;
     while i < out.len() && out.len() <= DEEDS {
         let m = out[i];
-        for deed in deeds.iter() {
+        for &deed in deeds {
             if deed.gesture == Gesture::Fold
                 && deed.on == m
                 && let Some(into) = folds_into(rules, m)
@@ -577,9 +632,9 @@ fn descendants(rules: &Content, deeds: &Deeds, material: u16) -> Vec<u16> {
 }
 
 /// The materials `deeds` use or give: kept, the rest let go.
-fn used(rules: &Content, deeds: &Deeds) -> Vec<u16> {
+fn used(rules: &Content, deeds: &[Deed]) -> Vec<u16> {
     let mut out = Vec::new();
-    for deed in deeds.iter() {
+    for &deed in deeds {
         // A put-in holds the thing it puts in, not what it puts there.
         if !matches!(
             deed.gesture,
@@ -800,13 +855,15 @@ fn put_again(
     world: &World,
     rules: &Content,
     id: BodyId,
-    (deeds, have): (&Deeds, &[(ItemId, u16)]),
+    (deeds, have): (&[Deed], &[(ItemId, u16)]),
     mind: &Mind,
 ) -> Option<(HandTarget, Deed)> {
     let body = world.body(id)?;
     let full = body.arms_food_g() >= body.arms_g(&rules.movement);
-    for deed in deeds.iter().filter(|d| d.gesture == Gesture::PutIn) {
-        if !loose_food(rules, deed.on) || (!full && mind.ways.hands.contains(deed)) {
+    for &deed in deeds.iter().filter(|d| d.gesture == Gesture::PutIn) {
+        // Only heard, and not yet come to anything in this trial.
+        let untried = !mind.ways.hands.contains(deed) && !mind.handwork.trial_seen.contains(&deed);
+        if !loose_food(rules, deed.on) || (!full && !untried) {
             continue;
         }
         let Some(&(into, _)) = have
@@ -837,18 +894,18 @@ fn take_again(
     world: &World,
     rules: &Content,
     id: BodyId,
-    (deeds, have): (&Deeds, &[(ItemId, u16)]),
+    (deeds, have): (&[Deed], &[(ItemId, u16)]),
     mind: &Mind,
 ) -> Option<(HandTarget, Deed)> {
     let body = world.body(id)?;
     if body.arms_food_g() < body.arms_g(&rules.movement) {
         return None;
     }
-    for deed in deeds.iter().filter(|d| d.gesture == Gesture::TakeOut) {
+    for &deed in deeds.iter().filter(|d| d.gesture == Gesture::TakeOut) {
         let fills = deeds
             .iter()
             .any(|d| d.gesture == Gesture::PutIn && d.with == deed.with && loose_food(rules, d.on));
-        if !fills || !mind.ways.hands.contains(deed) {
+        if !fills || !(mind.ways.hands.contains(deed) || mind.handwork.saw(deed)) {
             continue;
         }
         let mut hollows = have.iter().filter(|(_, k)| *k == deed.with);
@@ -881,11 +938,12 @@ pub(super) enum HandsTurn {
 }
 
 /// What `id` does with its hands now (D57), when it is not called to
-/// drink, eat or sleep: let go what its hands no longer know, a deed it
-/// knows or heard when it lacks what the deed gives (taking up first the
-/// tool a cut names, when it carries none), or, in a trial of its hands
-/// with no such deed to do here, a gesture drawn (amended 25 November
-/// 2026: a trial begun on a tale keeps a free hand).
+/// drink, eat or sleep: let go what its hands do not keep, a deed it
+/// keeps or its trial is after when it lacks what the deed gives
+/// ([`wanted`]; taking up first the tool a cut names, when it carries
+/// none), or, in a trial of its hands with no such deed to do here, a
+/// gesture drawn (amended 25 November 2026: a trial begun on a tale
+/// keeps a free hand).
 pub(super) fn hands_turn(
     world: &World,
     rules: &Content,
@@ -901,7 +959,15 @@ pub(super) fn hands_turn(
         return HandsTurn::Decide(None);
     }
     let now = world.tick().0;
-    if let Some(tool) = resolve(world, rules, id, mind) {
+    for (deed, own) in std::mem::take(&mut mind.handwork.kept_news) {
+        news.push(News::DeedKept {
+            body: id,
+            deed,
+            own,
+            at: now,
+        });
+    }
+    if let Some(tool) = resolve(world, rules, id, mind, news) {
         news.push(News::ToolTaken {
             body: id,
             tool,
@@ -918,7 +984,8 @@ pub(super) fn hands_turn(
     // What its hands no longer know is let go, one thing a thought: a
     // trial given up leaves what it brought.
     if !trying {
-        let keep = used(rules, &mind.ways.hands);
+        let known: Vec<Deed> = mind.ways.hands.iter().collect();
+        let keep = used(rules, &known);
         let food = |m: u16| stuff(rules, m).is_some_and(|m| m.food.is_some());
         let served = &mind.handwork;
         if let Some(&(item, _)) = have
@@ -946,12 +1013,9 @@ pub(super) fn hands_turn(
         }
     }
     let near = i32::try_from(hands.near_tiles).unwrap_or(4);
-    // The deeds it knows and those it heard and tries, the later steps
-    // first, when it lacks what they give.
-    let mut deeds = mind.ways.hands;
-    for deed in mind.handwork.aim.iter() {
-        deeds.add(deed);
-    }
+    // The deeds it keeps, and those its trial is after, the later steps
+    // first, when it lacks what they give ([`wanted`]).
+    let deeds = wanted(rules, mind, trying);
     let found = if deeds.is_empty() {
         None
     } else {
@@ -1314,17 +1378,89 @@ pub(super) fn something_new(
         .any(|&(_, deed)| new(deed))
 }
 
+/// Whether what `deed` gives is what one of `wanted` is done on, with or
+/// in: the flake a cut is made with, the bark a fold is made of, the
+/// hollow a put-in fills; for a take-out, the room it makes in a kind of
+/// hollow a put-in of food among them fills.
+fn feeds(rules: &Content, wanted: &[Deed], deed: Deed) -> bool {
+    if deed.gesture == Gesture::TakeOut {
+        return !loose_food(rules, deed.on)
+            && wanted.iter().any(|k| {
+                k.gesture == Gesture::PutIn && k.with == deed.with && loose_food(rules, k.on)
+            });
+    }
+    product(rules, deed).is_some_and(|p| {
+        wanted.iter().any(|k| {
+            k.with == p
+                || (matches!(k.gesture, Gesture::Fold | Gesture::PutIn | Gesture::Strike)
+                    && k.on == p)
+        })
+    })
+}
+
+/// Whether `deed` is one that answers a problem a body lives: today the
+/// one such problem with an answer, the full arms, and so a put-in of
+/// loose food in a thing (D50). The same deed [`keep_what_served`] keeps
+/// a chain from.
+fn answers(rules: &Content, deed: Deed) -> bool {
+    deed.gesture == Gesture::PutIn && loose_food(rules, deed.on)
+}
+
+/// The deeds `mind` does again when it lacks what they give (D57,
+/// amended 28 November 2026, the project lead: "a success they want to
+/// keep, they keep and redo again and again... humans are lazy"):
+///
+/// - the deeds it keeps, always;
+/// - in a trial of its hands (`trying`), the deeds it heard and set out
+///   to try that have not yet given a thing in this trial, and the deeds
+///   that gave one in this trial and answer a problem ([`answers`]): what
+///   the trial is after;
+/// - and, step by step back from those, the deeds it only saw or heard
+///   whose product one of them is done on, with or in ([`feeds`]).
+///
+/// A deed only seen whose product serves none of them is not among them:
+/// nobody works for a thing that leads nowhere (the run of seed 41: 8,239
+/// cuts of 9,678 were a cut once seen done again for chips that fall to
+/// the ground).
+fn wanted(rules: &Content, mind: &Mind, trying: bool) -> Vec<Deed> {
+    let hands = &mind.handwork;
+    let mut out: Vec<Deed> = mind.ways.hands.iter().collect();
+    let mut left: Vec<Deed> = hands.seen.clone();
+    if trying {
+        for deed in hands.aim.iter() {
+            if hands.trial_seen.contains(&deed) {
+                left.push(deed);
+            } else {
+                out.push(deed);
+            }
+        }
+        out.extend(hands.trial_seen.iter().filter(|d| answers(rules, **d)));
+    }
+    left.retain(|d| !out.contains(d));
+    out.sort_unstable();
+    out.dedup();
+    while let Some(i) = left.iter().position(|&d| feeds(rules, &out, d)) {
+        let deed = left.remove(i);
+        if !out.contains(&deed) {
+            out.push(deed);
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
 /// The first deed of `deeds` it lacks what it gives and can do here: a
 /// fold of a thing it carries, a cut of a tree near with a thing it
 /// carries, a thing near to pick up. For a cut with no thing of its tool
 /// carried, the taking up of one lying near (D57, amended 25 November
 /// 2026: "cut a birch with a flint" holds the flint), marked `true`. A
-/// put-in comes first ([`put_again`]).
+/// put-in comes first ([`put_again`]). `deeds` are those it does again
+/// ([`wanted`]), never a deed it only saw give a thing that serves none.
 fn needed(
     world: &World,
     rules: &Content,
     (id, here): (BodyId, Pos),
-    (deeds, have, near): (&Deeds, &[(ItemId, u16)], i32),
+    (deeds, have, near): (&[Deed], &[(ItemId, u16)], i32),
     mind: &Mind,
 ) -> Option<((HandTarget, Deed), bool)> {
     let lacks = |deed: Deed| {
@@ -1368,7 +1504,7 @@ fn needed(
         Gesture::Strike,
         Gesture::PickUp,
     ] {
-        for deed in deeds.iter().filter(|d| d.gesture == gesture) {
+        for &deed in deeds.iter().filter(|d| d.gesture == gesture) {
             if !lacks(deed) {
                 continue;
             }
@@ -1602,9 +1738,11 @@ pub(super) fn end_untried(
 }
 
 /// The judge of a trial (D50), the hands' rule added (D57): a trial of
-/// the hands in which nothing came of anything is not kept, whatever the
-/// days; the deeds tried are forgotten with it, save those that served
-/// ([`leave_not_kept`]).
+/// the hands is kept only when a chain of its deeds served
+/// ([`keep_what_served`]), whatever the days; a chain that served is
+/// kept by its hands even when the days say no, as no trial of its own
+/// (as [`leave_not_kept`] does; done here since 28 November 2026, before
+/// what the trial saw is dropped with its aim).
 pub(super) fn judge_trial(
     rules: &Content,
     per_year: u32,
@@ -1614,9 +1752,7 @@ pub(super) fn judge_trial(
 ) -> (bool, super::Judged) {
     let (mut kept, mut judged) = super::judge(rules, per_year, body, mind, trial);
     if trial.way == Way::Hands {
-        if kept {
-            keep_what_served(rules, mind, &trial.before.hands, true);
-        }
+        keep_what_served(rules, mind, kept);
         kept &= mind.ways.hands != trial.before.hands;
         judged.kept = kept;
         if kept {
@@ -1627,77 +1763,83 @@ pub(super) fn judge_trial(
     (kept, judged)
 }
 
-/// A trial of the hands not kept (given up, lapsed, judged no better):
-/// its ways go back to what they were, save the deeds of which something
-/// came that served (D57, amended 27 November 2026, the project lead:
-/// "the gesture works" is not "my problem is solved"). A hollow that held
-/// food beyond the arms once and tore before the judge came is still a
-/// thing its hands know how to make and fill; they are not noted as its
-/// own kept trial, and nothing is told for it.
+/// A trial of the hands not kept (given up, lapsed, judged no better,
+/// cut short by a move followed): its hands keep what they kept before,
+/// and the deeds of which something came that served (D57, amended 27
+/// November 2026, the project lead: "the gesture works" is not "my
+/// problem is solved"). A hollow that held food beyond the arms once and
+/// tore before the judge came is still a thing its hands know how to
+/// make and fill; they are not noted as its own kept trial, and nothing
+/// is told for it.
 pub(super) fn leave_not_kept(rules: &Content, mind: &mut Mind, trial: &super::Trial) {
     if trial.way == Way::Hands {
-        keep_what_served(rules, mind, &trial.before.hands, false);
+        keep_what_served(rules, mind, false);
     } else {
         trial.way.copy(&mut mind.ways, &trial.before);
     }
 }
 
-/// Of the deeds `mind` learnt since its hands knew `before`, only those
-/// of which something came that served stay known (D57, amended 27
+/// Of the deeds that gave a thing in `mind`'s trial of the hands, those
+/// that served become deeds its hands keep (D57, amended 27 and 28
 /// November 2026; the run of step 1 left "cut an oak with a flint" known
 /// to fifteen people, a cut whose bark only ever broke at the fold): a
 /// put-in of food in a kind of thing that served it (food lay in it
-/// while it carried more than its arms alone hold), and, step by step
-/// back from there, a deed whose product a deed kept is done on, with or
-/// in. The rest is forgotten. Called when a
-/// trial of the hands is kept, before what it leaves is told; the deeds
-/// kept are noted as its own ([`Handwork::kept`]).
-pub(super) fn keep_what_served(rules: &Content, mind: &mut Mind, before: &Deeds, own: bool) {
-    let mut kept: Vec<Deed> = before.iter().collect();
+/// while it carried more than its arms alone hold: the lived problem
+/// relieved), and, step by step back from there, a deed whose product a
+/// deed kept is done on, with or in ([`feeds`]). The rest stays what it
+/// was, seen. The tool of a cut so kept served it (the project lead, 28
+/// November 2026: a tool served inside such a chain, not for having
+/// cut). Called at the end of every trial of the hands, before what it
+/// leaves is told; `own`: the trial is kept, and the deeds are noted as
+/// its own ([`Handwork::kept`]).
+pub(super) fn keep_what_served(rules: &Content, mind: &mut Mind, own: bool) {
+    let mut kept: Vec<Deed> = mind.ways.hands.iter().collect();
+    let known = kept.len();
     let mut left: Vec<Deed> = mind
-        .ways
-        .hands
+        .handwork
+        .trial_seen
         .iter()
-        .filter(|d| !before.contains(*d))
+        .copied()
+        .filter(|d| !kept.contains(d))
         .collect();
     let serves = |kept: &[Deed], deed: Deed| {
-        if deed.gesture == Gesture::PutIn {
-            return loose_food(rules, deed.on) && mind.handwork.served(deed.with);
+        if answers(rules, deed) {
+            return mind.handwork.served(deed.with);
         }
-        // A take-out served when it made room in a kind of thing a
-        // put-in of food kept is done in.
-        if deed.gesture == Gesture::TakeOut {
-            return !loose_food(rules, deed.on)
-                && kept.iter().any(|k| {
-                    k.gesture == Gesture::PutIn && k.with == deed.with && loose_food(rules, k.on)
-                });
-        }
-        product(rules, deed).is_some_and(|p| {
-            kept.iter().any(|k| {
-                k.with == p
-                    || (matches!(k.gesture, Gesture::Fold | Gesture::PutIn | Gesture::Strike)
-                        && k.on == p)
-            })
-        })
+        feeds(rules, kept, deed)
     };
     while let Some(i) = left.iter().position(|&d| serves(&kept, d)) {
         kept.push(left.remove(i));
     }
-    let mut hands = Deeds::default();
-    for &deed in &kept {
-        hands.add(deed);
-        if own && !before.contains(deed) && !mind.handwork.kept.contains(&deed) {
+    for &deed in &kept[known..] {
+        if !mind.ways.hands.add(deed) {
+            continue;
+        }
+        mind.handwork.seen.retain(|d| *d != deed);
+        if deed.gesture == Gesture::Cut && deed.with != NOTHING {
+            mind.handwork.serve(deed.with);
+        }
+        if own && !mind.handwork.kept.contains(&deed) {
             mind.handwork.kept.push(deed);
         }
+        mind.handwork.kept_news.push((deed, own));
     }
-    mind.ways.hands = hands;
 }
 
-/// What came of the deed it was doing: learnt, in a trial of its hands,
-/// when something came of it (D57), its trial's days counted from today
-/// so that the judge sees the days with the new thing; practised in any
+/// What came of the deed it was doing (D57). In a trial of its hands, a
+/// deed that gave a thing is seen, not kept (amended 28 November 2026,
+/// the project lead: "si c'est « j'ai eu de l'écorce » et que cette
+/// écorce ne sert à rien, ça n'a aucun intérêt"): a memory, told in the
+/// news the first time in the trial, its trial's days counted from today
+/// so that the judge sees the days with the new thing. Practised in any
 /// case. The tool's material, when it was a tool taken up for a cut.
-fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Option<u16> {
+fn resolve(
+    world: &World,
+    rules: &Content,
+    id: BodyId,
+    mind: &mut Mind,
+    news: &mut Vec<News>,
+) -> Option<u16> {
     let (deed, item) = mind.handwork.pending?;
     let body = world.body(id)?;
     // Not done yet (the act waits for the next tick): it stays pending,
@@ -1729,9 +1871,10 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
     }
     if !worked {
         // What gave nothing or broke the thing is remembered (amended 27
-        // November 2026), unless it is a deed its hands know: that one
-        // failed for the moment's sake.
-        if !mind.ways.hands.contains(deed) {
+        // November 2026), unless it is a deed its hands keep, or one
+        // that gave a thing in this trial: that one failed for the
+        // moment's sake.
+        if !mind.ways.hands.contains(deed) && !mind.handwork.trial_seen.contains(&deed) {
             mind.handwork.fail(deed, rules.needs.hands.failures_kept);
         }
         return None;
@@ -1756,28 +1899,32 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
     {
         mind.handwork.novel.push((deed, deed.with));
     }
-    // A tool whose cut gave something served it (25 November 2026).
-    if deed.gesture == Gesture::Cut && deed.with != NOTHING {
-        mind.handwork.serve(deed.with);
-    }
     match mind.handwork.practised.iter_mut().find(|(d, _)| *d == deed) {
         Some((_, n)) => *n += 1,
         None => mind.handwork.practised.push((deed, 1)),
     }
     if let Some(trial) = mind.trial.as_mut().filter(|t| t.way == Way::Hands)
-        && mind.ways.hands.add(deed)
+        && !mind.ways.hands.contains(deed)
+        && mind.handwork.see(deed, rules.needs.hands.seen_kept)
     {
+        news.push(News::DeedSeen {
+            body: id,
+            deed,
+            at: world.tick().0,
+        });
         let day = today(world);
         trial.started_day = super::restarted_day(world, &rules.needs.trials, trial, day);
-        // A trial from a problem that has just learnt something is not
-        // judged before it has had the days to live its problem again
-        // with it (amended 27 November 2026: in the run of seed 37 a hollow
-        // folded and filled on the last evening of its season was given
-        // up that same night).
+        // A trial from a problem that has just seen something new is
+        // not judged before it has had the days to live its problem
+        // again with it (amended 27 November 2026: in the run of seed 37
+        // a hollow folded and filled on the last evening of its season
+        // was given up that same night), but never later than its time
+        // and those days once (amended 28 November 2026: each deed
+        // pushed it again, and a trial of a season of 16 days lasted 33
+        // in the run of seed 41).
         if let Some(aim) = trial.problem.as_mut() {
-            aim.until = aim
-                .until
-                .max(day + u64::from(rules.needs.trials.trial_days));
+            let pushed = (day + u64::from(rules.needs.trials.trial_days)).min(aim.last);
+            aim.until = aim.until.max(pushed);
         }
     }
     tool
@@ -1785,7 +1932,7 @@ fn resolve(world: &World, rules: &Content, id: BodyId, mind: &mut Mind) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Brains, HeardDays, Lately, News, Trial, Ways, start_trial};
+    use super::super::{Act, Brains, HeardDays, Lately, News, Said, Trial, Ways, start_trial};
     use super::*;
     use crate::Event;
     use crate::memory::{Access, Record};
@@ -1796,17 +1943,29 @@ mod tests {
     /// a birch with a mind: the rules, world, brains, body, and the
     /// birch's species index.
     fn by_a_birch() -> (Content, World, Brains, BodyId, u16) {
+        beside(|rules, species| rules.species[species].id == "birch", 0)
+    }
+
+    /// The same beside a tree of a species `of` takes, its trunk at least
+    /// `thick` millimetres: with that tree's species index.
+    fn beside(
+        of: impl Fn(&Content, usize) -> bool,
+        thick: u32,
+    ) -> (Content, World, Brains, BodyId, u16) {
         let rules = crate::crops::tests::content();
         let mut world = World::with_valley(Calendar::new(1, 1440).unwrap(), &rules, 768);
-        let birch = rules.species.iter().position(|s| s.id == "birch").unwrap();
+        let mut birch = 0;
         let side = i32::try_from(world.map().chunks_wide()).unwrap();
         let mut stand = None;
         'search: for y in 0..side {
             for x in 0..side {
                 for tree in world.trees_in(ChunkPos::new(x, y)).iter() {
-                    if tree.species != birch {
+                    if !of(&rules, tree.species)
+                        || world.trunk_mm(tree, &rules).is_some_and(|mm| mm < thick)
+                    {
                         continue;
                     }
+                    birch = tree.species;
                     let trunk = tree.at.tile();
                     if let Some(p) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
                         .into_iter()
@@ -1822,7 +1981,7 @@ mod tests {
                 }
             }
         }
-        let id = world.spawn_body(stand.expect("a birch with room beside it"));
+        let id = world.spawn_body(stand.expect("such a tree with room beside it"));
         let mut brains = Brains::new(7);
         brains.adopt(&world, &rules, id);
         (rules, world, brains, id, u16::try_from(birch).unwrap())
@@ -2154,7 +2313,11 @@ mod tests {
     }
 
     #[test]
-    fn a_flint_that_cut_is_kept_though_its_hands_know_no_deed() {
+    fn a_flint_that_cut_is_let_go_when_no_chain_of_its_cut_was_kept() {
+        // Amended 28 November 2026: a tool served inside a chain that
+        // relieved a lived problem, not for having cut (before, any cut
+        // that gave a thing marked it, and it was never let go: twelve
+        // flints on one person in the run of seed 41).
         let (rules, mut world, mut brains, id, birch) = by_a_birch();
         let here = world.body(id).unwrap().pos();
         let flint = picked(&mut world, &rules, id, "flint");
@@ -2182,9 +2345,18 @@ mod tests {
         mind.handwork.pending = Some((cut, flint));
         mind.handwork.done = Some(true);
         let turn = hands_turn(&world, &rules, (id, here), mind, (7, &mut Vec::new()));
-        assert!(mind.handwork.served(material(&rules, "flint")));
-        assert!(mind.ways.hands.is_empty(), "served, not learnt: no trial");
-        assert_eq!(turn, HandsTurn::Free, "the flint stays in its hands");
+        assert!(!mind.handwork.served(material(&rules, "flint")));
+        assert!(mind.ways.hands.is_empty() && mind.handwork.seen.is_empty());
+        assert!(
+            matches!(
+                turn,
+                HandsTurn::Decide(Some(Decision {
+                    intention: Intention::Drop { item, .. },
+                    ..
+                })) if item == flint
+            ),
+            "a flint that cut and served nothing is let go: {turn:?}"
+        );
     }
 
     #[test]
@@ -2564,8 +2736,8 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         assert!(mind.handwork.failed(on_flat) && !mind.ways.hands.contains(on_flat));
         assert_eq!(world.body(id).unwrap().stowed_g(), 0);
-        // In the hollow they stay: learnt in its trial, a novelty to
-        // tell, its arms free.
+        // In the hollow they stay: seen in its trial, not kept yet, a
+        // novelty to tell, its arms free.
         let in_hollow = put(berries_m, hollow_m);
         let decision = go_do(
             &world,
@@ -2576,7 +2748,7 @@ mod tests {
         );
         done(&mut world, &rules, &mut brains, id, &decision);
         let mind = &brains.minds[&id];
-        assert!(mind.ways.hands.contains(in_hollow));
+        assert!(mind.handwork.saw(in_hollow) && !mind.ways.hands.contains(in_hollow));
         assert_eq!(mind.handwork.practised(in_hollow), 1);
         assert_eq!(mind.handwork.novel, [(in_hollow, hollow_m)]);
         let body = world.body(id).unwrap();
@@ -2700,7 +2872,7 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_trial_leaves_known_only_the_deeds_whose_product_served() {
+    fn a_kept_trial_leaves_kept_only_the_deeds_whose_product_served() {
         let (rules, _, mut brains, id, birch) = by_a_birch();
         let flint = material(&rules, "flint");
         let hollow_m = material(&rules, "birch_bark") | HOLLOW;
@@ -2721,35 +2893,38 @@ mod tests {
             with: hollow_m,
         };
         let mind = brains.minds.get_mut(&id).unwrap();
-        // It learnt the birch's chain, a put-in of berries, a put-in of
-        // its flint, and the cut of an oak whose bark only breaks.
-        let learn = |mind: &mut Mind| {
-            mind.ways.hands = bark_deeds(&rules, birch);
-            for deed in [cut_oak, put, put_flint] {
-                assert!(mind.ways.hands.add(deed));
-            }
-        };
-        // Nothing served: nothing of it stays.
-        learn(mind);
-        keep_what_served(&rules, mind, &Deeds::default(), true);
+        // In its trial it saw the birch's chain give its things, a
+        // put-in of berries, a put-in of its flint, and the cut of an
+        // oak whose bark only breaks.
+        for deed in bark_deeds(&rules, birch)
+            .iter()
+            .chain([cut_oak, put, put_flint])
+        {
+            assert!(mind.handwork.see(deed, 32));
+        }
+        // Nothing served: its hands keep nothing, and it remembers all
+        // of it as seen.
+        keep_what_served(&rules, mind, true);
         assert!(mind.ways.hands.is_empty() && mind.handwork.kept.is_empty());
+        assert_eq!(mind.handwork.seen.len(), 6);
+        assert!(!mind.handwork.served(flint), "a flint that only cut");
         // The hollow held food beyond its arms: the put-in of food, the
         // fold that gave the hollow, the cut that gave the bark and the
-        // flint taken for it stay; the oak's cut and the flint put in do
-        // not.
-        learn(mind);
+        // flint taken for it are kept, and the flint served; the oak's
+        // cut and the flint put in stay seen.
         mind.handwork.serve(hollow_m);
-        mind.handwork.serve(flint);
-        keep_what_served(&rules, mind, &Deeds::default(), true);
+        keep_what_served(&rules, mind, true);
         let mut served = bark_deeds(&rules, birch);
         served.add(put);
         assert_eq!(mind.ways.hands, served);
         assert_eq!(mind.handwork.kept.len(), 4);
-        // What it knew before the trial is not judged again.
-        let mut before = Deeds::default();
-        before.add(cut_oak);
+        assert_eq!(mind.handwork.seen, [cut_oak, put_flint]);
+        assert!(mind.handwork.served(flint), "the tool of a chain kept");
+        assert_eq!(mind.handwork.kept_news.len(), 4, "said in the news");
+        // What it kept before the trial is not judged again.
+        mind.handwork.seen.clear();
         mind.ways.hands.add(cut_oak);
-        keep_what_served(&rules, mind, &before, true);
+        keep_what_served(&rules, mind, true);
         assert!(mind.ways.hands.contains(cut_oak));
         assert!(
             !mind.handwork.kept.contains(&cut_oak),
@@ -2772,20 +2947,18 @@ mod tests {
         let mind = brains.minds.get_mut(&id).unwrap();
         in_a_trial(mind, &[], 0);
         let trial = mind.trial.expect("in a trial");
-        let learn = |mind: &mut Mind| {
-            mind.ways.hands = bark_deeds(&rules, birch);
-            assert!(mind.ways.hands.add(put));
-        };
+        for deed in bark_deeds(&rules, birch).iter().chain([put]) {
+            mind.handwork.see(deed, 32);
+        }
         // Nothing served: its ways as before.
-        learn(mind);
         leave_not_kept(&rules, mind, &trial);
         assert!(mind.ways.hands.is_empty());
-        // The hollow held food beyond its arms once: the chain stays
-        // known, though the trial is not kept and nothing is its own.
-        learn(mind);
+        // The hollow held food beyond its arms once: the chain is kept
+        // by its hands, though the trial is not kept and nothing is its
+        // own.
         mind.handwork.serve(hollow_m);
-        mind.handwork.serve(flint);
         leave_not_kept(&rules, mind, &trial);
+        assert!(mind.handwork.served(flint));
         let mut served = bark_deeds(&rules, birch);
         served.add(put);
         assert_eq!(mind.ways.hands, served);
@@ -2954,7 +3127,10 @@ mod tests {
             panic!("the cut");
         };
         assert!(
-            matches!(news[..], [News::ToolTaken { tool, .. }] if tool == flint_m),
+            matches!(
+                news[..],
+                [News::DeedSeen { .. }, News::ToolTaken { tool, .. }] if tool == flint_m
+            ),
             "{news:?}"
         );
         assert!(
@@ -3001,7 +3177,7 @@ mod tests {
         };
         let mind = brains.minds.get_mut(&id).unwrap();
         mind.handwork.pending = Some((take, flint));
-        resolve(&world, &rules, id, mind);
+        resolve(&world, &rules, id, mind, &mut Vec::new());
         assert_eq!(mind.handwork.novel, vec![(take, material(&rules, "flint"))]);
         let told = mind.tell_own(id, 3, &mut brains.memory);
         assert_eq!(told.len(), 1, "told without a judgment");
@@ -3011,7 +3187,7 @@ mod tests {
         ));
         let mind = brains.minds.get_mut(&id).unwrap();
         mind.handwork.pending = Some((take, flint));
-        resolve(&world, &rules, id, mind);
+        resolve(&world, &rules, id, mind, &mut Vec::new());
         assert!(
             mind.handwork.novel.is_empty(),
             "a second flint is nothing new"
@@ -3081,7 +3257,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trial_of_the_hands_learns_only_what_came_to_something() {
+    fn a_trial_of_the_hands_sees_what_came_to_something_and_keeps_none_of_it_yet() {
         let (rules, world, mut brains, id, birch) = by_a_birch();
         let mind = brains.minds.get_mut(&id).unwrap();
         mind.trial = Some(Trial {
@@ -3100,8 +3276,11 @@ mod tests {
         };
         mind.handwork.pending = Some((cut, ItemId(1)));
         mind.handwork.done = Some(false);
-        resolve(&world, &rules, id, mind);
-        assert!(mind.ways.hands.is_empty(), "a cut with a pebble: nothing");
+        resolve(&world, &rules, id, mind, &mut Vec::new());
+        assert!(
+            mind.handwork.seen.is_empty(),
+            "a cut with a pebble: nothing"
+        );
         let fold = Deed {
             gesture: Gesture::Fold,
             on: material(&rules, "birch_bark"),
@@ -3109,11 +3288,17 @@ mod tests {
         };
         mind.handwork.pending = Some((fold, ItemId(1)));
         // Not done yet: it waits.
-        resolve(&world, &rules, id, mind);
+        resolve(&world, &rules, id, mind, &mut Vec::new());
         assert_eq!(mind.handwork.pending, Some((fold, ItemId(1))));
         mind.handwork.done = Some(true);
-        resolve(&world, &rules, id, mind);
-        assert!(mind.ways.hands.contains(fold));
+        let mut news = Vec::new();
+        resolve(&world, &rules, id, mind, &mut news);
+        // Rule 1 (28 November 2026): seen is not kept.
+        assert!(mind.handwork.saw(fold) && mind.ways.hands.is_empty());
+        assert!(
+            matches!(news[..], [News::DeedSeen { deed, .. }] if deed == fold),
+            "{news:?}"
+        );
         assert_eq!(mind.handwork.practised(fold), 1);
         assert_eq!(
             mind.trial.unwrap().started_day,
@@ -3221,5 +3406,380 @@ mod tests {
         let seen = Plausible::seen(&world, &rules, here, mind, (&have, 4));
         assert!(seen.cuts.iter().any(|(_, d)| *d == trunk));
         assert!(!seen.cuts.iter().any(|(_, d)| *d == branch));
+    }
+    /// `mind` in a trial of its hands begun on `day` from the problem of
+    /// the full arms, its time `span` days.
+    fn in_a_trial_of_full_arms(rules: &Content, mind: &mut Mind, day: u64, span: u64) {
+        in_a_trial(mind, &[], day);
+        let days = u64::from(rules.needs.trials.trial_days);
+        if let Some(trial) = mind.trial.as_mut() {
+            trial.problem = Some(super::super::problems::ProblemAim {
+                kind: 0,
+                returns: 0,
+                until: day + span,
+                last: day + span + days,
+            });
+        }
+    }
+
+    /// Its hands' thought with no gesture left to draw today: what its
+    /// hands do again by themselves, if anything.
+    fn again(world: &World, rules: &Content, brains: &mut Brains, id: BodyId) -> HandsTurn {
+        let here = world.body(id).unwrap().pos();
+        let mind = brains.minds.get_mut(&id).unwrap();
+        mind.handwork.tries = (today(world), rules.needs.hands.tries_per_day);
+        hands_turn(world, rules, (id, here), mind, (7, &mut Vec::new()))
+    }
+
+    #[test]
+    fn a_cut_that_gives_chips_is_seen_once_never_done_again_and_fells_nothing() {
+        // Rules 1 and 3 (28 November 2026). In the run of seed 41 a cut
+        // once seen was done again at every thought, its chips falling
+        // to the ground and so for ever missing: 8,239 cuts of 9,678,
+        // 738 trees felled.
+        let chips = |rules: &Content, species: &crate::content::Species| {
+            rules
+                .cut_gives(rules.material("flint").unwrap(), species, Part::Trunk)
+                .is_some_and(|m| m.id == "wood_chips")
+        };
+        // A tree with no bark to lift, thick enough that no single cut
+        // fells it.
+        let (rules, mut world, mut brains, id, tree) = beside(
+            |rules, s| rules.species[s].bark.is_none() && chips(rules, &rules.species[s]),
+            200,
+        );
+        let here = world.body(id).unwrap().pos();
+        let _flint = picked(&mut world, &rules, id, "flint");
+        let cut = Deed {
+            gesture: Gesture::Cut,
+            on: tree,
+            with: material(&rules, "flint"),
+        };
+        let day = today(&world);
+        for heard in [false, true] {
+            // Drawn in a trial on no tale, then tried in one begun on
+            // the tale of that very cut.
+            let mind = brains.minds.get_mut(&id).unwrap();
+            let tale = [cut];
+            in_a_trial(mind, if heard { &tale } else { &[] }, day);
+            let have = carried(&world, &rules, id);
+            let target = Plausible::seen(&world, &rules, here, mind, (&have, 4))
+                .cuts
+                .into_iter()
+                .find(|(_, deed)| *deed == cut)
+                .expect("the cut is plausible")
+                .0;
+            let HandTarget::Tree { chunk, key, .. } = target else {
+                panic!("a tree");
+            };
+            if heard {
+                // Heard and not yet tried: its hands go to it by
+                // themselves, once.
+                assert!(
+                    matches!(
+                        again(&world, &rules, &mut brains, id),
+                        HandsTurn::Decide(Some(Decision {
+                            intention: Intention::Cut { .. },
+                            ..
+                        }))
+                    ),
+                    "a cut heard is tried"
+                );
+            }
+            let mind = brains.minds.get_mut(&id).unwrap();
+            let decision = go_do(&world, &rules, (id, here), (target, cut), mind);
+            assert!(
+                matches!(decision.intention, Intention::Cut { .. }),
+                "{decision:?}"
+            );
+            done(&mut world, &rules, &mut brains, id, &decision);
+            // The chips fell at its feet; the cut is seen, not kept, and
+            // with nothing that needs chips its hands do not cut again.
+            for _ in 0..3 {
+                assert_eq!(
+                    again(&world, &rules, &mut brains, id),
+                    HandsTurn::Free,
+                    "heard: {heard}"
+                );
+            }
+            let mind = &brains.minds[&id];
+            assert!(mind.handwork.saw(cut) && !mind.ways.hands.contains(cut));
+            assert_eq!(mind.handwork.practised(cut), 1 + u32::from(heard));
+            assert!(!mind.handwork.served(cut.with), "a flint that only cut");
+            assert!(
+                world.trees_in(chunk).iter().any(|t| t.key == key),
+                "the tree stands"
+            );
+        }
+    }
+
+    /// Does `deed` as a gesture drawn: on a thing among those that what
+    /// it sees makes plausible for it, and sees what came of it.
+    fn as_drawn(world: &mut World, rules: &Content, brains: &mut Brains, id: BodyId, deed: Deed) {
+        let here = world.body(id).unwrap().pos();
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let have = carried(world, rules, id);
+        let seen = Plausible::seen(world, rules, here, mind, (&have, 4));
+        let target = [seen.strikes, seen.cuts, seen.folds, seen.puts]
+            .into_iter()
+            .flatten()
+            .find(|(_, d)| *d == deed)
+            .unwrap_or_else(|| panic!("{deed:?} is plausible"))
+            .0;
+        let decision = go_do(world, rules, (id, here), (target, deed), mind);
+        done(world, rules, brains, id, &decision);
+    }
+
+    /// A gathering of `id` stopped full, lived by its mind.
+    fn stopped_full(world: &World, rules: &Content, brains: &mut Brains, id: BodyId) {
+        let stop = Event::WorkStopped {
+            body: id,
+            gives: "berries".to_owned(),
+            grams: 100,
+            why: crate::WorkEnd::Full,
+        };
+        brains.live_problems(&[stop], world, rules);
+    }
+
+    /// A stone that breaks flint off a nodule struck with it.
+    fn hammer(rules: &Content) -> &'static str {
+        let nodule = rules.material("flint_nodule").unwrap();
+        ["quartz", "pebble", "sandstone", "slate"]
+            .into_iter()
+            .find(|m| {
+                rules
+                    .strike_gives(nodule, rules.material(m).unwrap())
+                    .is_some_and(|piece| piece.id == "flint")
+            })
+            .expect("a stone that breaks flint off a nodule")
+    }
+
+    /// The chain of the run of seed 40 beside a birch: strike a flint
+    /// nodule with `hammer`, cut the birch with the flake, fold the
+    /// bark, put berries in the hollow.
+    fn flake_chain(rules: &Content, birch: u16, hammer: &str) -> [Deed; 4] {
+        let bark = material(rules, "birch_bark");
+        [
+            Deed {
+                gesture: Gesture::Strike,
+                on: material(rules, "flint_nodule"),
+                with: material(rules, hammer),
+            },
+            Deed {
+                gesture: Gesture::Cut,
+                on: birch,
+                with: material(rules, "flint"),
+            },
+            Deed {
+                gesture: Gesture::Fold,
+                on: bark,
+                with: NOTHING,
+            },
+            Deed {
+                gesture: Gesture::PutIn,
+                on: material(rules, "berries"),
+                with: bark | HOLLOW,
+            },
+        ]
+    }
+
+    #[test]
+    fn full_arms_find_the_flake_the_bark_the_hollow_and_keep_the_whole_chain() {
+        // The discovery of the run of seed 40, walked under the rules of
+        // 28 November 2026: strike a nodule, cut bark with the flake,
+        // fold it, put food in it. Each deed is only seen until the
+        // hollow has carried food beyond the arms; then the whole chain
+        // is kept, and nothing else.
+        let (rules, mut world, mut brains, id, birch) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let (flint_m, bark_m) = (material(&rules, "flint"), material(&rules, "birch_bark"));
+        let hammer = hammer(&rules);
+        picked(&mut world, &rules, id, "flint_nodule");
+        picked(&mut world, &rules, id, hammer);
+        let arms = world.body(id).unwrap().arms_g(&rules.movement);
+        loaded(&mut world, &rules, id, "berries", arms);
+        let day = today(&world);
+        in_a_trial_of_full_arms(&rules, brains.minds.get_mut(&id).unwrap(), day, 16);
+        let [strike, cut, fold, put] = flake_chain(&rules, birch, hammer);
+        // Each gesture is one it may draw from what it sees, done as
+        // drawn; none is done again by its hands before the put-in.
+        for (n, deed) in [strike, cut, fold, put].into_iter().enumerate() {
+            as_drawn(&mut world, &rules, &mut brains, id, deed);
+            assert_eq!(
+                again(&world, &rules, &mut brains, id),
+                HandsTurn::Free,
+                "{deed:?}"
+            );
+            let mind = &brains.minds[&id];
+            assert!(mind.handwork.saw(deed), "{deed:?} seen");
+            assert!(mind.ways.hands.is_empty(), "seen is not kept");
+            assert_eq!(mind.handwork.trial_seen.len(), n + 1);
+        }
+        assert!(!brains.minds[&id].handwork.served(flint_m));
+        // The put-in answers its problem: from now the trial is after
+        // it, and what feeds it is made again when it lacks it. Its
+        // hollow let go, its hands cut bark again.
+        let hollow = carried(&world, &rules, id)
+            .into_iter()
+            .find(|(_, k)| *k == bark_m | HOLLOW)
+            .expect("the hollow")
+            .0;
+        let mut without = world.clone();
+        without.queue(Intention::Drop {
+            body: id,
+            item: hollow,
+        });
+        without.advance(1, &rules, &mut Vec::new());
+        let mut lost = brains.minds[&id].clone();
+        lost.handwork.tries = (day, rules.needs.hands.tries_per_day);
+        let turn = hands_turn(
+            &without,
+            &rules,
+            (id, here),
+            &mut lost,
+            (7, &mut Vec::new()),
+        );
+        assert!(
+            matches!(
+                turn,
+                HandsTurn::Decide(Some(Decision {
+                    intention: Intention::Cut { .. },
+                    ..
+                }))
+            ),
+            "{turn:?}"
+        );
+        // Its arms full again, its hands put their food in the hollow
+        // without a draw; a gathering then stops with more than its arms
+        // hold: its problem relieved, the trial kept.
+        loaded(&mut world, &rules, id, "berries", arms);
+        let HandsTurn::Decide(Some(decision)) = again(&world, &rules, &mut brains, id) else {
+            panic!("a put-in");
+        };
+        assert!(
+            matches!(decision.intention, Intention::PutIn { .. }),
+            "{decision:?}"
+        );
+        done(&mut world, &rules, &mut brains, id, &decision);
+        let _ = again(&world, &rules, &mut brains, id);
+        loaded(&mut world, &rules, id, "berries", 100);
+        let body = world.body(id).unwrap();
+        assert!(body.food_g() > arms && body.stowed_g() > 0);
+        stopped_full(&world, &rules, &mut brains, id);
+        let mind = &brains.minds[&id];
+        assert!(mind.trial.is_none(), "judged");
+        let mut chain = Deeds::default();
+        for deed in [strike, cut, fold, put] {
+            chain.add(deed);
+        }
+        assert_eq!(mind.ways.hands, chain, "the whole chain, and only it");
+        assert_eq!(mind.handwork.kept.len(), 4, "its own");
+        assert!(mind.handwork.seen.is_empty(), "kept, no longer only seen");
+        assert!(mind.handwork.served(flint_m), "the tool of a chain kept");
+        assert!(
+            mind.judged
+                .is_some_and(|j| j.kept && j.after.hands == chain)
+        );
+        let mut news = Vec::new();
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let _ = hands_turn(&world, &rules, (id, here), mind, (7, &mut news));
+        let said = news
+            .iter()
+            .filter(|n| matches!(n, News::DeedKept { own: true, .. }))
+            .count();
+        assert_eq!(said, 4, "{news:?}");
+    }
+
+    #[test]
+    fn a_trial_of_the_hands_cut_short_by_a_move_followed_keeps_what_served_and_drops_its_aim() {
+        // Defect of the audit of 28 November 2026: following a move put
+        // the hands back as before the trial (a hollow that had served
+        // was lost) and left the deeds heard as its aim with no trial
+        // (done again without end, twelve bark cuts in eleven days for
+        // one person of the run of seed 40).
+        let (rules, world, mut brains, id, birch) = by_a_birch();
+        let flint = material(&rules, "flint");
+        let hollow_m = material(&rules, "birch_bark") | HOLLOW;
+        let put = Deed {
+            gesture: Gesture::PutIn,
+            on: material(&rules, "berries"),
+            with: hollow_m,
+        };
+        let cut_oak = Deed {
+            gesture: Gesture::Cut,
+            on: u16::try_from(rules.species.iter().position(|s| s.id == "oak").unwrap()).unwrap(),
+            with: flint,
+        };
+        let caller = BodyId(u32::MAX);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        in_a_trial(mind, &[cut_oak], 0);
+        for deed in bark_deeds(&rules, birch).iter().chain([put]) {
+            mind.handwork.see(deed, 32);
+        }
+        mind.handwork.serve(hollow_m);
+        let to = Pos::new(mind.ways.home.x + 40, mind.ways.home.y);
+        let said: Said = [(id, (Act::Joined, None, Some(caller), 0))].into();
+        let moves: BTreeMap<BodyId, Pos> = [(caller, to)].into();
+        let followed: BTreeMap<BodyId, BodyId> = [(id, caller)].into();
+        brains.start_move(&world, &rules, 3, &said, (&moves, &followed));
+        let mind = &brains.minds[&id];
+        assert!(mind.trial.is_some_and(|t| t.way == Way::Home), "it follows");
+        let mut served = bark_deeds(&rules, birch);
+        served.add(put);
+        assert_eq!(mind.ways.hands, served, "what served is kept");
+        assert!(mind.handwork.kept.is_empty(), "as no trial of its own");
+        assert!(mind.handwork.aim.is_empty(), "what it was after is dropped");
+        assert_eq!(mind.handwork.trial_seen, []);
+        // With no trial and no aim, the cut it heard is not among what
+        // its hands do again.
+        assert!(!wanted(&rules, mind, false).contains(&cut_oak));
+    }
+
+    #[test]
+    fn the_deeds_seen_push_a_trial_s_judgment_once_never_past_its_time_and_those_days() {
+        // Defect of the audit of 28 November 2026: each deed learnt
+        // pushed the judgment by the trial's days again, and a trial of
+        // a season of 16 days lasted 33 in the run of seed 41. Here a
+        // trial whose time is one day sees a new deed every day.
+        let (rules, mut world, mut brains, id, _) = by_a_birch();
+        let days = u64::from(rules.needs.trials.trial_days);
+        let mind = brains.minds.get_mut(&id).unwrap();
+        in_a_trial_of_full_arms(&rules, mind, 0, 1);
+        let until = |brains: &Brains| brains.minds[&id].trial.unwrap().problem.unwrap().until;
+        assert_eq!(until(&brains), 1);
+        for n in 1..=3_u16 {
+            world.advance(1440, &rules, &mut Vec::new());
+            assert_eq!(today(&world), u64::from(n));
+            let mind = brains.minds.get_mut(&id).unwrap();
+            let deed = Deed {
+                gesture: Gesture::Fold,
+                on: n,
+                with: NOTHING,
+            };
+            mind.handwork.pending = Some((deed, ItemId(1)));
+            mind.handwork.done = Some(true);
+            let mut news = Vec::new();
+            resolve(&world, &rules, id, mind, &mut news);
+            assert!(matches!(news[..], [News::DeedSeen { .. }]), "{news:?}");
+            assert_eq!(
+                until(&brains),
+                1 + days,
+                "day {n}: its time and those days, once (before: day {n} + {days})"
+            );
+        }
+        // A deed seen early pushes nothing: its time is not out.
+        let mind = brains.minds.get_mut(&id).unwrap();
+        in_a_trial_of_full_arms(&rules, mind, 3, 16);
+        mind.handwork.pending = Some((
+            Deed {
+                gesture: Gesture::Fold,
+                on: 9,
+                with: NOTHING,
+            },
+            ItemId(1),
+        ));
+        mind.handwork.done = Some(true);
+        resolve(&world, &rules, id, mind, &mut Vec::new());
+        assert_eq!(until(&brains), 3 + 16);
     }
 }
