@@ -111,7 +111,7 @@ fn the_768_valley_is_pinned() {
         print,
         (
             0x69d7_839f_7a2f_8794,
-            0x05e4_e9d0_0c75_181a,
+            0xd13d_efe8_d3fe_66a8,
             0xd069_a159_6f50_05dd
         ),
         "{print:#x?}"

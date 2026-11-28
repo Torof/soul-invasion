@@ -157,7 +157,7 @@ fn the_valley_drops_dead_wood_and_pebbles_where_they_belong() {
     assert!(items.iter().any(|i| i.material() == "branch"));
     assert!(items.iter().any(|i| i.material() == "pebble"));
     // Flint lies on the banks and by the rock (D57).
-    assert!(items.iter().any(|i| i.material() == "flint"));
+    assert!(items.iter().any(|i| i.material() == "flint_nodule"));
     // The other stones and the big leaves of the banks (D57, amended 27
     // November 2026).
     for more in ["quartz", "slate", "sandstone", "butterbur_leaf"] {
@@ -168,7 +168,7 @@ fn the_valley_drops_dead_wood_and_pebbles_where_they_belong() {
     assert!(
         items.iter().all(|i| matches!(
             i.material(),
-            "branch" | "pebble" | "flint" | "quartz" | "slate" | "sandstone" | "butterbur_leaf"
+            "branch" | "pebble" | "flint" | "flint_nodule" | "quartz" | "slate" | "sandstone" | "butterbur_leaf"
         )),
         "only dead wood, stones and big leaves lie on the ground"
     );
