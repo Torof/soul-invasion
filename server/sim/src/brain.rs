@@ -5159,12 +5159,20 @@ impl Brains {
             if !mind.unseen.is_empty() {
                 pending.push(id);
             }
+            mind.handwork.idle = false;
             if let Some(decision) = decide(world, rules, &mut land, id, mind, self.seed) {
                 if decision.why == Why::Night
                     && matches!(decision.intention, Intention::Sleep { .. })
                 {
                     lay_down.push(id);
                 }
+                // Its hands idle, it leaves where it worked: what it
+                // laid at its feet there is taken along first (D57,
+                // amended 28 November 2026, fifth round).
+                if mind.handwork.idle && handwork::leaves(&decision.intention, body.pos()) {
+                    handwork::leave_with(world, rules, (id, body.pos()), mind, land.news);
+                }
+                decisions.extend(handwork::along(id, mind).map(|taken| (id, taken)));
                 decisions.push((id, decision));
             }
             (mind.stopped, mind.blocked) = (false, None);

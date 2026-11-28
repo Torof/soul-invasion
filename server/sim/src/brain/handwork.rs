@@ -39,8 +39,10 @@
 //! thing down, does his trial, and takes it back afterwards, if he does
 //! not forget"): before a gesture other than a taking up, what its arms
 //! hold beside the gesture's own things is laid at its feet, a thing a
-//! thought ([`act_on`]); its hands idle again, it takes up what it still
-//! wants of them, by what it prefers ([`take_back`]).
+//! thought ([`act_on`]). Fifth round the same day: what it laid stays
+//! at its feet while it works there, at hand for its next gestures
+//! ([`at_hand`]); it takes up what it still wants of them, by what it
+//! prefers, when it leaves the place ([`leave_with`]).
 //!
 //! Amended the same day, third round (the project lead: "one tries, and
 //! if it does not work and brings nothing, one stops. One can take it up
@@ -401,8 +403,16 @@ pub struct Handwork {
     pub laid: Vec<Laid>,
     /// The gesture it is freeing its hands for, and where it stood.
     pub(super) clearing: Option<(HandTarget, Deed, Pos)>,
-    /// The thing laid it set out to take up again at its last thought.
-    pub(super) taking: Option<ItemId>,
+    /// The things laid it set out to take up again at its last thought.
+    pub(super) taking: Vec<ItemId>,
+    /// At its last thought its hands had nothing to do (amended 28
+    /// November 2026, fifth round): should what it decides next take it
+    /// away from where it stands, it takes its things along first
+    /// ([`leave_with`]).
+    pub(super) idle: bool,
+    /// The things laid at its feet it takes up as it leaves, before the
+    /// step it decided: said with that decision ([`along`]).
+    pub(super) along: Vec<ItemId>,
 }
 
 impl Handwork {
@@ -1200,7 +1210,7 @@ fn put_again(
     mind: &Mind,
 ) -> Option<(HandTarget, Deed)> {
     let body = world.body(id)?;
-    let full = body.arms_food_g() >= body.arms_g(&rules.movement);
+    let full = arms_full(world, rules, body, have);
     for &deed in deeds.iter().filter(|d| d.gesture == Gesture::PutIn) {
         // Only heard, and not yet come to anything in this trial.
         let untried = !mind.ways.hands.contains(deed) && !mind.handwork.trial_seen.contains(&deed);
@@ -1209,7 +1219,7 @@ fn put_again(
         }
         let Some(&(into, _)) = have.iter().find(|&&(i, k)| {
             k == deed.with
-                && world.hollow_room_g(i, rules) > 0
+                && room_in(world, rules, i) > 0
                 && !mind.handwork.amiss(deed, Barred::Item(i))
         }) else {
             continue;
@@ -1240,7 +1250,7 @@ fn take_again(
     mind: &Mind,
 ) -> Option<(HandTarget, Deed)> {
     let body = world.body(id)?;
-    if body.arms_food_g() < body.arms_g(&rules.movement) {
+    if !arms_full(world, rules, body, have) {
         return None;
     }
     for &deed in deeds.iter().filter(|d| d.gesture == Gesture::TakeOut) {
@@ -1251,8 +1261,7 @@ fn take_again(
             continue;
         }
         let mut hollows = have.iter().filter(|(_, k)| *k == deed.with);
-        if hollows.clone().count() == 0 || hollows.any(|&(i, _)| world.hollow_room_g(i, rules) > 0)
-        {
+        if hollows.clone().count() == 0 || hollows.any(|&(i, _)| room_in(world, rules, i) > 0) {
             continue;
         }
         let item = have.iter().find(|&&(i, k)| {
@@ -1301,6 +1310,7 @@ pub(super) fn hands_turn(
     (seed, news): (u64, &mut Vec<News>),
 ) -> HandsTurn {
     let turn = hands_think(world, rules, (id, here), mind, (seed, news));
+    mind.handwork.idle = turn == HandsTurn::Free;
     if let HandsTurn::Decide(Some(Decision {
         intention: Intention::PickUp { .. } | Intention::Drop { .. },
         ..
@@ -1349,19 +1359,18 @@ fn hands_think(
         mind.handwork.barred = (day, Vec::new());
     }
     let trying = mind.trial.is_some_and(|t| t.way == Way::Hands);
-    let have = carried(world, rules, id);
+    let in_arms = carried(world, rules, id);
     note_served(world, rules, id, mind);
     let near = i32::try_from(hands.near_tiles).unwrap_or(4);
     look_at_laid(world, (id, here), near, mind, news);
-    if !trying && let Some(decision) = let_go(rules, id, mind, &have) {
+    if !trying && let Some(decision) = let_go(rules, id, mind, &in_arms) {
         return HandsTurn::Decide(Some(decision));
     }
-    // The gesture it is freeing its hands for (amended 28 November
-    // 2026): the next thing in its way laid down, or the gesture itself.
-    if let Some((target, deed, at)) = mind.handwork.clearing.take()
-        && at == here
-        && let Some(decision) = act_on(world, rules, (id, here), (target, deed), mind, news)
-    {
+    // What it has at hand: what it carries, and what it laid at its feet
+    // here, which stays there while it works here (amended 28 November
+    // 2026, fifth round).
+    let have = at_hand(world, rules, here, mind, in_arms);
+    if let Some(decision) = clear_on(world, rules, (id, here), mind, news) {
         return HandsTurn::Decide(Some(decision));
     }
     if mind.doing == Doing::ToHands {
@@ -1402,10 +1411,13 @@ fn hands_think(
     mind.handwork.sought = found
         .filter(|((_, deed), _)| deed.gesture != Gesture::PickUp)
         .map(|((target, deed), _)| (deed, target.thing()));
-    // Its hands idle, it takes up again what it laid down for a gesture,
-    // before it draws another: a draw is among all it carries.
+    // Its hands idle: what it laid down for a gesture stays at its feet
+    // while it works here (amended 28 November 2026, fifth round; before,
+    // it took everything up again after each gesture, and laid it all
+    // again for the next). Only its things laid a few steps away call it
+    // back.
     if found.is_none()
-        && let Some(decision) = take_back(world, rules, (id, here), mind, (trying, near), news)
+        && let Some(decision) = back_to_laid(world, rules, (id, here), mind, (trying, near), news)
     {
         return HandsTurn::Decide(Some(decision));
     }
@@ -1433,6 +1445,53 @@ fn hands_think(
         Some(todo) => HandsTurn::Decide(Some(go_do(world, rules, (id, here), todo, mind, news))),
         None => HandsTurn::Free,
     }
+}
+
+/// The gesture `id` is freeing its hands for (amended 28 November
+/// 2026), carried on: the next thing in its way laid down, a thing of
+/// the gesture taken up from its feet, or the gesture itself.
+fn clear_on(
+    world: &World,
+    rules: &Content,
+    (id, here): (BodyId, Pos),
+    mind: &mut Mind,
+    news: &mut Vec<News>,
+) -> Option<Decision> {
+    let (target, deed, _) = mind.handwork.clearing.take().filter(|c| c.2 == here)?;
+    if matches!(target, HandTarget::Tree { .. }) {
+        // The tool taken up from its feet, it steps to the tree.
+        return Some(go_do(world, rules, (id, here), (target, deed), mind, news));
+    }
+    act_on(world, rules, (id, here), (target, deed), mind, news)
+}
+
+/// A thing of a gesture's own (`things`) that `id` laid at its feet here
+/// and does not carry is taken up first, one a thought (D57, amended 28
+/// November 2026, fifth round: what it laid stays laid while it works
+/// here, so the next gesture takes from its feet the one thing it
+/// needs); the gesture comes at the next thought ([`Handwork::clearing`]).
+fn fetch(
+    world: &World,
+    (id, here): (BodyId, Pos),
+    things: &[ItemId],
+    (target, deed): (HandTarget, Deed),
+    mind: &mut Mind,
+) -> Option<Decision> {
+    let body = world.body(id)?;
+    let &item = things.iter().find(|&&thing| {
+        !body.has(thing)
+            && mind
+                .handwork
+                .laid
+                .iter()
+                .any(|l| l.item == thing && in_reach(l.at, here))
+    })?;
+    mind.handwork.taking.push(item);
+    mind.handwork.clearing = Some((target, deed, here));
+    Some(Decision {
+        intention: Intention::PickUp { body: id, item },
+        why: Why::Hands,
+    })
 }
 
 /// What its hands no longer know is let go, one thing a thought: a
@@ -1484,7 +1543,7 @@ fn look_at_laid(
     news: &mut Vec<News>,
 ) {
     let hands = &mut mind.handwork;
-    let taking = hands.taking.take();
+    let taking = std::mem::take(&mut hands.taking);
     if hands.laid.is_empty() {
         return;
     }
@@ -1493,7 +1552,7 @@ fn look_at_laid(
         let item = laid.item;
         match world.item(item).map(|i| i.place) {
             Some(crate::Place::Ground { pos }) if pos == laid.at => {
-                if taking == Some(item) {
+                if taking.contains(&item) {
                     // It could not take it up after all: it lets it be.
                     news.push(News::LaidLetBe { body: id, item, at });
                     return false;
@@ -1535,32 +1594,104 @@ fn look_at_laid(
     });
 }
 
-/// The thing `id` takes up again of those it laid at its feet (D57,
-/// amended 28 November 2026, the project lead: "takes it back
-/// afterwards, if he does not forget. And if there are several things he
-/// wants to take, it is for him to choose which he prefers"), its hands
-/// idle: among those within its hands' sight that it still wants (in a
-/// trial of its hands, all; else food, a kind that served it, a thing a
-/// deed it keeps uses or gives; the rest is let be), the one it prefers
-/// that its arms and load can take, stepped to when not at its feet.
-/// What it prefers, by what the code already knows of it: hungry, food
-/// first (a hollow holding food is food); then a kind of thing that
-/// served it; then a thing a deed it keeps uses or gives; then food;
-/// then, in a trial, the rest; the first laid first among equals. When
-/// nothing it wants fits any more, what is left within sight is let be.
-fn take_back(
+/// Whether a thing at `at` is within reach of the hands of a body at
+/// `here`: on its tile or the next.
+fn in_reach(at: Pos, here: Pos) -> bool {
+    in_sight(at, here, 1)
+}
+
+/// What `id` has at hand (D57, amended 28 November 2026, fifth round):
+/// what it carries (`in_arms`), and the things it laid at its feet that
+/// still lie there within its reach. A gesture is thought of among them
+/// all; one that needs a thing laid takes it up first ([`act_on`]).
+fn at_hand(
+    world: &World,
+    rules: &Content,
+    here: Pos,
+    mind: &Mind,
+    mut in_arms: Vec<(ItemId, u16)>,
+) -> Vec<(ItemId, u16)> {
+    for laid in &mind.handwork.laid {
+        if !in_reach(laid.at, here) || mind.handwork.barred(Barred::Item(laid.item)) {
+            continue;
+        }
+        if let Some(thing) = world.item(laid.item)
+            && thing.place() == (crate::Place::Ground { pos: laid.at })
+            && let Some(kind) = kind_of(rules, thing)
+        {
+            in_arms.push((laid.item, kind));
+        }
+    }
+    in_arms
+}
+
+/// The grams the hollow `hollow` can still take, carried
+/// ([`World::hollow_room_g`]) or lying at its feet with what lies in it
+/// (fifth round of 28 November 2026: a hollow laid down for a gesture is
+/// still at hand).
+fn room_in(world: &World, rules: &Content, hollow: ItemId) -> u32 {
+    let Some(thing) = world.item(hollow) else {
+        return 0;
+    };
+    let crate::Place::Ground { pos } = thing.place() else {
+        return world.hollow_room_g(hollow, rules);
+    };
+    let inside = world
+        .inside_on_ground(hollow, pos)
+        .into_iter()
+        .filter_map(|i| world.item(i))
+        .fold(0_u32, |sum, i| sum.saturating_add(i.mass_g()));
+    rules
+        .needs
+        .hands
+        .holds_g(thing.hollow_ml())
+        .saturating_sub(inside)
+}
+
+/// Whether `body`'s arms are full of loose food, what it laid at its
+/// feet here counted with what it carries (`have`, [`at_hand`]): laid
+/// down for a gesture, it is still its load.
+fn arms_full(world: &World, rules: &Content, body: &crate::Body, have: &[(ItemId, u16)]) -> bool {
+    let laid: u32 = have
+        .iter()
+        .filter(|&&(i, k)| loose_food(rules, k) && !body.has(i))
+        .filter_map(|&(i, _)| world.item(i))
+        .fold(0, |sum, t| sum.saturating_add(t.mass_g()));
+    body.arms_food_g().saturating_add(laid) >= body.arms_g(&rules.movement)
+}
+
+/// Of the things `mind` laid at its feet and still sees, what it would
+/// take along, what lies a few steps away, and what it lets be.
+#[derive(Default)]
+struct LaidChoice {
+    /// Within its reach, in the order of its preferences, as far as its
+    /// arms and its load allow.
+    take: Vec<ItemId>,
+    /// The first it prefers of those beyond its reach, within its sight.
+    far: Option<Laid>,
+    /// Wanted no more, or more than it can carry with the rest.
+    let_be: Vec<ItemId>,
+}
+
+/// What `id` would take along of the things it laid down (D57, amended
+/// 28 November 2026, the project lead: "s'il y a plusieurs choses qu'il
+/// veut prendre, à lui de choisir laquelle il préfère prendre"), **in
+/// the order of its existing preferences**: food when it is hungry; a
+/// thing of a kind that served it; a thing a deed it keeps uses or
+/// gives; food; and, in a trial of its hands, the rest. What none of
+/// these names is let be, and what no longer fits its arms or its load
+/// once the things it prefers are counted.
+fn laid_choice(
     world: &World,
     rules: &Content,
     (id, here): (BodyId, Pos),
-    mind: &mut Mind,
+    mind: &Mind,
     (trying, near): (bool, i32),
-    news: &mut Vec<News>,
-) -> Option<Decision> {
-    if mind.handwork.laid.is_empty() {
-        return None;
-    }
-    let body = world.body(id)?;
-    let now = world.tick().0;
+) -> LaidChoice {
+    let mut out = LaidChoice::default();
+    let Some(body) = world.body(id) else {
+        return out;
+    };
     let kept: Vec<Deed> = mind.ways.hands.iter().collect();
     let keeps = used(rules, &kept);
     let hungry = body.condition().hunger.points() >= super::HUNGRY;
@@ -1569,9 +1700,8 @@ fn take_back(
             .material(i.material())
             .is_some_and(|m| m.food.is_some())
     };
-    let mut best: Option<((u8, usize), Laid)> = None;
-    let mut let_be: Vec<ItemId> = Vec::new();
-    let mut too_much: Vec<ItemId> = Vec::new();
+    // (its rank, its turn), the thing, whether food, its whole mass.
+    let mut wanted: Vec<((u8, usize), Laid, bool, u32)> = Vec::new();
     for (n, &laid) in mind.handwork.laid.iter().enumerate() {
         if !in_sight(laid.at, here, near) {
             continue;
@@ -1599,32 +1729,42 @@ fn take_back(
         } else if trying {
             4
         } else {
-            let_be.push(laid.item);
+            out.let_be.push(laid.item);
             continue;
         };
         let mass = inside
             .iter()
             .fold(thing.mass_g(), |sum, i| sum.saturating_add(i.mass_g()));
-        let room = if is_food(thing) {
-            body.food_room_g(&rules.movement)
-        } else {
-            body.capacity_g(&rules.movement)
-                .saturating_sub(body.load_g())
-        };
-        if mass > room {
-            too_much.push(laid.item);
+        wanted.push(((rank, n), laid, is_food(thing), mass));
+    }
+    wanted.sort_by_key(|w| w.0);
+    let mut food_room = body.food_room_g(&rules.movement);
+    let mut load_room = body
+        .capacity_g(&rules.movement)
+        .saturating_sub(body.load_g());
+    for (_, laid, food, mass) in wanted {
+        if !in_reach(laid.at, here) {
+            out.far.get_or_insert(laid);
             continue;
         }
-        if best.is_none_or(|b| (rank, n) < b.0) {
-            best = Some(((rank, n), laid));
+        let room = if food { food_room } else { load_room };
+        if mass > room {
+            out.let_be.push(laid.item);
+            continue;
         }
+        if food {
+            food_room -= mass;
+        }
+        load_room = load_room.saturating_sub(mass);
+        out.take.push(laid.item);
     }
-    // What it does not want, and, when nothing it wants fits any more,
-    // what it cannot carry with the rest: let be, as any thing lying.
-    if best.is_none() {
-        let_be.append(&mut too_much);
-    }
-    for &item in &let_be {
+    out
+}
+
+/// The things of `let_be` are let be by `id`: forgotten as its own, as
+/// any thing lying; the news.
+fn let_be(id: BodyId, mind: &mut Mind, let_be: &[ItemId], now: u64, news: &mut Vec<News>) {
+    for &item in let_be {
         news.push(News::LaidLetBe {
             body: id,
             item,
@@ -1632,27 +1772,90 @@ fn take_back(
         });
     }
     mind.handwork.laid.retain(|l| !let_be.contains(&l.item));
-    let (_, laid) = best?;
-    mind.wake_at = Some(mind.wake_at.map_or(now + 1, |w| w.min(now + 1)));
-    if (laid.at.x - here.x).abs() > 1 || (laid.at.y - here.y).abs() > 1 {
-        mind.doing = Doing::ToHands;
-        mind.handwork.to = None;
-        return Some(Decision {
-            intention: Intention::MoveTo {
-                body: id,
-                target: laid.at,
-            },
-            why: Why::Hands,
-        });
+}
+
+/// Its hands idle, `id` goes back to a thing it laid down a few steps
+/// away and still wants (D57, amended 28 November 2026): within its
+/// hands' sight only, never by walking back from beyond it. What lies
+/// within its reach where it stands is taken along first ([`along`]): it
+/// leaves this place. With all its things at its feet it does nothing:
+/// they stay there while it works here (fifth round).
+fn back_to_laid(
+    world: &World,
+    rules: &Content,
+    (id, here): (BodyId, Pos),
+    mind: &mut Mind,
+    (trying, near): (bool, i32),
+    news: &mut Vec<News>,
+) -> Option<Decision> {
+    if mind.handwork.laid.is_empty() {
+        return None;
     }
-    mind.handwork.taking = Some(laid.item);
+    let choice = laid_choice(world, rules, (id, here), mind, (trying, near));
+    let far = choice.far?;
+    let now = world.tick().0;
+    let_be(id, mind, &choice.let_be, now, news);
+    mind.handwork.taking.clone_from(&choice.take);
+    mind.handwork.along = choice.take;
+    mind.wake_at = Some(mind.wake_at.map_or(now + 1, |w| w.min(now + 1)));
+    mind.doing = Doing::ToHands;
+    mind.handwork.to = None;
     Some(Decision {
-        intention: Intention::PickUp {
+        intention: Intention::MoveTo {
             body: id,
-            item: laid.item,
+            target: far.at,
         },
         why: Why::Hands,
     })
+}
+
+/// Whether `intention` takes its body away from where it stands, at
+/// `here`: a walk elsewhere, or a walk behind another.
+pub(super) fn leaves(intention: &Intention, here: Pos) -> bool {
+    match intention {
+        Intention::MoveTo { target, .. } => *target != here,
+        Intention::Follow { .. } => true,
+        _ => false,
+    }
+}
+
+/// `id` leaves the place where it worked (D57, amended 28 November 2026,
+/// fifth round, the project lead's rule: while a person keeps gesturing
+/// or gathering at the same place, what it laid stays laid at its feet;
+/// it takes its things back when it leaves the place): of the things it
+/// laid within its reach, those it takes along, by what it prefers and
+/// as far as it can carry ([`laid_choice`]); the rest is let be. Each is
+/// a true taking up, said with the step it decided ([`along`]). Called
+/// only when its hands had their turn at this thought and nothing to do:
+/// a thirst, a flight, the night or a move followed take it away without
+/// its things, as before, and they are left behind.
+pub(super) fn leave_with(
+    world: &World,
+    rules: &Content,
+    (id, here): (BodyId, Pos),
+    mind: &mut Mind,
+    news: &mut Vec<News>,
+) {
+    if mind.handwork.laid.is_empty() {
+        return;
+    }
+    let near = i32::try_from(rules.needs.hands.near_tiles).unwrap_or(4);
+    let trying = mind.trial.is_some_and(|t| t.way == Way::Hands);
+    let choice = laid_choice(world, rules, (id, here), mind, (trying, near));
+    let_be(id, mind, &choice.let_be, world.tick().0, news);
+    mind.handwork.taking.clone_from(&choice.take);
+    mind.handwork.along = choice.take;
+}
+
+/// The takings up `id` makes as it leaves, before the step it decided
+/// ([`leave_with`], [`back_to_laid`]).
+pub(super) fn along(id: BodyId, mind: &mut Mind) -> impl Iterator<Item = Decision> + use<> {
+    std::mem::take(&mut mind.handwork.along)
+        .into_iter()
+        .map(move |item| Decision {
+            intention: Intention::PickUp { body: id, item },
+            why: Why::Hands,
+        })
 }
 
 /// A gesture drawn in a trial of the hands (D57): one of the four, on a
@@ -1932,6 +2135,15 @@ fn picks(
 ) -> Vec<(HandTarget, Deed)> {
     let mut out = Vec::new();
     for (thing, pos, material) in things_near(world, here, near, mind) {
+        // What it laid at its feet is at hand already: no thing to take.
+        if mind
+            .handwork
+            .laid
+            .iter()
+            .any(|l| l.item == thing && in_reach(l.at, here))
+        {
+            continue;
+        }
         let Some(on) = material_index(rules, material) else {
             continue;
         };
@@ -2035,7 +2247,7 @@ pub(super) fn something_new(
     again: Again,
 ) -> bool {
     let near = i32::try_from(rules.needs.hands.near_tiles).unwrap_or(4);
-    let have = carried(world, rules, id);
+    let have = at_hand(world, rules, here, mind, carried(world, rules, id));
     let new = |deed: Deed| !mind.ways.hands.contains(deed);
     let plausible = Plausible::seen(world, rules, here, mind, (&have, near), again);
     if [
@@ -2369,7 +2581,7 @@ impl Chain<'_> {
                 }
                 let into = have.iter().find(|&&(i, k)| {
                     k == deed.with
-                        && world.hollow_room_g(i, self.rules) > 0
+                        && room_in(world, self.rules, i) > 0
                         && !mind.handwork.amiss(deed, Barred::Item(i))
                 });
                 let item = have.iter().find(|&&(i, k)| {
@@ -2565,6 +2777,11 @@ fn act_on(
             with,
             part,
         } => {
+            // Its tool laid at its feet: taken up before it steps to
+            // the tree.
+            if let Some(decision) = fetch(world, (id, here), &[with], (target, deed), mind) {
+                return Some(decision);
+            }
             let (dx, dy) = (i64::from(body.at().x - at.x), i64::from(body.at().y - at.y));
             if dx * dx + dy * dy > GATHER_REACH_MM * GATHER_REACH_MM || !body.has(with) {
                 return None;
@@ -2582,6 +2799,9 @@ fn act_on(
             )
         }
     };
+    if let Some(decision) = fetch(world, (id, here), &things, (target, deed), mind) {
+        return Some(decision);
+    }
     if let Some(rest) = world.in_the_way(id, &things) {
         let now = world.tick().0;
         mind.handwork.lay(rest, here, rules.needs.hands.laid_kept);
@@ -3129,13 +3349,20 @@ mod tests {
         world.queue(decision.intention);
         world.advance(12, &rules, &mut events);
         brains.notice(&events, &world, &rules);
-        // A container carried: nothing more to do with its hands, once
-        // its flint is taken up again. It lacks nothing that a flint
-        // would give (fourth round of 28 November 2026: the chain starts
-        // from a real lack), so it is no deed done again: it takes back
-        // what it laid down, the tool of a deed it keeps.
+        // A container carried: nothing more to do with its hands. It
+        // lacks nothing that a flint would give (fourth round of 28
+        // November 2026: the chain starts from a real lack), so it is no
+        // deed done again. Its flint stays at its feet while it stays
+        // here (fifth round); leaving, it takes it along, the tool of a
+        // deed it keeps.
         assert_eq!(thinks(&mut world, &rules, &mut brains, id), HandsTurn::Free);
-        assert!(world.body(id).unwrap().has(flint), "taken up again");
+        assert!(!world.body(id).unwrap().has(flint), "still at its feet");
+        assert!(brains.minds[&id].handwork.idle);
+        assert_eq!(
+            leaving(&mut world, &rules, &mut brains, id, &mut Vec::new()),
+            [flint]
+        );
+        assert!(world.body(id).unwrap().has(flint), "taken along");
         assert_eq!(brains.minds[&id].handwork.laid, []);
         let mind = brains.minds.get_mut(&id).unwrap();
         assert_eq!(world.item(item).unwrap().material(), "birch_bark");
@@ -4226,7 +4453,7 @@ mod tests {
             };
             let frees = match decision.intention {
                 Intention::Drop { .. } => hands.clearing.is_some(),
-                Intention::PickUp { .. } => hands.taking.is_some(),
+                Intention::PickUp { .. } => !hands.taking.is_empty(),
                 _ => false,
             };
             if !frees {
@@ -4253,8 +4480,9 @@ mod tests {
     }
 
     /// Does `decision` (its hands freed first when it lays a thing down
-    /// for it), lets the gesture end, has the mind see what came of it,
-    /// and take up again what it laid down.
+    /// for it), lets the gesture end, and has the mind see what came of
+    /// it. What it laid down stays at its feet (fifth round of 28
+    /// November 2026).
     fn done(
         world: &mut World,
         rules: &Content,
@@ -4281,6 +4509,35 @@ mod tests {
         mind.handwork.tries = (today(world), u32::MAX);
         let turn = hands_turn(world, rules, (id, here), mind, (7, &mut Vec::new()));
         let _ = settled(world, rules, brains, id, turn);
+    }
+
+    /// `id` leaves where it worked, its hands idle ([`leave_with`]): the
+    /// things it takes along, in order, taken up in the tick of its
+    /// step, and seen in its arms again.
+    fn leaving(
+        world: &mut World,
+        rules: &Content,
+        brains: &mut Brains,
+        id: BodyId,
+        news: &mut Vec<News>,
+    ) -> Vec<ItemId> {
+        let here = world.body(id).unwrap().pos();
+        let mind = brains.minds.get_mut(&id).unwrap();
+        leave_with(world, rules, (id, here), mind, news);
+        let taken: Vec<ItemId> = along(id, mind)
+            .map(|d| match d.intention {
+                Intention::PickUp { item, .. } => item,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        for &item in &taken {
+            world.queue(Intention::PickUp { body: id, item });
+        }
+        world.advance(1, rules, &mut Vec::new());
+        let near = i32::try_from(rules.needs.hands.near_tiles).unwrap();
+        let mind = brains.minds.get_mut(&id).unwrap();
+        look_at_laid(world, (id, here), near, mind, news);
+        taken
     }
 
     #[test]
@@ -4458,6 +4715,13 @@ mod tests {
         );
         done(&mut world, &rules, &mut brains, id, &decision);
         // One pile went in: its arms have room again, it lacks nothing.
+        // The other pile, laid at its feet for the put-in, is still its
+        // load: its hands idle, and taken along when it leaves.
+        assert_eq!(turn(&mut world, &mut brains), HandsTurn::Free);
+        assert_eq!(
+            leaving(&mut world, &rules, &mut brains, id, &mut Vec::new()),
+            [more]
+        );
         let body = world.body(id).unwrap();
         assert_eq!((body.stowed_g(), body.arms_food_g()), (600, 400));
         assert_eq!(world.item(nuts).unwrap().within(), Some(hollow));
@@ -5181,7 +5445,7 @@ mod tests {
     fn as_drawn(world: &mut World, rules: &Content, brains: &mut Brains, id: BodyId, deed: Deed) {
         let here = world.body(id).unwrap().pos();
         let mind = brains.minds.get_mut(&id).unwrap();
-        let have = carried(world, rules, id);
+        let have = at_hand(world, rules, here, mind, carried(world, rules, id));
         let seen = Plausible::seen(world, rules, here, mind, (&have, 4), Again::never());
         let target = [seen.strikes, seen.cuts, seen.folds, seen.puts]
             .into_iter()
@@ -5275,9 +5539,10 @@ mod tests {
         let day = today(&world);
         in_a_trial_of_full_arms(&rules, brains.minds.get_mut(&id).unwrap(), day, 16);
         let [strike, cut, fold, put] = flake_chain(&rules, birch, hammer);
-        // Free hands (28 November 2026): its arms full of berries, each
-        // gesture of the chain asks for them laid at its feet first, and
-        // they are taken up again after it.
+        // Free hands (28 November 2026): its arms full of berries, the
+        // first gesture of the chain asks for them laid at its feet; they
+        // stay there for the gestures that follow (fifth round), laid
+        // once.
         let berries = carried(&world, &rules, id)
             .into_iter()
             .find(|(_, k)| *k == material(&rules, "berries"))
@@ -5294,11 +5559,13 @@ mod tests {
         for (n, deed) in [strike, cut, fold, put].into_iter().enumerate() {
             as_drawn(&mut world, &rules, &mut brains, id, deed);
             let (body, mind) = (world.body(id).unwrap(), &brains.minds[&id]);
-            assert!(
-                mind.handwork.laid.is_empty(),
-                "{deed:?}: all taken up again"
-            );
-            assert_eq!(body.food_g(), arms, "{deed:?}: its food with it again");
+            if deed != put {
+                assert!(
+                    mind.handwork.laid.iter().any(|l| l.item == berries),
+                    "{deed:?}: its berries still at its feet"
+                );
+                assert_eq!(body.food_g(), 0, "{deed:?}: its hands free");
+            }
 
             assert_eq!(
                 again(&mut world, &rules, &mut brains, id),
@@ -5356,16 +5623,16 @@ mod tests {
             &mut lost,
             (7, &mut Vec::new()),
         );
-        // Its hands freed for the cut: all but the flake laid at its
-        // feet, its food too.
-        let mut laid = 0;
+        // Its hands made ready for the cut: the flake taken up from its
+        // feet, where the fold left it, and anything else laid there.
+        let mut steps = 0;
         while let HandsTurn::Decide(Some(Decision {
-            intention: intention @ Intention::Drop { .. },
+            intention: intention @ (Intention::Drop { .. } | Intention::PickUp { .. }),
             ..
         })) = &turn
         {
-            laid += 1;
-            assert!(laid < 64, "never done laying down");
+            steps += 1;
+            assert!(steps < 64, "never done laying down and taking up");
             without.queue(intention.clone());
             without.advance(1, &rules, &mut Vec::new());
             turn = hands_turn(
@@ -5376,7 +5643,7 @@ mod tests {
                 (7, &mut Vec::new()),
             );
         }
-        assert!(laid >= 2, "{laid}");
+        assert!(steps >= 1, "{steps}");
         assert!(
             matches!(
                 turn,
@@ -5645,7 +5912,8 @@ mod tests {
         // "Nothing forces the taking back": called elsewhere before its
         // gesture, it leaves its things where they lie, as any thing on
         // the ground. It does not walk back for them; back within its
-        // hands' sight, it takes up what still lies there.
+        // hands' sight, what still lies there is at its feet again, and
+        // goes with it when it next leaves (fifth round).
         let (rules, mut world, mut brains, id, birch) = by_a_birch();
         let here = world.body(id).unwrap().pos();
         let _flint = picked(&mut world, &rules, id, "flint");
@@ -5705,7 +5973,8 @@ mod tests {
         });
         world.advance(1, &rules, &mut Vec::new());
         assert!(world.body(other).unwrap().has(berries));
-        // Back beside them, its hands idle, it takes up the nuts.
+        // Back beside them, its hands idle: the nuts are at its feet, and
+        // leaving it takes them along.
         world.queue(Intention::Teleport {
             body: id,
             target: here,
@@ -5717,16 +5986,7 @@ mod tests {
         mind.ways.hands = Deeds::default();
         mind.handwork.served.push(material(&rules, "flint"));
         let turn = hands_turn(&world, &rules, (id, here), mind, (7, &mut news));
-        assert_eq!(
-            turn,
-            HandsTurn::Decide(Some(Decision {
-                intention: Intention::PickUp {
-                    body: id,
-                    item: nuts
-                },
-                why: Why::Hands,
-            }))
-        );
+        assert_eq!(turn, HandsTurn::Free);
         assert_eq!(
             count(
                 &news,
@@ -5734,13 +5994,11 @@ mod tests {
             ),
             1
         );
-        world.queue(Intention::PickUp {
-            body: id,
-            item: nuts,
-        });
-        world.advance(1, &rules, &mut Vec::new());
+        assert_eq!(
+            leaving(&mut world, &rules, &mut brains, id, &mut news),
+            [nuts]
+        );
         let mind = brains.minds.get_mut(&id).unwrap();
-        let _ = hands_turn(&world, &rules, (id, here), mind, (7, &mut news));
         assert_eq!(
             count(&news, |n| matches!(n, News::LaidBack { late: true, .. })),
             1
@@ -5756,39 +6014,11 @@ mod tests {
         b.condition.hunger = crate::Gauge::at(points);
     }
 
-    /// The things its hands take up again, in order, till they are idle.
-    fn taken_back(
-        world: &mut World,
-        rules: &Content,
-        brains: &mut Brains,
-        id: BodyId,
-        news: &mut Vec<News>,
-    ) -> Vec<ItemId> {
-        let mut order = Vec::new();
-        for _ in 0..256 {
-            let here = world.body(id).unwrap().pos();
-            let mind = brains.minds.get_mut(&id).unwrap();
-            mind.handwork.tries = (today(world), u32::MAX);
-            let turn = hands_turn(world, rules, (id, here), mind, (7, news));
-            let HandsTurn::Decide(Some(Decision {
-                intention: Intention::PickUp { item, .. },
-                ..
-            })) = turn
-            else {
-                return order;
-            };
-            assert_eq!(mind.handwork.taking, Some(item));
-            order.push(item);
-            world.queue(Intention::PickUp { body: id, item });
-            world.advance(1, rules, &mut Vec::new());
-        }
-        panic!("its hands never done taking up");
-    }
-
     #[test]
     fn what_it_takes_up_again_is_what_it_prefers_and_the_rest_is_let_be() {
         // "If there are several things he wants to take, it is for him
-        // to choose which he prefers." By what the code already knows of
+        // to choose which he prefers", when it leaves the place where it
+        // worked (fifth round of 28 November 2026). By what the code already knows of
         // it: hungry, food first; a kind of thing that served it; a
         // thing a deed it keeps uses; food; in a trial, the rest.
         let (mut rules, mut world, mut brains, id, _) = by_a_birch();
@@ -5850,7 +6080,7 @@ mod tests {
         let (mut hungry_world, mut hungry_brains) = (world.clone(), brains.clone());
         hunger(&mut hungry_world, &rules, id, super::super::HUNGRY);
         assert_eq!(
-            taken_back(
+            leaving(
                 &mut hungry_world,
                 &rules,
                 &mut hungry_brains,
@@ -5867,13 +6097,127 @@ mod tests {
         rules.movement.carry_capacity_g = load + mass(flint) + mass(quartz) + mass(berries) + 1;
         let mut news = Vec::new();
         assert_eq!(
-            taken_back(&mut world, &rules, &mut brains, id, &mut news),
+            leaving(&mut world, &rules, &mut brains, id, &mut news),
             [flint, quartz, berries]
         );
         assert_eq!(world.item(pebble).unwrap().pos(), Some(here));
         assert!(brains.minds[&id].handwork.laid.is_empty(), "let be");
         assert_eq!(count(&news, |n| matches!(n, News::LaidLetBe { .. })), 1);
         assert_eq!(count(&news, |n| matches!(n, News::LaidBack { .. })), 3);
+    }
+
+    #[test]
+    fn what_it_laid_stays_at_its_feet_while_it_works_there_and_goes_with_it_when_it_leaves() {
+        // Fifth round of 28 November 2026. In the run of seed 43 a
+        // person laid things down 1,611 times in a journée for 47
+        // gestures: after each gesture its idle hands took everything up
+        // again, and laid it all again for the next. The project lead's
+        // rule: while it keeps gesturing at the same place, what it laid
+        // stays laid at its feet; it takes its things back when it
+        // leaves.
+        let (rules, mut world, mut brains, id, _) = by_a_birch();
+        let here = world.body(id).unwrap().pos();
+        let pebble = picked(&mut world, &rules, id, "pebble");
+        let berries = loaded(&mut world, &rules, id, "berries", 400);
+        let first = picked(&mut world, &rules, id, "butterbur_leaf");
+        let second = picked(&mut world, &rules, id, "butterbur_leaf");
+        let day = today(&world);
+        in_a_trial(brains.minds.get_mut(&id).unwrap(), &[], day);
+        let fold = Deed {
+            gesture: Gesture::Fold,
+            on: material(&rules, "butterbur_leaf"),
+            with: NOTHING,
+        };
+        let mut news = Vec::new();
+        for leaf in [first, second] {
+            let mind = brains.minds.get_mut(&id).unwrap();
+            let mut turn = HandsTurn::Decide(Some(go_do(
+                &world,
+                &rules,
+                (id, here),
+                (HandTarget::Item(leaf, here), fold),
+                mind,
+                &mut news,
+            )));
+            // Its hands made ready: a thing laid or taken up a thought.
+            for step in 0.. {
+                assert!(step < 64, "never ready");
+                let HandsTurn::Decide(Some(decision)) = turn else {
+                    panic!("the fold of {leaf:?}");
+                };
+                let folds = matches!(decision.intention, Intention::Fold { .. });
+                let mut events = Vec::new();
+                world.queue(decision.intention);
+                world.advance(if folds { 12 } else { 1 }, &rules, &mut events);
+                brains.notice(&events, &world, &rules);
+                let mind = brains.minds.get_mut(&id).unwrap();
+                mind.handwork.tries = (day, u32::MAX);
+                // After the fold its hands are idle: nothing is taken up.
+                turn = hands_turn(&world, &rules, (id, here), mind, (7, &mut news));
+                if folds {
+                    break;
+                }
+            }
+            assert_eq!(
+                turn,
+                HandsTurn::Free,
+                "{leaf:?}: idle, its things at its feet"
+            );
+            assert!(brains.minds[&id].handwork.idle);
+            assert!(world.item(leaf).unwrap().hollow_ml() > 0, "folded");
+        }
+        // Laid once for the two folds: its pebble and its berries never
+        // went back in its arms between them.
+        let laid = |item: ItemId| {
+            count(
+                &news,
+                |n| matches!(n, News::Laid { item: i, .. } if *i == item),
+            )
+        };
+        assert_eq!((laid(pebble), laid(berries)), (1, 1));
+        assert_eq!(world.item(berries).unwrap().pos(), Some(here));
+        // The second leaf, laid for the first fold, was taken up from
+        // its feet for its own: the one taking up.
+        assert_eq!(count(&news, |n| matches!(n, News::LaidBack { .. })), 1);
+        // A thing laid at its feet is at hand: a gesture is thought of
+        // with it, and its laid food is still its load.
+        let mind = &brains.minds[&id];
+        let have = at_hand(&world, &rules, here, mind, carried(&world, &rules, id));
+        assert!(have.iter().any(|&(i, _)| i == berries));
+        // It stays: no step, nothing taken. It leaves: its things first,
+        // in the tick of its step.
+        let stay = Intention::MoveTo {
+            body: id,
+            target: here,
+        };
+        let away = (2..40)
+            .map(|d| Pos::new(here.x + d, here.y))
+            .chain((2..40).map(|d| Pos::new(here.x, here.y + d)))
+            .find(|&p| world.map().is_passable(p))
+            .expect("open ground away");
+        let go = Intention::MoveTo {
+            body: id,
+            target: away,
+        };
+        assert!(!leaves(&stay, here) && leaves(&go, here));
+        let mind = brains.minds.get_mut(&id).unwrap();
+        leave_with(&world, &rules, (id, here), mind, &mut news);
+        let taken: Vec<Decision> = along(id, mind).collect();
+        assert_eq!(taken.len(), mind.handwork.laid.len());
+        assert!(taken.len() >= 3, "{taken:?}");
+        for decision in taken {
+            world.queue(decision.intention);
+        }
+        world.queue(go);
+        world.advance(1, &rules, &mut Vec::new());
+        let body = world.body(id).unwrap();
+        assert!(body.has(pebble) && body.has(berries), "taken along");
+        assert!(body.has(first) && body.has(second));
+        let mind = brains.minds.get_mut(&id).unwrap();
+        let near = i32::try_from(rules.needs.hands.near_tiles).unwrap();
+        look_at_laid(&world, (id, body.pos()), near, mind, &mut news);
+        assert_eq!(mind.handwork.laid, []);
+        assert_eq!(count(&news, |n| matches!(n, News::LaidLetBe { .. })), 0);
     }
 
     #[test]
@@ -5946,8 +6290,11 @@ mod tests {
             world.queue(decision.intention);
             world.advance(12, &rules, &mut events);
             brains.notice(&events, &world, &rules);
-            let back = taken_back(&mut world, &rules, &mut brains, id, &mut news);
-            let _ = thinks(&mut world, &rules, &mut brains, id);
+            // Its hands idle, its things stay at its feet; leaving, it
+            // takes them along.
+            assert_eq!(thinks(&mut world, &rules, &mut brains, id), HandsTurn::Free);
+            assert_eq!(world.body(id).unwrap().food_g(), 0, "still laid");
+            let back = leaving(&mut world, &rules, &mut brains, id, &mut news);
             let body = world.body(id).unwrap();
             assert_eq!(body.food_g(), 450, "its food again");
             assert_eq!(body.stowed_g(), if stowed { 450 } else { 0 });
