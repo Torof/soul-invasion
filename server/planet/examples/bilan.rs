@@ -228,6 +228,8 @@ struct Count {
     // sphere, per mille (5 to 9).
     causes: [Vec<i64>; 10],
     lists: [Vec<i64>; 28],
+    // Section 13, compared with the real: each planet's rows ([`real`]).
+    real: Vec<Vec<(&'static str, Vec<i64>)>>,
 }
 
 /// [`Count::tally`]: collisions their pile stopped, collisions still
@@ -369,6 +371,7 @@ impl Count {
             born,
             tally,
             lists,
+            real,
             born_step,
             born_km2,
             built,
@@ -437,6 +440,7 @@ impl Count {
         for (mine, theirs) in self.lists.iter_mut().zip(lists) {
             mine.extend(theirs);
         }
+        self.real.extend(real);
         self.born += born;
         self.born_step.extend(born_step);
         self.born_km2 += born_km2;
@@ -460,6 +464,7 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
     n.plates_start += h.plates_at_start.1 as u64;
     let mut prev: Option<HashMap<u32, Seen>> = None;
     let mut volume0 = 0_i64;
+    let mut volume_now = 0_i64;
     let mut sea_before = world.at_step(0).sea_rise_m;
     let mut moving: Option<i64> = None;
     let mut lands: Vec<i64> = Vec::new();
@@ -477,6 +482,7 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
         if t == 0 {
             volume0 = vol;
         }
+        volume_now = vol;
         let share = vol * 1000 / volume0;
         volume = (volume.0.min(share), volume.1.max(share));
         let share = h.continental_km2[t] * 1000 / h.continental_km2[0];
@@ -850,6 +856,20 @@ fn planet(seed: u64, settings: &Settings) -> (Count, [(i64, i64); 2], f64) {
         }
     }
     rifts(&world, &mut n);
+    let mut rows = real(&world, settings);
+    rows.push((
+        "each planet: seed; land today, per mille of the sphere; sea today, m; thickest crust, km; highest point, m; continental area and volume today, per mille of the start",
+        vec![
+            seed as i64,
+            lands[last],
+            i64::from(h.sea_at[last]),
+            i64::from(h.thick_at[last].iter().copied().max().unwrap_or(0)) / 10,
+            i64::from(world.elevation.iter().copied().max().unwrap_or(0)),
+            h.continental_km2[last] * 1000 / h.continental_km2[0],
+            volume_now * 1000 / volume0,
+        ],
+    ));
+    n.real.push(rows);
     (n, [volume, area], seconds)
 }
 
@@ -1110,6 +1130,7 @@ fn main() {
             "share of the supercontinent's crust that lies in a belt at the start, per mille (what a path blind to the crust would cross): least, median, most": spread(&mut n.belt_land),
             "belts' width at the start, km (each planet's median along the axes): least, median, most": spread(&mut n.belt_wide),
         },
+        "13 compared with the real": real_table(&n.real),
         "8 seconds per planet": {
             "median": round(seconds[seconds.len() / 2]),
             "most": round(seconds[seconds.len() - 1]),
@@ -1120,6 +1141,347 @@ fn main() {
     if let Some(path) = arg("--out") {
         std::fs::write(&path, text + "\n").expect("the table written");
     }
+}
+
+/// Section 13: what a geologist would measure on the planet, to set
+/// beside the Earth's figures. Each row is a name and a list of numbers;
+/// the table gives, for each number, the mean of the planets, the least
+/// and the most (a row named "each planet" is written planet by planet).
+fn real(world: &Planet, settings: &Settings) -> Vec<(&'static str, Vec<i64>)> {
+    let h = &world.history;
+    let sphere = &world.sphere;
+    let last = h.last();
+    let km2 = |c: usize| i64::from(sphere.area_km2[c]);
+    let whole: i64 = (0..CELLS).map(km2).sum();
+    let mut rows: Vec<(&'static str, Vec<i64>)> = Vec::new();
+    // The hypsometric curve: the share of the sphere at each height.
+    let edges = [
+        -6_000, -5_000, -4_000, -3_000, -2_000, -1_000, -200, 0, 500, 1_000, 2_000, 3_000, 4_000,
+        5_000,
+    ];
+    let mut bins = vec![0_i64; edges.len() + 1];
+    let (mut land_m, mut land_km2, mut deep_m, mut wet_km2) = (0_i64, 0_i64, 0_i64, 0_i64);
+    let (mut floor_m, mut floor_km2) = (0_i64, 0_i64);
+    let mut heights: Vec<i64> = Vec::new();
+    for c in 0..CELLS {
+        let e = i64::from(world.elevation[c]);
+        // A hollow the sea does not reach is dry ground below the sea.
+        bins[edges.iter().filter(|&&m| e > m).count()] += km2(c);
+        if world.dry(c) {
+            land_m += e * km2(c);
+            land_km2 += km2(c);
+            heights.push(e);
+        } else {
+            deep_m -= e * km2(c);
+            wet_km2 += km2(c);
+            if h.class[last][c] == OCEAN {
+                floor_m -= e * km2(c);
+                floor_km2 += km2(c);
+            }
+        }
+    }
+    heights.sort_unstable();
+    rows.push((
+        "hypsometry today, per mille of the sphere, by height m: under -6000, to -5000, -4000, -3000, -2000, -1000, -200, 0, 500, 1000, 2000, 3000, 4000, 5000, over 5000",
+        bins.iter().map(|&b| b * 1000 / whole).collect(),
+    ));
+    rows.push((
+        "land today: mean height, median height, m; the sea: mean depth of all of it, of the ocean floor only, m",
+        vec![
+            land_m / land_km2.max(1),
+            heights.get(heights.len() / 2).copied().unwrap_or(0),
+            deep_m / wet_km2.max(1),
+            floor_m / floor_km2.max(1),
+        ],
+    ));
+    // The ocean floor's age.
+    let mut ages = [0_i64; 11];
+    for c in (0..CELLS).filter(|&c| h.class[last][c] == OCEAN) {
+        ages[(usize::from(h.age[last][c]) / 20).min(10)] += km2(c);
+    }
+    let floor: i64 = ages.iter().sum();
+    rows.push((
+        "ocean floor's age today, per mille of the floor, by 20 My: 0-20, ..., 180-200, over 200",
+        ages.iter().map(|&a| a * 1000 / floor.max(1)).collect(),
+    ));
+    let mut mean_age = Vec::new();
+    let mut made = Vec::new();
+    let mut gone = Vec::new();
+    for k in 0..5 {
+        let t = last * k / 4;
+        let (mut sum, mut all, mut new) = (0_i64, 0_i64, 0_i64);
+        for c in (0..CELLS).filter(|&c| h.class[t][c] == OCEAN) {
+            sum += i64::from(h.age[t][c]) * km2(c);
+            all += km2(c);
+            if i64::from(h.age[t][c]) < settings.step_my {
+                new += km2(c);
+            }
+        }
+        mean_age.push(sum / all.max(1));
+        if t > 0 {
+            let before: i64 = (0..CELLS)
+                .filter(|&c| h.class[t - 1][c] == OCEAN)
+                .map(km2)
+                .sum();
+            let years = settings.step_my * 1_000_000;
+            made.push(new * 1000 / years);
+            gone.push((new - (all - before)) * 1000 / years);
+        }
+    }
+    rows.push((
+        "ocean floor's mean age, My, at steps 0, 1/4, 1/2, 3/4 and today",
+        mean_age,
+    ));
+    rows.push((
+        "new ocean floor, thousandths of a km2 a year, in the step ending at 1/4, 1/2, 3/4 and today",
+        made,
+    ));
+    rows.push((
+        "ocean floor gone (sunk or covered), thousandths of a km2 a year, in the same steps",
+        gone,
+    ));
+    // The boundaries, in cells of the grid (a cell is about 92 km wide;
+    // a kind seen from both sides counts on both).
+    for (name, t) in [
+        (
+            "boundary cells at the start: ridge, rift, transform, trench (the sinking side), continental arc, island arc, collision",
+            0,
+        ),
+        ("boundary cells today: the same seven", last),
+    ] {
+        rows.push((
+            name,
+            (1..=7_u8)
+                .map(|k| h.kind[t].iter().filter(|&&x| x == k).count() as i64)
+                .collect(),
+        ));
+    }
+    // The plates today: their sizes and their speeds.
+    let mut area = [0_i64; MAXP];
+    let mut cont = [0_i64; MAXP];
+    let mut speed = [0_i64; MAXP];
+    let mut trench = [0_i64; MAXP];
+    for c in 0..CELLS {
+        let p = h.plate[last][c] as usize;
+        let (at, turn) = (sphere.centre[c], h.motion[last][p].omega);
+        let moves = [
+            turn[1] * at[2] - turn[2] * at[1],
+            turn[2] * at[0] - turn[0] * at[2],
+            turn[0] * at[1] - turn[1] * at[0],
+        ]
+        .map(|part| part / 1_000_000);
+        area[p] += km2(c);
+        cont[p] += if h.class[last][c] == OCEAN { 0 } else { km2(c) };
+        speed[p] += dot(moves, moves).isqrt() * km2(c) / 1000;
+        trench[p] += i64::from(h.kind[last][c] == KIND_TRENCH);
+    }
+    let mut plates: Vec<usize> = (0..MAXP).filter(|&p| area[p] > 0).collect();
+    plates.sort_by_key(|&p| std::cmp::Reverse(area[p]));
+    rows.push((
+        "plates today, per mille of the sphere, the largest first (twelve of them)",
+        (0..12)
+            .map(|k| plates.get(k).map_or(0, |&p| area[p] * 1000 / whole))
+            .collect(),
+    ));
+    let mean = |keep: &dyn Fn(usize) -> bool| -> i64 {
+        let (mut v, mut a) = (0_i64, 0_i64);
+        for &p in plates.iter().filter(|&&p| keep(p)) {
+            v += speed[p];
+            a += area[p];
+        }
+        if a > 0 { v * 1000 / a } else { -1 }
+    };
+    let each: Vec<i64> = plates
+        .iter()
+        .filter(|&&p| area[p] >= 2_000_000)
+        .map(|&p| speed[p] / (area[p] / 1000).max(1))
+        .collect();
+    rows.push((
+        "plates' speed today, mm a year (mean over a plate's area; -1 none): all; plates over half continent; under a tenth continent; plates with a trench of 20 cells or more; with none; the fastest and the slowest plate over 2 M km2",
+        vec![
+            mean(&|_| true),
+            mean(&|p| 2 * cont[p] > area[p]),
+            mean(&|p| 10 * cont[p] < area[p]),
+            mean(&|p| trench[p] >= 20),
+            mean(&|p| trench[p] == 0),
+            each.iter().copied().max().unwrap_or(-1),
+            each.iter().copied().min().unwrap_or(-1),
+        ],
+    ));
+    // The ranges by age: crust with a root (5 km or more above a
+    // continent's thickness), by how long ago it was last worked (a
+    // collision's front or an active margin). Sums, so that the table's
+    // means divide one by the other.
+    let spans = [25_u16, 50, 100, 200];
+    let mut ranges = vec![(0_i64, 0_i64, 0_i64, 0_i64); spans.len() + 1];
+    for c in 0..CELLS {
+        if h.class[last][c] == OCEAN || h.thick_at[last][c] < 400 {
+            continue;
+        }
+        let k = spans
+            .iter()
+            .filter(|&&m| h.orogeny_at[last][c] >= m)
+            .count();
+        let e = i64::from(world.elevation[c]);
+        let r = &mut ranges[k];
+        r.0 += 1;
+        r.1 += e;
+        r.2 = r.2.max(e);
+        r.3 += i64::from(h.thick_at[last][c]) / 10;
+    }
+    rows.push((
+        "crust with a root (40 km or thicker) today, by My since it was last worked (under 25, 25-50, 50-100, 100-200, older or never): cells",
+        ranges.iter().map(|r| r.0).collect(),
+    ));
+    rows.push((
+        "the same: sum of the cells' heights above the sea, m (over the cells: the mean)",
+        ranges.iter().map(|r| r.1).collect(),
+    ));
+    rows.push(("the same: highest, m", ranges.iter().map(|r| r.2).collect()));
+    rows.push((
+        "the same: sum of the cells' thickness, km",
+        ranges.iter().map(|r| r.3).collect(),
+    ));
+    // The crust's thickness today.
+    let cuts = [200_u16, 300, 340, 361, 450, 600];
+    let mut thick = vec![0_i64; cuts.len() + 1];
+    let mut crust = 0_i64;
+    for x in world
+        .pieces()
+        .iter()
+        .flat_map(|p| &p.tiles)
+        .filter(|x| !x.under)
+    {
+        thick[cuts.iter().filter(|&&m| x.thick >= m).count()] += i64::from(x.area_km2);
+        crust += i64::from(x.area_km2);
+    }
+    rows.push((
+        "continental crust today by thickness, per mille of its area: under 20 km, 20-30, 30-34, 34-36, 36-45, 45-60, over 60",
+        thick.iter().map(|&a| a * 1000 / crust.max(1)).collect(),
+    ));
+    // Island arcs: the crust born in each quarter of the history, and
+    // the trench cells of ocean under ocean it was born along.
+    let mut arcs = vec![0_i64; 4];
+    let mut along = vec![0_i64; 4];
+    for t in 1..=last {
+        let q = ((t - 1) * 4 / last).min(3);
+        arcs[q] += h.journal[t]
+            .iter()
+            .filter(|e| e.what == What::IslandsRisen)
+            .map(|e| e.km2)
+            .sum::<i64>()
+            / 1000;
+        along[q] += h.kind[t].iter().filter(|&&k| k == 6).count() as i64;
+    }
+    rows.push((
+        "island arcs born, k km2, in each quarter of the history",
+        arcs,
+    ));
+    rows.push((
+        "cells riding over a sinking ocean floor (an island arc's edge), summed over the steps of each quarter",
+        along,
+    ));
+    // Trenches born at a passive margin, and plates welded, by quarter.
+    let mut born = vec![0_i64; 4];
+    let mut welded = vec![0_i64; 4];
+    for t in 1..=last {
+        let q = ((t - 1) * 4 / last).min(3);
+        born[q] += h.journal[t]
+            .iter()
+            .filter(|e| e.what == What::BornOfTrench)
+            .count() as i64;
+        welded[q] += h.journal[t]
+            .iter()
+            .filter(|e| e.what == What::EndedWelded)
+            .count() as i64;
+    }
+    rows.push((
+        "trenches born at a passive margin, in each quarter of the history",
+        born,
+    ));
+    rows.push((
+        "plates made one by a stopped collision, in each quarter of the history",
+        welded,
+    ));
+    rows.push((
+        "plates at steps 0, 1/4, 1/2, 3/4 and today",
+        (0..5)
+            .map(|k| {
+                let mut seen = [false; MAXP];
+                for &p in &h.plate[last * k / 4] {
+                    seen[p as usize] = true;
+                }
+                seen.iter().filter(|&&x| x).count() as i64
+            })
+            .collect(),
+    ));
+    // Today's land that stands on a terrane's or an arc's crust.
+    let dry = |keep: &dyn Fn(usize) -> bool| -> i64 {
+        (0..CELLS)
+            .filter(|&c| world.dry(c) && keep(c))
+            .map(km2)
+            .sum()
+    };
+    rows.push((
+        "today's land on the crust of a terrane or an island arc, per mille of the land; today's arc and terrane crust that is dry, per mille of it",
+        vec![
+            dry(&|c| h.class[last][c] == history::TERRANE) * 1000 / dry(&|_| true).max(1),
+            dry(&|c| h.class[last][c] == history::TERRANE) * 1000
+                / (0..CELLS)
+                    .filter(|&c| h.class[last][c] == history::TERRANE)
+                    .map(km2)
+                    .sum::<i64>()
+                    .max(1),
+        ],
+    ));
+    // What the wear takes: the relief's height (no crust is taken with
+    // it) against the piles' thickness.
+    let mut relief = 0_i64;
+    for t in 1..=last {
+        for x in h.pieces_at[t].iter().flat_map(|p| &p.tiles) {
+            // The sixth cause: it wore down.
+            relief -= i64::from(x.why[5]) * i64::from(x.area_km2);
+        }
+    }
+    let worn: i64 = h.budget.iter().map(|b| b.worn).sum();
+    let start: i64 = h.pieces_at[0]
+        .iter()
+        .flat_map(|p| &p.tiles)
+        .map(|x| i64::from(x.thick) * 100 * i64::from(x.area_km2))
+        .sum();
+    rows.push((
+        "sediment made in the history, k km3: in all; of which worn off the relief with no crust taken; the continents' crust at the start, k km3",
+        vec![worn / 1_000_000, relief / 1_000_000, start / 1_000_000],
+    ));
+    rows
+}
+
+/// Section 13's table: each row's numbers as the mean of the planets,
+/// the least and the most; a row named "each planet" planet by planet.
+fn real_table(real: &[Vec<(&'static str, Vec<i64>)>]) -> Value {
+    let mut out = Map::new();
+    let Some(first) = real.first() else {
+        return Value::Object(out);
+    };
+    for (k, (name, _)) in first.iter().enumerate() {
+        let lists: Vec<&Vec<i64>> = real.iter().map(|rows| &rows[k].1).collect();
+        if name.starts_with("each planet") {
+            out.insert((*name).to_owned(), json!(lists));
+            continue;
+        }
+        let at = |i: usize| lists.iter().map(move |l| l[i]);
+        let n = lists.len() as i64;
+        let width = lists[0].len();
+        out.insert(
+            (*name).to_owned(),
+            json!({
+                "mean": (0..width).map(|i| at(i).sum::<i64>() / n).collect::<Vec<_>>(),
+                "least": (0..width).map(|i| at(i).min().unwrap_or(0)).collect::<Vec<_>>(),
+                "most": (0..width).map(|i| at(i).max().unwrap_or(0)).collect::<Vec<_>>(),
+            }),
+        );
+    }
+    Value::Object(out)
 }
 
 /// The rifts of a planet: started, cut through (the crust gave way and
