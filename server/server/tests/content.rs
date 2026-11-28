@@ -168,7 +168,14 @@ fn the_valley_drops_dead_wood_and_pebbles_where_they_belong() {
     assert!(
         items.iter().all(|i| matches!(
             i.material(),
-            "branch" | "pebble" | "flint" | "flint_nodule" | "quartz" | "slate" | "sandstone" | "butterbur_leaf"
+            "branch"
+                | "pebble"
+                | "flint"
+                | "flint_nodule"
+                | "quartz"
+                | "slate"
+                | "sandstone"
+                | "butterbur_leaf"
         )),
         "only dead wood, stones and big leaves lie on the ground"
     );
