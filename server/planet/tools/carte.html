@@ -12,25 +12,41 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--fond); color: var(--texte);
     font: 14px/1.4 system-ui, "DejaVu Sans", sans-serif; }
-  body { display: flex; overflow: hidden; }
-  #cote { width: 330px; min-width: 330px; height: 100%; overflow-y: auto; background: var(--panneau);
-    border-right: 1px solid var(--bord); padding: 12px 14px 30px; }
-  h1 { font-size: 17px; margin: 0 0 2px; }
-  .sous { color: var(--pale); font-size: 12px; margin-bottom: 12px; }
-  .vues { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
-  #temps { background: #2a2430; border: 1px solid #4a2f47; border-radius: 6px; padding: 8px 9px; margin-bottom: 10px; }
-  #temps .ligne { display: flex; align-items: center; gap: 8px; }
+  [hidden] { display: none !important; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  /* The bar on top: what is shown (today or the history, flat or as a globe, which seed). */
+  #barre { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; padding: 7px 12px;
+    background: var(--panneau); border-bottom: 1px solid var(--bord); }
+  h1 { font-size: 15px; margin: 0; white-space: nowrap; }
+  .sous { color: var(--pale); font-size: 12px; margin-left: auto; }
+  .seg { display: flex; }
+  .seg button { border-radius: 0; margin-left: -1px; padding: 6px 14px; }
+  .seg button:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
+  .seg button:last-child { border-radius: 0 5px 5px 0; }
+  #milieu { flex: 1; display: flex; min-height: 0; }
+  /* The panel: three tabs, each with its own scroll. */
+  #cote { width: 340px; min-width: 340px; display: flex; flex-direction: column; background: var(--panneau);
+    border-right: 1px solid var(--bord); }
+  #onglets { display: flex; border-bottom: 1px solid var(--bord); }
+  #onglets button { flex: 1; border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none;
+    padding: 9px 4px; color: var(--pale); }
+  #onglets button.actif { border-bottom-color: var(--accent); color: var(--texte); background: #2a2430; }
+  .page { flex: 1; overflow-y: auto; padding: 4px 14px 30px; }
+  #droite { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  /* The time, under the map, as wide as the map. */
+  #temps { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: #2a2430;
+    border-top: 1px solid #4a2f47; }
   #temps input[type=range] { flex: 1; }
-  #temps .quand { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  #temps .quand { font-size: 15px; font-weight: 600; min-width: 270px; }
+  #globe { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
   details.params { font-size: 12px; margin-top: 8px; border: 1px solid var(--bord); border-radius: 6px; padding: 5px 8px; }
   details.params summary { cursor: pointer; color: var(--pale); }
   details.params td { text-align: left; }
-  .vues button { flex: 1; }
   button, select { background: #2b2f37; color: var(--texte); border: 1px solid var(--bord);
     border-radius: 5px; padding: 6px 8px; font: inherit; cursor: pointer; }
   button.actif { background: #4a2f47; border-color: var(--accent); }
   button:disabled, select:disabled { opacity: .5; cursor: default; }
-  label.graine { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  label.graine { display: flex; align-items: center; gap: 8px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--pale);
     margin: 16px 0 6px; }
   .couche { border-top: 1px solid var(--bord); padding: 7px 0; }
@@ -48,7 +64,7 @@
   td, th { padding: 2px 4px; text-align: right; border-bottom: 1px solid var(--bord); }
   td:first-child, th:first-child { text-align: left; }
   th { color: var(--pale); font-weight: normal; }
-  #scene { position: relative; flex: 1; height: 100%; overflow: hidden; cursor: grab;
+  #scene { position: relative; flex: 1; min-height: 0; overflow: hidden; cursor: grab;
     background: #0c0d10; }
   #scene.glisse { cursor: grabbing; }
   #toile { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
@@ -66,7 +82,7 @@
     border-radius: 6px; padding: 6px 9px; margin-bottom: 10px; }
   details.nouveau summary { cursor: pointer; font-weight: 600; }
   details.nouveau ul { margin: 6px 0 0; padding-left: 18px; }
-  #journal { margin-top: 8px; font-size: 12.5px; max-height: 38vh; overflow-y: auto; }
+  #journal { margin-top: 8px; font-size: 12.5px; }
   #journal .rien { color: var(--pale); }
   #journal .ev { padding: 4px 6px; border-left: 3px solid #555a64; margin: 0 0 4px; background: #0003; border-radius: 0 4px 4px 0; }
   #journal .ev.plaque { border-left-color: var(--accent); }
@@ -98,36 +114,54 @@
 </style>
 </head>
 <body>
-<div id="cote">
+<div id="barre">
+  <button id="volet" title="Montrer ou cacher le panneau">☰</button>
   <h1 id="titre">Monde nouveau, étape 0</h1>
-  <div class="sous" id="sous"></div>
-  <div class="vues">
-    <button data-vue="planete">Planète</button>
-    <button data-vue="histoire">Histoire</button>
+  <div class="seg vues">
+    <button data-vue="planete" title="La planète telle qu'elle est aujourd'hui">Aujourd'hui</button>
+    <button data-vue="histoire" title="Son histoire, pas à pas, depuis le supercontinent">Histoire</button>
+  </div>
+  <div class="seg projs">
+    <button data-proj="carte" title="La carte dépliée : tout se voit d'un coup, mais elle élargit ce qui est près des pôles">Carte à plat</button>
+    <button data-proj="globe" title="La planète en boule : les tailles sont justes, on la tourne à la souris">Globe</button>
   </div>
   <label class="graine">Graine <select id="graine"></select></label>
-  <div id="temps" hidden>
-    <div class="quand" id="quand">—</div>
-    <div class="ligne"><button id="jouer" title="Lancer ou arrêter">▶</button>
-      <input type="range" id="etape" min="0" max="40" value="0"></div>
-    <div id="journal"></div>
-  </div>
-  <div id="texte"></div>
-  <details class="nouveau" id="nouveau" open hidden style="margin-top:10px"><summary id="nouveau-titre"></summary><ul id="nouveau-liste"></ul></details>
-  <h2>Couches</h2>
-  <div id="couches"></div>
+  <div class="sous" id="sous"></div>
 </div>
-<div id="scene">
-  <div id="toile"></div>
-  <div id="outils">
-    <button id="moins" title="Dézoomer">−</button>
-    <button id="plus" title="Zoomer">+</button>
-    <button id="reset" class="large" title="Toute la carte">Tout voir</button>
-    <button id="bouton-frise" class="large" title="Une barre par plaque, de sa naissance à sa fin" hidden>Frise des plaques</button>
+<div id="milieu">
+  <div id="cote">
+    <div id="onglets">
+      <button data-onglet="couches">Couches</button>
+      <button data-onglet="evenements">Événements</button>
+      <button data-onglet="chiffres">Chiffres</button>
+    </div>
+    <div class="page" data-page="couches"><div id="couches"></div></div>
+    <div class="page" data-page="evenements"><div id="journal"></div></div>
+    <div class="page" data-page="chiffres">
+      <div id="texte" style="margin-top:8px"></div>
+      <details class="nouveau" id="nouveau" open hidden style="margin-top:10px"><summary id="nouveau-titre"></summary><ul id="nouveau-liste"></ul></details>
+    </div>
   </div>
-  <div id="frise" hidden></div>
-  <div id="lecture">—</div>
-  <div id="echelle-txt"></div>
+  <div id="droite">
+    <div id="scene">
+      <div id="toile"></div>
+      <canvas id="globe" hidden></canvas>
+      <div id="outils">
+        <button id="moins" title="Dézoomer">−</button>
+        <button id="plus" title="Zoomer">+</button>
+        <button id="reset" class="large" title="Toute la carte">Tout voir</button>
+        <button id="bouton-frise" class="large" title="Une barre par plaque, de sa naissance à sa fin" hidden>Frise des plaques</button>
+      </div>
+      <div id="frise" hidden></div>
+      <div id="lecture">—</div>
+      <div id="echelle-txt"></div>
+    </div>
+    <div id="temps" hidden>
+      <button id="jouer" title="Lancer ou arrêter">▶</button>
+      <input type="range" id="etape" min="0" max="40" value="0">
+      <div class="quand" id="quand">—</div>
+    </div>
+  </div>
 </div>
 <script>
 "use strict";
@@ -226,7 +260,10 @@ document.getElementById("etape").max = ETAPES;
 
 // ------------------------------------------------------------ the state
 
-const etat = { vue: "planete", graine: PAGE.graines[0], etape: ETAPES, joue: null, s: 1, tx: 0, ty: 0, fit: 1, choix: {} };
+const etat = { vue: "planete", graine: PAGE.graines[0], etape: ETAPES, joue: null, s: 1, tx: 0, ty: 0, fit: 1, choix: {},
+  // The globe: the longitude and latitude at its centre (radians, in the
+  // map's own frame), its zoom, and the place marked on it.
+  proj: "carte", glon: 0, glat: 0.35, gz: 1, marque: null, onglet: "couches" };
 const scene = document.getElementById("scene");
 const toile = document.getElementById("toile");
 const lecture = document.getElementById("lecture");
@@ -268,6 +305,7 @@ function construire() {
     img.height = h;
     img.alt = "";
     img.dataset.id = c.id;
+    img.addEventListener("load", () => demanderGlobe(true));
     toile.appendChild(img);
   }
   // Panel.
@@ -304,6 +342,11 @@ function construire() {
   appliquer();
   chargerDonnees();
   document.getElementById("temps").hidden = etat.vue !== "histoire";
+  document.querySelector('#onglets [data-onglet="evenements"]').hidden = etat.vue !== "histoire";
+  montrerOnglet(etat.vue !== "histoire" && etat.onglet === "evenements" ? "couches" : etat.onglet);
+  document.querySelectorAll(".projs button").forEach(b => b.classList.toggle("actif", b.dataset.proj === etat.proj));
+  toile.style.visibility = etat.proj === "globe" ? "hidden" : "";
+  globe.hidden = etat.proj !== "globe";
   document.getElementById("bouton-frise").hidden = etat.vue !== "histoire";
   if (etat.vue !== "histoire") document.getElementById("frise").hidden = true;
   chargerJournal();
@@ -311,9 +354,11 @@ function construire() {
     for (let t = 0; t <= ETAPES; t++) for (const k of ["relief", "frontieres"]) new Image().src = `couches/h${etat.graine}-${String(t).padStart(2, "0")}-${k}.png`;
     montrerEtape();
   }
-  document.getElementById("echelle-txt").textContent = etat.vue === "planete"
+  document.getElementById("echelle-txt").textContent = etat.proj === "globe"
+    ? "globe : les tailles sont justes · glisse pour le tourner, molette pour zoomer"
+    : etat.vue === "planete"
     ? "carte équirectangulaire · 1 point ≈ 19,5 km à l'équateur"
-    : etat.vue === "histoire" ? "carte équirectangulaire, centrée comme « Planète » · 1 point ≈ 39 km"
+    : etat.vue === "histoire" ? "carte équirectangulaire, centrée comme « Aujourd'hui » · 1 point ≈ 39 km"
     : "cadre de 880 km · 1 point = 0,5 km";
   toutVoir();
 }
@@ -325,6 +370,7 @@ function appliquer() {
     img.style.display = ch.on ? "" : "none";
     img.style.opacity = ch.op;
   });
+  demanderGlobe(true);
 }
 
 function montrerEtape() {
@@ -430,6 +476,14 @@ function marquer(e) {
   let m = document.getElementById("marque");
   if (m) m.remove();
   const xy = e && lieu(e);
+  etat.marque = xy || null;
+  if (xy && etat.proj === "globe") {
+    // The globe turns to show the place.
+    const [w, h] = VUES[etat.vue].taille;
+    etat.glon = (xy[0] / w - 0.5) * 2 * Math.PI;
+    etat.glat = (0.5 - xy[1] / h) * Math.PI;
+  }
+  demanderGlobe(false);
   if (!xy) return;
   m = document.createElement("div");
   m.id = "marque";
@@ -547,9 +601,184 @@ document.getElementById("bouton-frise").addEventListener("click", () => {
   if (!f.hidden) dessinerFrise();
 });
 
+// ------------------------------------------------------------ the globe
+
+// The same layers, drawn on a ball (an orthographic view): no place is
+// stretched, so the sizes compare, which the flat map cannot do near the
+// poles. The layers shown are first laid on one picture, then that
+// picture is drawn on the ball triangle by triangle. A page opened from
+// a file may not read the points of its pictures, only draw them, hence
+// the triangles.
+
+const globe = document.getElementById("globe");
+const peau = document.createElement("canvas");
+let peauSale = true, globeDemande = false;
+
+function demanderGlobe(peauAussi) {
+  if (peauAussi) peauSale = true;
+  if (etat.proj !== "globe" || globeDemande) return;
+  globeDemande = true;
+  requestAnimationFrame(dessinerGlobe);
+}
+
+// The ball's radius, in the page's points.
+function rayon() {
+  const r = scene.getBoundingClientRect();
+  return Math.min(r.width, r.height) * 0.46 * etat.gz;
+}
+
+// The layers shown, on one picture. False while one of them still loads:
+// the ball keeps its last picture, and the load asks for a new one.
+function composer() {
+  const v = VUES[etat.vue];
+  const imgs = [...toile.querySelectorAll("img")];
+  const montrees = imgs.filter((img, k) => choixDe(etat.vue, v.couches[k]).on);
+  if (montrees.some(img => !img.complete)) return false;
+  const w = Math.min(v.taille[0], 2048), h = w / 2;
+  peau.width = w;
+  peau.height = h;
+  const c = peau.getContext("2d");
+  c.imageSmoothingEnabled = false;
+  imgs.forEach((img, k) => {
+    const ch = choixDe(etat.vue, v.couches[k]);
+    if (!ch.on || !img.naturalWidth) return;
+    c.globalAlpha = ch.op;
+    c.drawImage(img, 0, 0, w, h);
+  });
+  peauSale = false;
+  return true;
+}
+
+function dessinerGlobe() {
+  globeDemande = false;
+  if (etat.proj !== "globe") return;
+  if (peauSale && !composer()) return;
+  const r = scene.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  if (globe.width !== W || globe.height !== H) { globe.width = W; globe.height = H; }
+  const c = globe.getContext("2d");
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2, R = rayon() * dpr;
+  c.save();
+  c.beginPath();
+  c.arc(cx, cy, R, 0, 2 * Math.PI);
+  c.fillStyle = "#0e1c3c";
+  c.fill();
+  c.clip();
+  // A finer net when zoomed, so the flat triangles stay close to the ball.
+  const N = etat.gz < 1.8 ? 72 : etat.gz < 3.5 ? 120 : 180, M = N / 2;
+  const pw = peau.width, ph = peau.height;
+  const sf = Math.sin(etat.glat), cf = Math.cos(etat.glat);
+  const X = new Float32Array((N + 1) * (M + 1)), Y = new Float32Array(X.length), Z = new Float32Array(X.length);
+  for (let j = 0; j <= M; j++) {
+    const lat = Math.PI / 2 - j * Math.PI / M, cl = Math.cos(lat), sl = Math.sin(lat);
+    for (let i = 0; i <= N; i++) {
+      const dl = -Math.PI + i * 2 * Math.PI / N - etat.glon;
+      const z = cl * Math.cos(dl), k = j * (N + 1) + i;
+      X[k] = cx + R * cl * Math.sin(dl);
+      Y[k] = cy - R * (sl * cf - z * sf);
+      Z[k] = sl * sf + z * cf;
+    }
+  }
+  c.imageSmoothingEnabled = false;
+  const du = pw / N, dv = ph / M;
+  const tri = (a, b, d, ua, va, ub, vb, ud, vd) => {
+    if (Z[a] + Z[b] + Z[d] <= 0) return;
+    let x0 = X[a], y0 = Y[a], x1 = X[b], y1 = Y[b], x2 = X[d], y2 = Y[d];
+    if (Math.max(x0, x1, x2) < 0 || Math.min(x0, x1, x2) > W || Math.max(y0, y1, y2) < 0 || Math.min(y0, y1, y2) > H) return;
+    const den = ua * (vb - vd) + ub * (vd - va) + ud * (va - vb);
+    if (!den) return;
+    const ta = (x0 * (vb - vd) + x1 * (vd - va) + x2 * (va - vb)) / den;
+    const tc = (x0 * (ud - ub) + x1 * (ua - ud) + x2 * (ub - ua)) / den;
+    const te = (x0 * (ub * vd - ud * vb) + x1 * (ud * va - ua * vd) + x2 * (ua * vb - ub * va)) / den;
+    const tb = (y0 * (vb - vd) + y1 * (vd - va) + y2 * (va - vb)) / den;
+    const td = (y0 * (ud - ub) + y1 * (ua - ud) + y2 * (ub - ua)) / den;
+    const tf = (y0 * (ub * vd - ud * vb) + y1 * (ud * va - ua * vd) + y2 * (ua * vb - ub * va)) / den;
+    // The triangle a little wider than itself, or a hair of the ground shows between two.
+    const mx = (x0 + x1 + x2) / 3, my = (y0 + y1 + y2) / 3;
+    const large = (x, y) => { const l = Math.hypot(x - mx, y - my) || 1; return [x + (x - mx) / l * 0.8, y + (y - my) / l * 0.8]; };
+    c.save();
+    c.beginPath();
+    c.moveTo(...large(x0, y0));
+    c.lineTo(...large(x1, y1));
+    c.lineTo(...large(x2, y2));
+    c.closePath();
+    c.clip();
+    c.setTransform(ta, tb, tc, td, te, tf);
+    const u = Math.max(0, Math.min(ua, ub, ud) - 1), v = Math.max(0, Math.min(va, vb, vd) - 1);
+    const lw = Math.min(pw - u, du + 2), lh = Math.min(ph - v, dv + 2);
+    c.drawImage(peau, u, v, lw, lh, u, v, lw, lh);
+    c.restore();
+  };
+  for (let j = 0; j < M; j++) {
+    for (let i = 0; i < N; i++) {
+      const a = j * (N + 1) + i, b = a + 1, d = a + N + 1, e = d + 1;
+      const u = i * du, v = j * dv;
+      tri(a, b, d, u, v, u + du, v, u, v + dv);
+      tri(b, e, d, u + du, v, u + du, v + dv, u, v + dv);
+    }
+  }
+  c.restore();
+  // A little shade towards the rim, so the ball reads as a ball.
+  const ombre = c.createRadialGradient(cx, cy, R * 0.6, cx, cy, R);
+  ombre.addColorStop(0, "rgba(0,0,0,0)");
+  ombre.addColorStop(1, "rgba(0,0,0,0.38)");
+  c.fillStyle = ombre;
+  c.beginPath();
+  c.arc(cx, cy, R, 0, 2 * Math.PI);
+  c.fill();
+  // The place marked, when it is on the side seen.
+  if (etat.marque) {
+    const [w, h] = VUES[etat.vue].taille;
+    const lat = (0.5 - etat.marque[1] / h) * Math.PI, dl = (etat.marque[0] / w - 0.5) * 2 * Math.PI - etat.glon;
+    const z = Math.cos(lat) * Math.cos(dl);
+    if (Math.sin(lat) * sf + z * cf > 0) {
+      const x = cx + R * Math.cos(lat) * Math.sin(dl), y = cy - R * (Math.sin(lat) * cf - z * sf);
+      c.lineWidth = 6 * dpr; c.strokeStyle = "#fff";
+      c.beginPath(); c.arc(x, y, 20 * dpr, 0, 2 * Math.PI); c.stroke();
+      c.lineWidth = 3 * dpr; c.strokeStyle = "#ff00aa";
+      c.beginPath(); c.arc(x, y, 20 * dpr, 0, 2 * Math.PI); c.stroke();
+    }
+  }
+}
+
+// The point of the map under a point of the scene, or nothing off the ball.
+function surGlobe(px, py) {
+  const r = scene.getBoundingClientRect(), R = rayon();
+  const x = (px - r.width / 2) / R, y = (r.height / 2 - py) / R;
+  const zz = 1 - x * x - y * y;
+  if (zz < 0) return null;
+  const z = Math.sqrt(zz), sf = Math.sin(etat.glat), cf = Math.cos(etat.glat);
+  const lat = Math.asin(Math.max(-1, Math.min(1, y * cf + z * sf)));
+  const lon = etat.glon + Math.atan2(x, z * cf - y * sf);
+  const [w, h] = VUES[etat.vue].taille;
+  const u = ((lon / (2 * Math.PI) + 0.5) % 1 + 1) % 1;
+  return [Math.min(w - 1, u * w), Math.min(h - 1, (0.5 - lat / Math.PI) * h)];
+}
+
+// ------------------------------------------------------------ the panel
+
+function montrerOnglet(nom) {
+  etat.onglet = nom;
+  document.querySelectorAll("#onglets button").forEach(b => b.classList.toggle("actif", b.dataset.onglet === nom));
+  document.querySelectorAll("#cote .page").forEach(p => { p.hidden = p.dataset.page !== nom; });
+}
+document.querySelectorAll("#onglets button").forEach(b =>
+  b.addEventListener("click", () => montrerOnglet(b.dataset.onglet)));
+document.getElementById("volet").addEventListener("click", () => {
+  const cote = document.getElementById("cote");
+  cote.hidden = !cote.hidden;
+  toutVoir();
+});
+document.querySelectorAll(".projs button").forEach(b =>
+  b.addEventListener("click", () => { etat.proj = b.dataset.proj; construire(); }));
+
 // ------------------------------------------------------------ zoom and pan
 
 function poser() {
+  demanderGlobe(false);
   toile.style.transform = `translate(${etat.tx}px, ${etat.ty}px) scale(${etat.s})`;
 }
 
@@ -570,10 +799,16 @@ function toutVoir() {
   etat.s = etat.fit;
   etat.tx = (r.width - w * etat.s) / 2;
   etat.ty = (r.height - h * etat.s) / 2;
+  etat.gz = 1;
   poser();
 }
 
 function zoomer(facteur, mx, my) {
+  if (etat.proj === "globe") {
+    etat.gz = Math.min(Math.max(etat.gz * facteur, 1), 6);
+    demanderGlobe(false);
+    return;
+  }
   const s = Math.min(Math.max(etat.s * facteur, etat.fit), etat.fit * 8);
   const k = s / etat.s;
   etat.tx = mx - (mx - etat.tx) * k;
@@ -592,12 +827,17 @@ scene.addEventListener("wheel", e => {
 let glisse = null;
 scene.addEventListener("pointerdown", e => {
   if (e.target.closest("#outils") || e.target.closest("#frise")) return;
-  glisse = { x: e.clientX, y: e.clientY, tx: etat.tx, ty: etat.ty };
+  glisse = { x: e.clientX, y: e.clientY, tx: etat.tx, ty: etat.ty, glon: etat.glon, glat: etat.glat };
   scene.setPointerCapture(e.pointerId);
   scene.classList.add("glisse");
 });
 scene.addEventListener("pointermove", e => {
-  if (glisse) {
+  if (glisse && etat.proj === "globe") {
+    const R = rayon();
+    etat.glon = glisse.glon - (e.clientX - glisse.x) / R;
+    etat.glat = Math.min(Math.PI / 2, Math.max(-Math.PI / 2, glisse.glat + (e.clientY - glisse.y) / R));
+    demanderGlobe(false);
+  } else if (glisse) {
     etat.tx = glisse.tx + e.clientX - glisse.x;
     etat.ty = glisse.ty + e.clientY - glisse.y;
     poser();
@@ -626,9 +866,13 @@ function deg(v, pos, neg) {
 
 function lire(e) {
   const r = scene.getBoundingClientRect();
-  const ix = (e.clientX - r.left - etat.tx) / etat.s;
-  const iy = (e.clientY - r.top - etat.ty) / etat.s;
   const [w, h] = VUES[etat.vue].taille;
+  let ix = (e.clientX - r.left - etat.tx) / etat.s;
+  let iy = (e.clientY - r.top - etat.ty) / etat.s;
+  if (etat.proj === "globe") {
+    const p = surGlobe(e.clientX - r.left, e.clientY - r.top);
+    [ix, iy] = p || [-1, -1];
+  }
   if (ix < 0 || iy < 0 || ix >= w || iy >= h) { lecture.textContent = "—"; return; }
   if (etat.vue === "histoire") {
     const d = window.DONNEES["p" + etat.graine];
@@ -680,6 +924,7 @@ let friseDemandee = false;
   if (g) etat.graine = Number(g);
   if (t) etat.etape = Math.min(ETAPES, Math.max(0, Number(t) || 0));
   friseDemandee = f === "frise" && etat.vue === "histoire";
+  if (location.hash.includes("globe")) etat.proj = "globe";
 }
 document.getElementById("graine").addEventListener("change", e => {
   etat.graine = Number(e.target.value);
