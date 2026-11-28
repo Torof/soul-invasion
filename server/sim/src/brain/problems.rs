@@ -847,6 +847,12 @@ mod tests {
         // The hollow merely carried, its arms full again: the limit has
         // not moved (amended 27 November 2026).
         let hollow = take_hollow(&mut world, &rules, id);
+        // The thread of its trial: that very bark folded, its berries
+        // put in that very hollow (amended 28 November 2026: what is
+        // kept is what really took part).
+        let hands = &mut brains.minds.get_mut(&id).unwrap().handwork;
+        hands.made(deed, [Some(hollow), None], hollow);
+        hands.made(put, [None, Some(hollow)], hollow);
         stopped(&mut world, &rules, &mut brains, id);
         assert_eq!(
             brains.minds[&id]
@@ -1202,8 +1208,9 @@ mod tests {
             let until = brains.minds[&id].trial.unwrap().problem.unwrap().until;
             let mind = brains.minds.get_mut(&id).unwrap();
             mind.handwork.gestured = true;
-            mind.handwork.see(put, 32);
+            let hollow = mind.handwork.threaded([put], 900);
             mind.handwork.served.push(put.with);
+            mind.handwork.served_things.push(hollow);
             let mut taught = mind.clone();
             taught.learn_will(&rules, true);
             let _ = brains.news();
